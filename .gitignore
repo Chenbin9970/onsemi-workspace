@@ -11,6 +11,9 @@ Release/
 # Eclipse project settings (user-specific)
 .settings/
 
+# Python cache
+__pycache__/
+
 # PDOM index files (Eclipse CDT)
 *.pdom
 

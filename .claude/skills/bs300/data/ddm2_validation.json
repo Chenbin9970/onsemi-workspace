@@ -1,0 +1,38 @@
+{
+  "description": "DDM2 cross-validation data (Program 1, enabled)",
+  "source": "MT fitting software export / chip readback",
+  "flash_ddm2_6bytes": "003E8B00FA76",
+  "param_48bytes_ref": "010000000000000040000000000AD72326CF47000000003EA60D00807FFE0178427D9C7C0547BE826300000000000000000000",
+  "struct_values": {
+    "ddm2_enable": 1,
+    "open_ear": 0,
+    "adm_fdm": 0,
+    "polar_pattern": 3,
+    "omni_threshold": 62
+  },
+  "polar_uint3_to_frac24": {
+    "0": "0x000000 (Bi-directional)",
+    "1": "0x200000 (Hyper-cardioid)",
+    "2": "0x300000 (Super-cardioid)",
+    "3": "0x400000 (Cardioid)",
+    "4": "0x7FFFFF (Omni-directional)",
+    "ADM_mode": "0x7FFFFF (always Omni)"
+  },
+  "calibration": {
+    "avg_mic1": 148.6,
+    "omni_mt": 55,
+    "mic_delay": 2100,
+    "mic2_gain_diff": 102,
+    "omni_frac48": "0x0000000DA63E",
+    "omni_formula": "frac48 = 2^47 / 10^(0.10001*(avg_mic1 - omni_mt) - 1.20412)"
+  },
+  "notes": [
+    "polar_pattern uses uint3→frac24 lookup table (NOT direct uint3 value)",
+    "omni_threshold formula: frac48 = 2^47/10^(0.10001*(avg_mic1-omni_mt)-1.20412)",
+    "omni_mt = (I2C_value - 2)/4 + 40",
+    "W0-W5 verified: selection, open_ear, polar, adm_fdm, mic2_dly, mic2_cal match MT",
+    "W6-W7 verified: omni threshold frac48 matches MT within rounding",
+    "W8-W12: fixed values and filter coefficients differ from codegen (MT uses different constants)",
+    "Flash polar encoding: bi[2:0] 0=Bi, 1=Hyper, 2=Super, 3=Cardioid, 4=Omni (not 0,2,3,4,0x7F as handbook states)"
+  ]
+}
