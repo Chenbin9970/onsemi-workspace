@@ -703,7 +703,7 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
                        KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
                        TASK_APP,
                        gapc_param_update_cfm);
-    cfm->accept = 1;
+    cfm->accept = 0;    /* Reject central's connection param update */
     cfm->ce_len_max = 0xffff;
     cfm->ce_len_min = 0xffff;
 

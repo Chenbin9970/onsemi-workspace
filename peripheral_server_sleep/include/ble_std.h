@@ -66,11 +66,9 @@ extern "C"
 
 /* Define the advertisement interval for connectable mode (units of 625us)
  * Notes: the interval can be 20ms up to 10.24s */
-#ifdef CFG_ADV_INTERVAL_MS
+#define CFG_ADV_INTERVAL_MS             10240    /* 10.24s — BLE spec max */
 #define ADV_INT_CONNECTABLE_MODE        (CFG_ADV_INTERVAL_MS / 0.625)
-#else    /* ifdef CFG_ADV_INTERVAL_MS */
-#define ADV_INT_CONNECTABLE_MODE        64
-#endif    /* ifdef CFG_ADV_INTERVAL_MS */
+/* #undef CFG_ADV_INTERVAL_MS to use default 40ms */
 
 /* Define the advertisement interval for non-connectable mode (units of 625us)
  * Notes: the minimum interval for non-connectable advertising should be 100ms */
@@ -107,10 +105,10 @@ extern "C"
 #define RADIO_CLOCK_ACCURACY            500
 
 /* Slave preferred connection parameters */
-#define PREF_SLV_MIN_CON_INTERVAL       8
-#define PREF_SLV_MAX_CON_INTERVAL       10
-#define PREF_SLV_LATENCY                0
-#define PREF_SLV_SUP_TIMEOUT            200
+#define PREF_SLV_MIN_CON_INTERVAL       400     /* 500ms / 1.25ms */
+#define PREF_SLV_MAX_CON_INTERVAL       400     /* 500ms / 1.25ms */
+#define PREF_SLV_LATENCY                19
+#define PREF_SLV_SUP_TIMEOUT            3200    /* 32s / 10ms, max allowed */
 
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20

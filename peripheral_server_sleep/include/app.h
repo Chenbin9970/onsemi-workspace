@@ -66,7 +66,7 @@ extern "C"
 /* Enable/disable buck converter
  * Options: VCC_BUCK_BITBAND or VCC_LDO_BITBAND */
 #ifndef VCC_BUCK_LDO_CTRL
-#define VCC_BUCK_LDO_CTRL               VCC_BUCK_BITBAND
+#define VCC_BUCK_LDO_CTRL               VCC_LDO_BITBAND
 #endif
 
 /* Minimum and maximum VBAT measurements */
@@ -134,7 +134,7 @@ extern "C"
  *                                      RTC_CLK_SRC_RC_OSC
  *                                      RTC_CLK_SRC_DIO[ 0 | 1 | 2 | 3 ]  */
 #ifndef RTC_CLK_SRC
-#define RTC_CLK_SRC                     RTC_CLK_SRC_XTAL32K
+#define RTC_CLK_SRC                     RTC_CLK_SRC_RC_OSC
 #endif
 
 /* Update options for the low power clock source. When disabled, the value
