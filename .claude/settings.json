@@ -4,7 +4,30 @@
       "Bash(git init *)",
       "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" status)",
       "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" remote -v)",
-      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitignore CLAUDE.md peripheral_server_sleep/ .claude/)"
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitignore CLAUDE.md peripheral_server_sleep/ .claude/)",
+      "Bash(git -C c:/Users/admin/onsemi-workspace4.5 commit -m ' *)",
+      "Bash(gh auth *)",
+      "Bash(where gh *)",
+      "Bash(winget list *)",
+      "Bash(winget install *)",
+      "Bash(winget source *)",
+      "Bash(powershell -Command \"winget source reset --force 2>&1\")",
+      "Bash(choco --version)",
+      "Bash(scoop --version)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" remote add origin https://github.com/Chenbin9970/onsemi-workspace.git)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" push -u origin master)",
+      "Bash(ssh -T -o ConnectTimeout=10 git@github.com)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" remote set-url origin git@github.com:Chenbin9970/onsemi-workspace.git)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" log --oneline)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" config --local --list)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitattributes)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" push)",
+      "Bash(ls \"C:/Users/admin/jieli_ai_test/.claude/skills/\" 2>/dev/null)",
+      "Read(//c/Users/admin/jieli_ai_test/.claude/skills/**)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitignore .claude/skills/bs300)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add CLAUDE.md .claude/settings.json)"
     ]
   }
 }

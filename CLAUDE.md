@@ -1,69 +1,96 @@
-# CLAUDE.md
+# CLAUDE.md — AI 编程代理规则（17 条标准）
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+所有代码生成、编辑、重构、调试及代理行为均须严格遵守以下规则。除非开发者明确推翻，否则无例外。
 
-## Project Overview
+## 核心基础规则（0–4）
 
-ON Semiconductor RSL10 BLE peripheral server with sleep mode. Targets the RSL10 SoC (Cortex-M3, 48 MHz). The device advertises a Battery Service and a Custom Service, accepts connections from a central device, sends battery level notifications, and supports read/write of custom characteristics. Sleep mode is entered between radio events to save power.
+### 规则 0：写代码前先确认
+- 任何代码修改前，先用一句话说明要改什么，等开发者确认再动手。
+- 指令有歧义时列出选项；不猜测、不自作主张、不添加开发者未提及的功能。
+- **设计讨论阶段只协助补充方案，不直接动手写代码**，等开发者明确确认后再进入编码。
 
-## Build System
+### 规则 1：先思考再编码
+- 在编写任何代码之前，明确陈述所有假设、依赖、环境约束及前置条件。
+- 需求模糊时主动提出澄清问题，而非猜测或凭空编造逻辑。
+- 当存在多种实现路径时，呈现权衡并推荐最简单的可行方案。
 
-Eclipse-based project using GNU ARM Eclipse plugin. Toolchain: `arm-none-eabi-*` (GNU Tools for ARM Embedded).
+### 规则 2：简单优先
+- 只实现当前需要的功能；避免过度设计、过早抽象或面向未来的预留。
+- 编写满足当前需求所需的最少代码。
+- 除非明确要求或为修复 bug 所必需，否则不要重构或"优化"正常工作的代码。
 
-**Two build configurations** (defined in `.cproject`):
-- **Debug** — `-O0`, max debug info (`-g3`)
-- **Release** — `-Os`, no debug info
+### 规则 3：精准修改
+- 只修改完成任务严格需要的代码行。
+- 不要触碰无关的代码、注释、格式或命名约定。
+- 严格匹配现有代码库风格，不要强加个人偏好。
 
-**Key compiler defines:** `CFG_SLEEP`, `CFG_BLE=1`, `CFG_APP`, `CFG_APP_BATT`, `CFG_PRF_BASS=1`, `RSL10_CID=101`, `_RTE_`, plus many BLE feature flags. See [.cproject](peripheral_server_sleep/.cproject) for the full list.
+### 规则 4：目标驱动执行
+- 在开始工作前定义清晰、可测试的成功标准。
+- 灵活调整步骤以达到目标，而非死板地遵循固定计划。
+- 标记任务完成前，对照既定标准进行验证。
 
-**SDK:** RSL10 CMSIS-Pack v3.7.606, expected at `${cmsis_pack_root}/ONSemiconductor/RSL10/3.7.606/`.
+## 扩展工程规则（5–16）
 
-**Pre-built libraries linked:**
-- `libblelib.a` — BLE core stack (Release variant, supports 2 Mbps)
-- `libkelib.a` — Kernel/scheduler
-- `libbass.a` — Battery Service Server profile
+### 规则 5：将判断与确定性逻辑分离
+- AI 只应执行分析、摘要、提取和建议生成。
+- 所有运行时逻辑（条件判断、重试、校验、路由、状态处理）必须在代码中实现，不能留给 AI 运行时判断。
+- 永远不要依赖主观的 AI 决策来控制程序流程。
 
-**Linker script:** [sections.ld](peripheral_server_sleep/RTE/Device/RSL10/sections.ld) — places sleep/wakeup routines (`.app_wakeup`, `.sys_powermodes_sleep`) in retention DRAM. DRAM configured as 3×8K-24 bytes (24 bytes reserved for wakeup info).
+### 规则 6：强制执行 Token 预算限制
+- 保持硬性 token 预算：每次编辑回合最多 4,000 token，每会话总计 30,000 token。
+- 接近限制时主动总结进度并建议重启会话。
+- 不要默默超出限制或在调试循环中无限循环。
 
-## Architecture
+### 规则 7：暴露冲突，不要折中
+- 当代码库中存在相互冲突的模式或标准时，选择其一并记录决策。
+- 不要合并或折中相互冲突的风格，这会产生不一致的代码。
+- 将已废弃的模式标记出来以便将来清理。
 
-The application is structured around a cooperative kernel scheduler (`Kernel_Schedule()`) called in the main loop. The app transitions through five states: `APPM_INIT` → `APPM_CREATE_DB` → `APPM_READY` → `APPM_ADVERTISING` → `APPM_CONNECTED`.
+### 规则 8：先读再写
+- 在添加新代码之前，始终先阅读相关的已有代码（调用方、依赖项、共享工具）。
+- 在修改已有逻辑之前理解原始设计意图。
+- 如果设计意图不明确，向开发者询问。
 
-### Source files (`code/`)
+### 规则 9：测试验证意图，而非仅验证行为
+- 测试必须验证核心设计目的，而不仅仅是表面行为。
+- 如果修改业务逻辑不会导致已有测试失败，则该测试视为不充分。
+- 对于嵌入式项目，在验证中应包含硬件约束、功耗预算和时序要求。
 
-| File | Role |
-|------|------|
-| [app.c](peripheral_server_sleep/app.c) | `main()` — initialization, then `Main_Loop()` which runs the kernel, reads battery level, sends notifications, and enters sleep mode |
-| [app_init.c](peripheral_server_sleep/code/app_init.c) | Orchestrates all subsystem initialization |
-| [app_process.c](peripheral_server_sleep/code/app_process.c) | Application-level message handlers |
-| [ble_std.c](peripheral_server_sleep/code/ble_std.c) | Standard BLE operations: GAP configuration, advertising, connection management |
-| [ble_bass.c](peripheral_server_sleep/code/ble_bass.c) | Battery Service Server — ADC-based battery level measurement (16-sample moving average), notification sending |
-| [ble_custom.c](peripheral_server_sleep/code/ble_custom.c) | Custom Service Server — read/write characteristics, periodic notifications every 10 sleep cycles |
-| [calibration.c](peripheral_server_sleep/code/calibration.c) | Voltage regulator trim values — supports three modes: factory calibration (`MANU_CALIB`), supplemental NVR3 (`SUPPLEMENTAL_CALIB`), or runtime calculation (`USER_CALIB`) |
-| [wakeup_asm.S](peripheral_server_sleep/code/wakeup_asm.S) | Assembly wakeup stub in retention RAM |
+### 规则 10：每一步重要步骤后设置检查点
+- 将大型任务拆分为具有明确检查点的离散步骤。
+- 在每个检查点总结进度、验证当前状态并列出剩余工作。
+- 如果出现困惑或反复失败，停下来重新规划。
 
-### Headers (`include/`)
+### 规则 11：代码库约定优于个人偏好
+- 项目的既有标准优先于 AI 或个人风格偏好。
+- 遵循既有的命名、缩进、注释和模块结构。
+- 可以建议改进，但不要单方面改写项目范围的约定。
 
-| File | Key constants defined |
-|------|----------------------|
-| [app.h](peripheral_server_sleep/include/app.h) | Clock dividers (varies by `RFCLK_FREQ`), `RTC_CLK_SRC`, calibration mode, sleep/standby timings, service function lists, GPIO assignments (`LED_DIO=6`, `RECOVERY_DIO=12`) |
+### 规则 12：显式失败，不要压制错误
+- 全面、透明地报告所有错误、警告、缺失依赖及编译失败。
+- 永远不要隐藏警告、跳过错误，或在仍有未解决问题时将任务标记为完成。
+- 明确沟通风险和根本原因，而非采用表面上的修补。
 
-### RTE (Run-Time Environment)
+### 规则 13：BS300 协议以手册为准
+- **任何**涉及 BS300 协议的代码生成、脚本编写、字段解析、公式实现，**第一步必须先调用** `Skill(skill="bs300")` 加载整合好的协议知识（公式速查、取整规则、文件地图），**然后**再根据 skill 指引读取 `docs/BS300 Protocol Handbook v3.md` 确认字段布局、编码公式和约束条件。
+- **禁止**跳过 skill 直接读单个文件。直接读文件会遗漏 skill 中整合的关键信息（如 4 种取整规则、关键公式速查），已导致过 ENR SNR Threshold 和 AGCO Threshold 两个公式 bug。
+- 不要凭记忆或推测实现协议字段。手册是唯一权威来源。
+- 手册中未覆盖的内容，明确标记为"待确认"而非猜测实现。
 
-- [RTE_Device.h](peripheral_server_sleep/RTE/Device/RSL10/RTE_Device.h) — Retention regulator trim values (0x1 for non-automotive, 0x3 for automotive or RC oscillator)
-- [rsl10_protocol.c](peripheral_server_sleep/RTE/Device/RSL10/rsl10_protocol.c) — Flash-based protocol handling
-- [startup_rsl10.S](peripheral_server_sleep/RTE/Device/RSL10/startup_rsl10.S) — Startup code, vector table
-- [system_rsl10.c](peripheral_server_sleep/RTE/Device/RSL10/system_rsl10.c) — System initialization, clock setup
+### 规则 14：C 代码遵循华为编程规范
+- **任何** C 语言代码的生成、编辑、审查，**必须遵循** `.claude/references/c-coding-standard.md` 中的规则。
+- 关键约束：函数 ≤ 50 行、嵌套 ≤ 4 层、宏用 `do-while(0)` 包裹、snake_case 命名、安全字符串函数、指针 NULL 检查。
+- 规范与现有代码库风格冲突时，优先遵循规范（规范是唯一权威来源）。
 
-### Key globals
+### 规则 15：设计文档决策必须逐条对照执行
+- `BS300_PARAM_SYNC_DESIGN.md` 等设计文档中**已明确写出的设计决策必须逐条遵守**，不是参考建议。
+- 实施前，把设计文档的关键决策点列出来对照。任何偏离必须先向开发者提出并得到确认，**不得自行修改**。
+- 写完代码后，对照决策清单自查一遍再编译。
 
-- `struct app_env_tag app_env` — battery level, sleep cycle counter, notification flags
-- `struct sleep_mode_env_tag sleep_mode_env` — sleep mode configuration (wakeup pins, memory power, retention)
-- `struct low_power_clk_param_tag low_power_clk_param` — low power clock measurement state
-- `struct ble_env_tag ble_env` — current BLE state
-- `struct bass_support_env_tag bass_support_env` — Battery Service state
-- `struct cs_env_tag cs_env` — Custom Service state (notification data, CCCD)
-
-## Recovery Mode
-
-DIO12 pulled to ground during reset pauses the 3-second startup delay, allowing re-flashing of a bricked device that enters sleep/reset too quickly. See [readme](peripheral_server_sleep/readme_peripheral_server_sleep.md) lines 200-210.
+### 规则 16：BS300 模拟/验证必须复用已验证实现，禁止自造轮子
+- `param.py:_step5_crossval_prog()` 是**唯一权威的 Param I2C 编码参考实现**，已通过 `param_commands_0/1.json` 逐 word 交叉验证。
+- **任何** BS300 I2C 指令生成（全量同步、增量切换、模拟验证），**必须直接复用** `_step5_crossval_prog()` 的参数提取、映射表、编码调用方式。**禁止**自己写新的 Flash→Struct 转换、**禁止**自己发明参数映射表、**禁止**自己猜测字段偏移量。
+- **C 代码的 encode 函数必须逐行翻译 codegen 公式**，不是"理解后重写"。codegen 用 float → C 用整数算术，但数学等价性必须验证。**禁止**凭记忆或设计文档写公式。
+- 输出必须与 `param_commands_0.json` **和** `param_commands_1.json` 两个 Program 做逐 byte/word 对比。两个都通过才算完成。
+- 出现 FAIL 必须追到根因（参数映射错误 / 公式 bug / 已知问题），**禁止**以"校准数据差异"为由跳过。
+- **禁止**为同一任务写多个脚本（本次写了 6 个）。一个脚本，复用 codegen，输出 + 对比一次完成。
