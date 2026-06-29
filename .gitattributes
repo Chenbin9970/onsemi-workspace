@@ -1,0 +1,26 @@
+# Auto-detect text files, handle line endings consistently
+* text=auto
+
+# C source and headers — always LF
+*.c text eol=lf
+*.h text eol=lf
+
+# Assembly — always LF
+*.S text eol=lf
+
+# Linker scripts
+*.ld text eol=lf
+
+# XML (Eclipse project files)
+*.xml text eol=lf
+
+# CMSIS config
+*.rteconfig text eol=lf
+*.prefs text eol=lf
+
+# Markdown
+*.md text
+
+# Binary files
+*.a binary
+*.pdom binary
