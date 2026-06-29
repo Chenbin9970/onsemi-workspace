@@ -27,7 +27,22 @@
       "Bash(ls \"C:/Users/admin/jieli_ai_test/.claude/skills/\" 2>/dev/null)",
       "Read(//c/Users/admin/jieli_ai_test/.claude/skills/**)",
       "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitignore .claude/skills/bs300)",
-      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add CLAUDE.md .claude/settings.json)"
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add CLAUDE.md .claude/settings.json)",
+      "Bash(arm-none-eabi-gcc --version)",
+      "Bash(find /c/ -maxdepth 4 -name \"arm-none-eabi-gcc.exe\" 2>/dev/null | head -5)",
+      "Read(//c//**)",
+      "Bash(find /c/ -maxdepth 5 -name \"libblelib.a\" 2>/dev/null | head -5)",
+      "Bash(make -C \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep\")",
+      "Bash(make -C \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep\" clean)",
+      "Bash(make -C \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep\" -p)",
+      "Bash(make -C \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep\" build/syslib/rsl10_sys_clocks.o -d)",
+      "Bash(mkdir -p \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/syslib\" && cp \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_clocks.c\" \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_power.c\" \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_power_modes.c\" \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_rffe.c\" \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_dma.c\" \"/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606/source/firmware/syslib/code/rsl10_sys_flash.c\" \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/syslib/\" && echo \"copied\")",
+      "Bash(\"/c/Program Files \\(x86\\)/onsemi/IDE_V4.3.1.132/eclipse/eclipsec.exe\" -nosplash -application org.eclipse.cdt.managedbuilder.core.headlessbuild -data \"C:/Users/admin/onsemi-workspace4.5\" -build \"peripheral_server_sleep/Debug\")",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add peripheral_server_sleep/Makefile peripheral_server_sleep/syslib/ peripheral_server_sleep/BUILD.md .gitignore)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add -A)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code"
     ]
   }
 }
