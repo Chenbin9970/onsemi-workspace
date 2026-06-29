@@ -140,7 +140,7 @@ extern "C"
  *                                      RTC_CLK_SRC_RC_OSC
  *                                      RTC_CLK_SRC_DIO[ 0 | 1 | 2 | 3 ]  */
 #ifndef RTC_CLK_SRC
-#define RTC_CLK_SRC                     RTC_CLK_SRC_XTAL32K
+#define RTC_CLK_SRC                     RTC_CLK_SRC_RC_OSC
 #endif
 
 /* Update options for the low power clock source. When disabled, the value

@@ -69,7 +69,7 @@ extern "C"
 #ifdef CFG_ADV_INTERVAL_MS
 #define ADV_INT_CONNECTABLE_MODE        (CFG_ADV_INTERVAL_MS / 0.625)
 #else    /* ifdef CFG_ADV_INTERVAL_MS */
-#define ADV_INT_CONNECTABLE_MODE        64
+#define ADV_INT_CONNECTABLE_MODE        16384
 #endif    /* ifdef CFG_ADV_INTERVAL_MS */
 
 /* Define the advertisement interval for non-connectable mode (units of 625us)
@@ -77,7 +77,7 @@ extern "C"
 #ifdef CFG_ADV_INTERVAL_MS
 #define ADV_INT_NON_CONNECTABLE_MODE    (CFG_ADV_INTERVAL_MS / 0.625)
 #else    /* ifdef CFG_ADV_INTERVAL_MS */
-#define ADV_INT_NON_CONNECTABLE_MODE    160
+#define ADV_INT_NON_CONNECTABLE_MODE    16384
 #endif    /* ifdef CFG_ADV_INTERVAL_MS */
 
 /* Set the advertisement interval */
@@ -92,7 +92,7 @@ extern "C"
 /* Bluetooth device address type */
 #define BD_TYPE_PUBLIC                  0
 #define BD_TYPE_PRIVATE                 1
-#define BD_ADDRESS_TYPE                 BD_TYPE_PRIVATE
+#define BD_ADDRESS_TYPE                 BD_TYPE_PUBLIC
 
 /* Length of Bluetooth address (in octets) */
 #define BDADDR_LENGTH                   6
@@ -107,10 +107,10 @@ extern "C"
 #define RADIO_CLOCK_ACCURACY            500
 
 /* Slave preferred connection parameters */
-#define PREF_SLV_MIN_CON_INTERVAL       8
-#define PREF_SLV_MAX_CON_INTERVAL       10
-#define PREF_SLV_LATENCY                0
-#define PREF_SLV_SUP_TIMEOUT            200
+#define PREF_SLV_MIN_CON_INTERVAL       400
+#define PREF_SLV_MAX_CON_INTERVAL       400
+#define PREF_SLV_LATENCY                19
+#define PREF_SLV_SUP_TIMEOUT            3200
 
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
