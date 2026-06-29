@@ -162,6 +162,127 @@ IDE 编译时：
 
 ---
 
+## ble_android_asha — CLI 编译 + 下载
+
+ble_android_asha（ASHA 助听器 BLE 工程）使用 Eclipse 自动生成的 Makefile，无需 IDE 即可编译下载。
+
+### 环境
+
+同 `peripheral_server_sleep`，额外需要 J-Link 用于下载：
+
+| 组件 | 路径 |
+|------|------|
+| ARM GCC 10.2.1 | `C:\Program Files (x86)\onsemi\IDE_V4.3.1.132\arm_tools\bin` |
+| RSL10 CMSIS-Pack 3.7.606 | `%LOCALAPPDATA%\Arm\Packs\ONSemiconductor\RSL10\3.7.606` |
+| J-Link 7.20b | `C:\Program Files (x86)\SEGGER\JLink\JLink.exe` |
+
+### 编译
+
+```bash
+export PATH="/c/Program Files (x86)/onsemi/IDE_V4.3.1.132/arm_tools/bin:$PATH"
+cd ble_android_asha/Debug
+make clean
+make all
+```
+
+编译宏 (`-D`) 与管理文件由 IDE 的 `.cproject` 生成，保存在 `Debug/subdir.mk` 中：
+
+```
+RSL10_CID=101  RTE_BLE_L2CC_ENABLE=1  EZAIRO_71XX_DIO_CFG=7100
+L2C_CONNECTION_MAX=1  ASHA_CAPABILITIES_SIDE=ASHA_CAPABILITIES_SIDE_LEFT
+SECURE_CONNECTION  APP_BONDLIST_SIZE=28  CFG_BOND_LIST_IN_NVR2=true
+CFG_BLE=1  CFG_ALLROLES=1  CFG_APP  CFG_APP_BATT  CFG_ATTS=1
+CFG_CON=8  CFG_EMB=1  CFG_HOST=1  CFG_RF_ATLAS=1  CFG_ALLPRF=1
+CFG_PRF=1  CFG_NB_PRF=8  CFG_CHNL_ASSESS=1  CFG_SEC_CON=1
+CFG_EXT_DB  CFG_PRF_BASS=1  CFG_PRF_DISS=1  _RTE_
+```
+
+链接的库（`Debug/objects.mk`）：
+
+| 库 | 用途 |
+|----|------|
+| `libblelib.a` | BLE 协议栈核心 |
+| `libkelib.a` | 内核调度器 |
+| `libbass.a` | 电池服务 Profile |
+| `libdiss.a` | 设备信息服务 Profile |
+
+产物：
+
+| 文件 | 说明 |
+|------|------|
+| `Debug/ble_android_asha.elf` | 可执行文件 |
+| `Debug/ble_android_asha.hex` | HEX 固件 |
+| `Debug/ble_android_asha.map` | 内存映射 |
+
+### 下载（J-Link 命令行）
+
+1. 创建 J-Link 命令脚本 `flash.jlink`：
+
+```
+erase
+loadfile "C:/Users/admin/onsemi-workspace4.5/ble_android_asha/Debug/ble_android_asha.hex"
+r
+g
+exit
+```
+
+2. 执行下载：
+
+```bash
+"/c/Program Files (x86)/SEGGER/JLink/JLink.exe" \
+  -device RSL10 \
+  -if SWD \
+  -speed 4000 \
+  -autoconnect 1 \
+  -CommanderScript flash.jlink
+```
+
+3. 删除脚本：`rm flash.jlink`
+
+预期输出（关键行）：
+
+```
+Device "RSL10" selected.
+Found Cortex-M3 r2p1, Little endian.
+Erasing done.
+Downloading file [...]... O.K.
+ResetTarget() end
+```
+
+### 一次搞定（编译 + 下载）
+
+```bash
+export PATH="/c/Program Files (x86)/onsemi/IDE_V4.3.1.132/arm_tools/bin:$PATH"
+cd ble_android_asha/Debug && make clean && make all && \
+cat > flash.jlink <<'EOF'
+erase
+loadfile "C:/Users/admin/onsemi-workspace4.5/ble_android_asha/Debug/ble_android_asha.hex"
+r
+g
+exit
+EOF
+"/c/Program Files (x86)/SEGGER/JLink/JLink.exe" \
+  -device RSL10 -if SWD -speed 4000 -autoconnect 1 \
+  -CommanderScript flash.jlink && \
+rm flash.jlink
+```
+
+### Debug UART 打印
+
+ble_android_asha 自带 UART printf（`app_trace.h`），开箱即用：
+
+| 配置 | 值 |
+|------|-----|
+| UART TX | DIO5 |
+| UART RX | DIO4 |
+| 波特率 | 115200 |
+| DMA 通道 | 7 |
+| 宏 | `PRINTF(...)`，已启用 (`RSL10_DEBUG=DBG_UART`) |
+
+启动时会打印版本号和时间戳。连接串口终端（115200 8N1）即可看到输出。
+
+---
+
 ## 已知问题
 
 1. **IDE 和 Makefile 文件来源不同** — `syslib/` 和 RM 源文件在 `.cproject` 中被排除，IDE 使用 RTE 版本。修改这些文件时需注意版本一致性。

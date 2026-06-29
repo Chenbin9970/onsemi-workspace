@@ -106,7 +106,7 @@ APPM_INIT           ← BLE_Initialize() 后
 
 ## 远程麦工作流
 
-### 启动（手机 App 通过 BLE 写入 ON_OFF=1）
+### 启动（手机 App BLE 写入 ON_OFF=1 / 短按按键）
 
 ```
 GATTC_WriteReqInd (CS_IDX_RM_ONOFF_VAL)
@@ -127,6 +127,16 @@ GATTC_WriteReqInd (CS_IDX_RM_ONOFF_VAL)
   └─ app_env.audio_streaming = 1
         └─ Main_Loop: 跳过 Sleep, 用 WFE 代替 WFI
 ```
+
+**按键触发路径**（`DIO0_IRQHandler`, [audio_func.c:575](code/audio_func.c#L575)）：
+```
+DIO2 下降沿 → DIO0 中断
+  ├─ app_env.RM_on_off = !app_env.RM_on_off
+  └─ 若 ON: 同 BLE 启动路径（RM_Configure → RF_SwitchToCPMode → RM_Enable）
+     若 OFF: 同 BLE 停止路径（RM_Disable → RF_SwitchToBLEMode）
+```
+
+**同步机制：** 按键和 BLE 共用 `app_env.RM_on_off` 状态变量，手机 App 读取 `ON_OFF` 特征值可看到按键切换后的正确状态。
 
 ### 音频接收数据通路
 
@@ -188,7 +198,7 @@ GATTC_WriteReqInd (CS_IDX_RM_ONOFF_VAL)
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### 停止（手机 App 写入 ON_OFF=0）
+### 停止（手机 App 写入 ON_OFF=0 / 短按按键）
 
 ```
 GATTC_WriteReqInd (CS_IDX_RM_ONOFF_VAL)
@@ -228,7 +238,7 @@ Custom Service (UUID: 0x24,0xdc...0x01)
 | TIMER2 | TIMER2_IRQn | 4 | 包调节器 | 每 3 字节触发一次 LPDSP32 解码 |
 | DMIC_OUT_OD_IN | DMIC_OUT_OD_IN_IRQn | — | OD | Sigma-delta 输出数据请求 |
 | APP_TEST_TIMER | — | — | Kernel | 200ms 周期: LED + 电池测量 |
-| DIO0 | DIO0_IRQn | — | GPIO | 按键切换左/右声道 |
+| DIO0 | DIO0_IRQn | 0 | GPIO | 短按按键切换远程麦 ON/OFF |
 
 ---
 
@@ -281,6 +291,31 @@ Custom Service (UUID: 0x24,0xdc...0x01)
 | APP_RM_ENABLE | 定义 | `app.h:29` |
 | OD 输出引脚 | DIO8 (P) / DIO9 (N) | `app.h:126-127` |
 | 音频时钟参考 | DIO7 | `app.h:123` |
+| 按键引脚 | DIO2 | `app.h:130` |
+| DIO0 中断源 | GPIO 2 | `RTE_Device.h:2341` |
+| DIO0 触发方式 | 下降沿 | `RTE_Device.h:2349` |
+| DIO0 去抖 | 硬件已启用 | `RTE_Device.h:2357` |
+| DIO0 优先级 | preempt 0 | `RTE_Device.h:2363` |
+
+---
+## Debug UART / printf 状态
+
+**当前状态：不可用。** 代码已写但被 `#if (DEBUG_UART_LOG)` 禁用。
+
+| 问题 | 详情 |
+|------|------|
+| `DEBUG_UART_LOG` 未定义 | `.cproject` 和 `Makefile` 均无此宏 |
+| UART 引脚宏缺失 | `UART_TX`, `UART_RX` 未定义 |
+| UART 参数宏缺失 | `UART_BAUD_RATE`, `UART_TX_NUM`, `UART_TX_CFG`, `UART_DMA_MODE_ENABLE` 未定义 |
+| 无 printf retarget | 无 `_write`/`fputc` 重定向 |
+
+**启用需要：**
+1. 在 `.cproject` C Compiler defined symbols 添加 `DEBUG_UART_LOG`
+2. 添加 UART 配置宏：`UART_TX=5, UART_RX=4, UART_BAUD_RATE=115200, UART_TX_NUM=7, UART_TX_CFG=...`
+3. 在 `App_Initialize()` 中调用 `UartLogInit()`
+4. 添加 `_write()` retarget 或用 `sprintf + UartLogTx` 替代 printf
+
+SDK 自带 printf 库位于 `%PACK_ROOT%/source/firmware/printf/printf.c`（UART_TX=5/DIO5, UART_RX=4/DIO4, BAUD=115200）。
 
 ---
 
