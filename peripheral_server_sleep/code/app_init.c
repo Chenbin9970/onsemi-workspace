@@ -199,6 +199,76 @@ void App_Initialize(void)
     /* BLE not in sleep mode and ready for normal operations */
     BLE_Is_Awake_Flag_Set();
 
+#ifdef APP_RM_ENABLE
+    /* ---- Audio Sink Clock Counters (for ASRC) ---- */
+    Sys_Audiosink_ResetCounters();
+    Sys_Audiosink_InputClock(0, ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
+    Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
+    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
+    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
+
+    NVIC_ClearPendingIRQ(AUDIOSINK_PHASE_IRQn);
+    NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
+
+    /* ---- LPDSP32 G722 Decoder Loading ---- */
+    {
+        uint32_t dsp_wait = 0;
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Prog_40bit_PM[0], DSP_PRAM0_BASE,
+                       MEM_PM_SIZE, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[0], DSP_DRAM01_BASE,
+                       MEM_DMA_SIZE, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[MEM_DMA_SIZE + 3],
+                       DSP_DRAM4_BASE, 8000, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[((MEM_DMA_SIZE + 3) + 8001)],
+                       (DSP_DRAM4_BASE + 0x1F41), (MEM_DMB_SIZE - 8000),
+                       COPY_TO_MEM_BITBAND);
+
+        while (FLASH_COPY_CTRL->BUSY_ALIAS != COPY_IDLE_BITBAND)
+        {
+            Sys_Watchdog_Refresh();
+        }
+
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+        SYSCTRL->DSS_CTRL = DSS_RESET;
+
+        while (dsp_wait < 7000)
+        {
+            dsp_wait++;
+            Sys_Watchdog_Refresh();
+        }
+
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
+    }
+
+    /* Setup G722 decoder parameters via shared memory */
+    {
+        uint8_t *message = MEM_MESSAGE;
+        *message       = SUBFRAME_LENGTH;
+        *(message + 1) = SUBFRAME_LENGTH;
+        *(message + 2) = SUBFRAME_LENGTH;
+        *(message + 3) = SUBFRAME_LENGTH;
+        *(message + 4) = CODEC_MODE;
+    }
+
+    /* ---- ASRC DMA Channel (DSP decoded data -> ASRC input) ---- */
+    Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
+                          (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
+
+    /* ---- NVIC Priority / Enable for Audio ISRs ---- */
+    NVIC_SetPriority(DSP1_IRQn, 4);
+    NVIC_EnableIRQ(DSP1_IRQn);
+
+    NVIC_SetPriority(TIMER_IRQn(TIMER_REGUL), 4);
+
+    NVIC_SetPriority(AUDIOSINK_PERIOD_IRQn, 4);
+    NVIC_SetPriority(AUDIOSINK_PHASE_IRQn, 4);
+
+    /* ---- OD (Sigma-Delta Output Driver) Initialization ---- */
+    OD_Init();
+#endif /* APP_RM_ENABLE */
+
     /* Configure ADC channel 0 to measure VBAT/2 */
     Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
                        ADC_PRESCALE_200);
@@ -207,6 +277,11 @@ void App_Initialize(void)
 
     /* Initialize environment */
     App_Env_Initialize();
+
+#ifdef APP_RM_ENABLE
+    APP_RM_Init(ear_side);
+    RF_SwitchToBLEMode();
+#endif
 
     if (RTC_CLK_SRC != RTC_CLK_SRC_XTAL32K)
     {
@@ -243,6 +318,10 @@ void App_Env_Initialize(void)
 
     /* Create the application task handler */
     ke_task_create(TASK_APP, &TASK_DESC_APP);
+
+#ifdef APP_RM_ENABLE
+    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+#endif
 
     /* Initialize the custom service environment */
     CustomService_Env_Initialize();

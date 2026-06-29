@@ -14,13 +14,16 @@ BUILD_DIR = build
 # App source files
 C_SRCS = app.c code/app_init.c code/app_process.c code/ble_bass.c \
          code/ble_custom.c code/ble_std.c code/calibration.c \
+         code/rm_event.c code/rm_pkt_hdl.c code/config_data.c \
+         code/dsp_pm_dm.c code/audio_func.c code/rm_app.c code/queue.c \
          RTE/Device/RSL10/system_rsl10.c \
          RTE/Device/RSL10/rsl10_protocol.c
 
-# Syslib (copied from CMSIS-Pack source/firmware/syslib/code)
+# Syslib (local copies for Makefile build; excluded from IDE via .cproject)
 SYSLIB_SRCS = syslib/rsl10_sys_clocks.c syslib/rsl10_sys_power.c \
               syslib/rsl10_sys_power_modes.c syslib/rsl10_sys_rffe.c \
-              syslib/rsl10_sys_dma.c syslib/rsl10_sys_flash.c
+              syslib/rsl10_sys_dma.c syslib/rsl10_sys_flash.c \
+              syslib/rsl10_sys_timers.c
 
 # Assembly
 ASM_SRCS = code/wakeup_asm.S RTE/Device/RSL10/startup_rsl10.S
@@ -73,7 +76,7 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/RTE/Device/RSL10
 	mkdir -p $(BUILD_DIR)/syslib
 
-# C compilation
+# C compilation (project sources)
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	@echo "[CC] $<"
 	@$(CC) -c $(CFLAGS) -o $@ $<

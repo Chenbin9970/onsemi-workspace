@@ -26,6 +26,11 @@
 	</natures>
 	<linkedResources>
 		<link>
+			<name>RTE/Device/RSL10/config_data.c</name>
+			<type>1</type>
+			<locationURI>$%7Bcmsis_pack_root%7D/ONSemiconductor/RSL10/3.7.606/source/firmware/remote_micLib/config_data.c</locationURI>
+		</link>
+		<link>
 			<name>RTE/Device/RSL10/libbass.a</name>
 			<type>1</type>
 			<locationURI>$%7Bcmsis_pack_root%7D/ONSemiconductor/RSL10/3.7.606/lib/ble_profiles/Release/libbass.a</locationURI>
@@ -39,6 +44,16 @@
 			<name>RTE/Device/RSL10/libkelib.a</name>
 			<type>1</type>
 			<locationURI>$%7Bcmsis_pack_root%7D/ONSemiconductor/RSL10/3.7.606/lib/ble_core/Release/libkelib.a</locationURI>
+		</link>
+		<link>
+			<name>RTE/Device/RSL10/rm_event.c</name>
+			<type>1</type>
+			<locationURI>$%7Bcmsis_pack_root%7D/ONSemiconductor/RSL10/3.7.606/source/firmware/remote_micLib/rm_event.c</locationURI>
+		</link>
+		<link>
+			<name>RTE/Device/RSL10/rm_pkt_hdl.c</name>
+			<type>1</type>
+			<locationURI>$%7Bcmsis_pack_root%7D/ONSemiconductor/RSL10/3.7.606/source/firmware/remote_micLib/rm_pkt_hdl.c</locationURI>
 		</link>
 		<link>
 			<name>RTE/Device/RSL10/rsl10_calibrate.c</name>

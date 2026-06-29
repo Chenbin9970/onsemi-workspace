@@ -86,6 +86,29 @@ void CustomService_ServiceAdd(void)
                                                             CS_RX_VALUE_MAX_LENGTH),
         [CS_IDX_RX_VALUE_CCC]      = ATT_DECL_CHAR_CCC(),
         [CS_IDX_RX_VALUE_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+#ifdef APP_RM_ENABLE
+        /* Remote Mic ON_OFF Characteristic */
+        [CS_IDX_RM_ONOFF_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RM_ONOFF_VAL]      = ATT_DECL_CHAR_UUID_128(CS_RM_ONOFF_UUID,
+                                                            PERM(RD, ENABLE) | PERM(WRITE_REQ, ENABLE),
+                                                            CS_RM_ONOFF_VAL_MAX_LENGTH),
+        [CS_IDX_RM_ONOFF_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+        /* Remote Mic VOLUME Characteristic */
+        [CS_IDX_RM_VOLUME_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RM_VOLUME_VAL]      = ATT_DECL_CHAR_UUID_128(CS_RM_VOLUME_UUID,
+                                                             PERM(RD, ENABLE) | PERM(WRITE_REQ, ENABLE),
+                                                             CS_RM_VOLUME_VAL_MAX_LENGTH),
+        [CS_IDX_RM_VOLUME_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+        /* Remote Mic CHANNEL_SIDE Characteristic */
+        [CS_IDX_RM_CHNLSIDE_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RM_CHNLSIDE_VAL]      = ATT_DECL_CHAR_UUID_128(CS_RM_CHNLSIDE_UUID,
+                                                               PERM(RD, ENABLE) | PERM(WRITE_REQ, ENABLE),
+                                                               CS_RM_CHNLSIDE_VAL_MAX_LENGTH),
+        [CS_IDX_RM_CHNLSIDE_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+#endif
     };
 
     /* Fill the add custom service message */
@@ -232,6 +255,50 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
             }
             break;
 
+#ifdef APP_RM_ENABLE
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                length = CS_RM_ONOFF_VAL_MAX_LENGTH;
+                valptr = (uint8_t *)&app_env.RM_on_off;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_USR_DSCP:
+            {
+                length = strlen(CS_RM_ONOFF_NAME);
+                valptr = (uint8_t *)CS_RM_ONOFF_NAME;
+            }
+            break;
+
+            case CS_IDX_RM_VOLUME_VAL:
+            {
+                length = CS_RM_VOLUME_VAL_MAX_LENGTH;
+                valptr = (uint8_t *)&app_env.volume;
+            }
+            break;
+
+            case CS_IDX_RM_VOLUME_USR_DSCP:
+            {
+                length = strlen(CS_RM_VOLUME_NAME);
+                valptr = (uint8_t *)CS_RM_VOLUME_NAME;
+            }
+            break;
+
+            case CS_IDX_RM_CHNLSIDE_VAL:
+            {
+                length = CS_RM_CHNLSIDE_VAL_MAX_LENGTH;
+                valptr = (uint8_t *)&app_env.rm_param.audioChnl;
+            }
+            break;
+
+            case CS_IDX_RM_CHNLSIDE_USR_DSCP:
+            {
+                length = strlen(CS_RM_CHNLSIDE_NAME);
+                valptr = (uint8_t *)CS_RM_CHNLSIDE_NAME;
+            }
+            break;
+#endif
+
             default:
             {
                 status = ATT_ERR_READ_NOT_PERMITTED;
@@ -336,6 +403,26 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             }
             break;
 
+#ifdef APP_RM_ENABLE
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                valptr = (uint8_t *)&app_env.RM_on_off;
+            }
+            break;
+
+            case CS_IDX_RM_VOLUME_VAL:
+            {
+                valptr = (uint8_t *)&app_env.volume;
+            }
+            break;
+
+            case CS_IDX_RM_CHNLSIDE_VAL:
+            {
+                valptr = (uint8_t *)&app_env.rm_param.audioChnl;
+            }
+            break;
+#endif
+
             default:
             {
                 status = ATT_ERR_WRITE_NOT_PERMITTED;
@@ -346,7 +433,33 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
 
     if (valptr != NULL)
     {
+#ifdef APP_RM_ENABLE
+        uint8_t old_onoff = app_env.RM_on_off;
+#endif
         memcpy(valptr, param->value, param->length);
+
+#ifdef APP_RM_ENABLE
+        /* ON_OFF toggle: start/stop remote mic streaming */
+        if (attnum == CS_IDX_RM_ONOFF_VAL && old_onoff != app_env.RM_on_off)
+        {
+            if (app_env.RM_on_off)
+            {
+                struct rm_callback cb = { RM_Callback_TRX, RM_Callback_StatusUpdate };
+                RM_Configure(&app_env.rm_param, cb);
+                RF_SwitchToCPMode();
+                RM_Enable(1000);
+                app_env.audio_streaming = 1;
+            }
+            else
+            {
+                BBIF_COEX_CTRL->RX_ALIAS = 0;
+                BBIF_COEX_CTRL->TX_ALIAS = 0;
+                RM_Disable();
+                RF_SwitchToBLEMode();
+                app_env.audio_streaming = 0;
+            }
+        }
+#endif
     }
 
     cfm->handle = param->handle;

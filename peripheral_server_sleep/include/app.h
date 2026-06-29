@@ -27,6 +27,8 @@
 #ifndef APP_H
 #define APP_H
 
+#define APP_RM_ENABLE
+
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -46,6 +48,11 @@ extern "C"
 #include <rsl10_map_nvr.h>
 #include <stdbool.h>
 #include <rsl10_protocol.h>
+#include <rm_pkt.h>
+
+#ifdef APP_RM_ENABLE
+#include "dsp_pm_dm.h"
+#endif
 
 #include "ble_std.h"
 #include "ble_custom.h"
@@ -78,6 +85,103 @@ extern "C"
 
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
+
+/* ----------------------------------------------------------------------------
+ * Remote Microphone / Audio / OD Defines
+ * ------------------------------------------------------------------------- */
+#ifdef APP_RM_ENABLE
+
+/* Remote mic hopping list (Nordic channel/2 - 1) */
+#define RM_HOPLIST                      { 37, 9, 16, 20, 29, 32, 17 }
+
+#define RM_LEFT                         0
+#define RM_RIGHT                        1
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
+#define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
+
+/* Audio output interface: OD (sigma-delta output driver) */
+#define NO_TX_OUTPUT                    2
+#define SPI_TX_CODED_OUTPUT             3
+#define SPI_TX_RAW_OUTPUT               4
+#define OUTPUT_INTRF                    SPI_TX_RAW_OUTPUT
+#define SIMUL                           0
+
+/* DMA/Timer/IRQ name concatenation macros */
+#define THREE_BLOCK_APPN(x, y, z)       x##y##z
+#define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)
+#define TIMER_IRQn(x)                   THREE_BLOCK_APPN(TIMER, x, _IRQn)
+#define DMA_IRQ_FUNC(x)                 THREE_BLOCK_APPN(DMA, x, _IRQHandler)
+#define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)
+
+/* DMA channel assignments */
+#define MEMCPY_DMA_NUM                  0
+#define ASRC_IN_IDX                     3
+#define ASRC_OUT_IDX                    4
+#define OD_DMA_NUM                      4    /* Shared: ASRC out or OD out */
+
+/* Timer for packet regulator */
+#define TIMER_REGUL                     2
+
+/* DIO pin assignments for audio */
+#define SAMPL_CLK                       7
+#define OD_P_DIO                        8
+#define OD_N_DIO                        9
+#define DIO_SYNC_PULSE                  8
+#define BUTTON_DIO                      5
+#define DEBUG_DIO_FIRST                 15
+#define DEBUG_DIO_SECOND                11
+
+/* LPDSP32 CODEC shared memory addresses */
+#define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
+#define MEM_CM2DSP_ADDR1_ENC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 2)
+#define MEM_DSP2CM_ADDR0_ENC            (uint8_t *)(DSP_DRAM4_BASE)
+#define MEM_DSP2CM_ADDR1_ENC            (uint8_t *)(DSP_DRAM4_BASE + 80)
+#define MEM_CM2DSP_ADDR0_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4)
+#define MEM_CM2DSP_ADDR1_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4 + 80)
+#define MEM_DSP2CM_ADDR0_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 4)
+#define MEM_DSP2CM_ADDR1_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 6)
+#define MEM_MESSAGE                     (uint8_t *)(DSP_DRAM4_BASE + 12 * 160)
+#define CODEC_MODE                      3
+
+/* G722 codec frame/subframe sizes */
+#define SUBFRAME_LENGTH                 8
+#define FRAME_LENGTH                    160
+#if (CODEC_MODE == 3)
+#define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
+#define ENCODED_SUBFRAME_LENGTH         (3 * (SUBFRAME_LENGTH / 8))
+#endif
+
+/* ASRC thresholds */
+#define ASRC_CFG_THR                    16
+#define SHIFT_BIT                       20
+#define STABLE_THR                      400
+#define PTR_RST_THR                     10
+
+/* DMA config macros (from reference) */
+#define DMA_SAVE_STATE_MEM_CONFIG       (DMA_LITTLE_ENDIAN | DMA_DISABLE | \
+                                         DMA_DISABLE_INT_DISABLE | DMA_ERROR_INT_DISABLE | \
+                                         DMA_COMPLETE_INT_ENABLE | DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE | DMA_DEST_WORD_SIZE_32 | \
+                                         DMA_SRC_WORD_SIZE_32 | DMA_PRIORITY_0 | \
+                                         DMA_SRC_PBUS | DMA_TRANSFER_P_TO_M | \
+                                         DMA_DEST_ADDR_INC | DMA_SRC_ADDR_INC | DMA_ADDR_LIN)
+
+#define DMA_RESTORE_STATE_MEM_CONFIG    (DMA_LITTLE_ENDIAN | DMA_DISABLE | \
+                                         DMA_DISABLE_INT_DISABLE | DMA_ERROR_INT_DISABLE | \
+                                         DMA_COMPLETE_INT_ENABLE | DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE | DMA_DEST_WORD_SIZE_32 | \
+                                         DMA_SRC_WORD_SIZE_32 | DMA_PRIORITY_0 | \
+                                         DMA_DEST_PBUS | DMA_TRANSFER_M_TO_P | \
+                                         DMA_DEST_ADDR_INC | DMA_SRC_ADDR_INC | DMA_ADDR_LIN)
+
+/* DMA for ASRC input (RX side — decode path) */
+#define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC | DMA_TRANSFER_M_TO_P | \
+                                         DMA_LITTLE_ENDIAN | DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE | DMA_DEST_WORD_SIZE_16 | \
+                                         DMA_SRC_WORD_SIZE_32 | DMA_SRC_ADDR_INC | \
+                                         DMA_DEST_ADDR_STATIC | DMA_ADDR_LIN | DMA_DISABLE)
+
+#endif /* APP_RM_ENABLE */
 
 /* Configure RF 48 MHz XTAL divided clock frequency in Hz
  * Options: 8, 12, 16, 24, 48 */
@@ -234,7 +338,12 @@ typedef void (*appm_add_svc_func_t)(void);
                                                    (ke_msg_func_t)handler }
 
 /* List of message handlers that are used by the different profiles/services */
+#ifdef APP_RM_ENABLE
 #define APP_MESSAGE_HANDLER_LIST \
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer)
+#else
+#define APP_MESSAGE_HANDLER_LIST
+#endif
 
 
 /* List of functions used to create the database */
@@ -267,6 +376,16 @@ struct app_env_tag
     uint8_t send_batt_ntf;
 
     uint32_t sleep_cycles;
+
+#ifdef APP_RM_ENABLE
+    uint8_t RM_on_off;
+    uint8_t volume;
+    struct rm_param_tag rm_param;
+    uint8_t rm_link_status;
+    uint16_t rm_lostLink_counter;
+    uint16_t rm_unsuccessLink_counter;
+    uint8_t audio_streaming;
+#endif
 };
 
 struct low_power_clk_param_tag
@@ -321,6 +440,45 @@ extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const src_id);
 
 extern void AUDIOSINK_PERIOD_IRQHandler(void);
+
+#ifdef APP_RM_ENABLE
+/* Audio processing globals */
+extern uint8_t ear_side;
+extern int64_t audio_sink_cnt;
+extern bool asrc_stable;
+extern uint32_t cntr_stability;
+extern bool flag_ascc_phase;
+extern bool frame_decoded;
+extern uint8_t *Dsp2CmBuff0dec;
+extern uint8_t payload_left_1[120];
+extern uint8_t payload_right_1[120];
+extern uint8_t audio_left[120];
+extern uint8_t audio_right[120];
+
+/* Remote mic functions */
+extern void APP_RM_Init(uint8_t side);
+extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
+extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
+extern void RM_StatusHandler(void);
+
+/* Audio processing functions */
+extern void Start_Dec_Lpdsp32(uint8_t *src_addr);
+extern void Rendering_func(uint8_t *src_addr);
+extern void Asrc_reconfig(void);
+extern void Asrc_in_dma_isr(void);
+extern void Ascc_phase_isr(void);
+extern void Ascc_period_isr(void);
+extern void DspDec_isr(void);
+extern void Packet_regulator_timer_isr(void);
+extern void Simulation_timer_isr(void);
+
+/* OD output init */
+extern void OD_Init(void);
+
+/* App timer */
+extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
+                     ke_task_id_t const dest_id, ke_task_id_t const src_id);
+#endif /* APP_RM_ENABLE */
 
 /* ----------------------------------------------------------------------------
  * Close the 'extern "C"' block

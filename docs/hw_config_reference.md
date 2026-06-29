@@ -160,3 +160,34 @@
 | 参数更新请求 | **拒绝** | `GAPC_ParamUpdateReqInd` 中 `cfm->accept = 0`，阻止主机修改连接参数 |
 | 设备地址 | NVR3 public addr / Private fallback | 先尝试读取 NVR3 |
 | 设备名称 | 空字符串 | 省电 |
+
+### 8.1 远程麦控制特征值 (`ble_custom.h` / `ble_custom.c`)
+
+| 特征值 | UUID (128-bit) | 权限 | 功能 |
+|--------|---------------|------|------|
+| **ON_OFF** | `0x24,0xdc...0x04` | RD/WR | 写 1 启动远程麦流，写 0 停止 |
+| **VOLUME** | `0x24,0xdc...0x05` | RD/WR | 音量控制 (1 字节) |
+| **CHANNEL_SIDE** | `0x24,0xdc...0x06` | RD/WR | 左/右声道 (0=左, 1=右) |
+
+通过 BLE GATT 写入 `ON_OFF = 1` 触发 `RM_Configure()` → `RF_SwitchToCPMode()` → `RM_Enable()`，
+Radio 从 BLE 模式切换到私有 2.4GHz 远程麦协议。写入 0 切回 BLE 模式。
+
+---
+
+## 九、远程麦 & 音频 (`app.h` / `audio_func.c` / `rm_app.c`)
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 协议 | 私有 2.4GHz (Remote Mic) | 与 BLE 共存 (BBIF_COEX) |
+| 编解码 | G.722 64kbps | LPDSP32 解码 |
+| 音频输出 | OD (Sigma-Delta) | DIO8 (OD_P) / DIO9 (OD_N)，需 680μH 电感 |
+| 输出采样率 | ~31.25kHz | AUDIOSLOWCLK 1MHz ÷ 64 抽取 |
+| 音频时钟参考 | DIO7 (SAMPL_CLK) | 供 ASRC 补偿时钟漂移 |
+| RTE 组件 | `Device::Libraries::Remote_Mic` | `.rteconfig` 中配置 |
+
+### 9.1 `APP_RM_ENABLE` 宏
+
+定义位置：`include/app.h:29`（硬编码，不依赖构建系统传参）
+
+所有远程麦/音频相关代码由 `#ifdef APP_RM_ENABLE` 包裹。注释掉此宏即可禁用远程麦功能，
+恢复到纯 BLE Peripheral Server 模式。

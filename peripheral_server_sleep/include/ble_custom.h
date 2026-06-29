@@ -47,6 +47,15 @@ extern "C"
 #define CS_CHARACTERISTIC_RX_UUID       { 0x24, 0xdc, 0x0e, 0x6e, 0x03, 0x40, \
                                           0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
                                           0xb5, 0xf3, 0x93, 0xe0 }
+#define CS_RM_ONOFF_UUID                { 0x24, 0xdc, 0x0e, 0x6e, 0x04, 0x40, \
+                                          0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
+                                          0xb5, 0xf3, 0x93, 0xe0 }
+#define CS_RM_VOLUME_UUID               { 0x24, 0xdc, 0x0e, 0x6e, 0x05, 0x40, \
+                                          0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
+                                          0xb5, 0xf3, 0x93, 0xe0 }
+#define CS_RM_CHNLSIDE_UUID             { 0x24, 0xdc, 0x0e, 0x6e, 0x06, 0x40, \
+                                          0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
+                                          0xb5, 0xf3, 0x93, 0xe0 }
 
 #define ATT_DECL_CHAR() \
     { ATT_DECL_CHARACTERISTIC_128, PERM(RD, ENABLE), 0, 0 }
@@ -77,16 +86,39 @@ enum cs_idx_att
     CS_IDX_RX_VALUE_CCC,
     CS_IDX_RX_VALUE_USR_DSCP,
 
+#ifdef APP_RM_ENABLE
+    /* Remote Mic: ON_OFF (1 byte, RD|WR) */
+    CS_IDX_RM_ONOFF_CHAR,
+    CS_IDX_RM_ONOFF_VAL,
+    CS_IDX_RM_ONOFF_USR_DSCP,
+
+    /* Remote Mic: VOLUME (1 byte, RD|WR) */
+    CS_IDX_RM_VOLUME_CHAR,
+    CS_IDX_RM_VOLUME_VAL,
+    CS_IDX_RM_VOLUME_USR_DSCP,
+
+    /* Remote Mic: CHANNEL_SIDE (1 byte, RD|WR) */
+    CS_IDX_RM_CHNLSIDE_CHAR,
+    CS_IDX_RM_CHNLSIDE_VAL,
+    CS_IDX_RM_CHNLSIDE_USR_DSCP,
+#endif
+
     /* Max number of characteristics */
     CS_IDX_NB,
 };
 
 #define CS_TX_VALUE_MAX_LENGTH          20
 #define CS_RX_VALUE_MAX_LENGTH          20
+#define CS_RM_ONOFF_VAL_MAX_LENGTH      1
+#define CS_RM_VOLUME_VAL_MAX_LENGTH     1
+#define CS_RM_CHNLSIDE_VAL_MAX_LENGTH   1
 #define CS_USER_DESCRIPTION_MAX_LENGTH  16
 
 #define CS_TX_CHARACTERISTIC_NAME       "TX_VALUE"
 #define CS_RX_CHARACTERISTIC_NAME       "RX_VALUE"
+#define CS_RM_ONOFF_NAME                "ON_OFF"
+#define CS_RM_VOLUME_NAME               "VOLUME"
+#define CS_RM_CHNLSIDE_NAME             "CHANNEL SIDE"
 
 /* List of message handlers that are used by the custom service application manager */
 #define CS_MESSAGE_HANDLER_LIST                                     \

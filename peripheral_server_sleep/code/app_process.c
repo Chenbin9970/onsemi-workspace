@@ -484,6 +484,23 @@ uint8_t Emulate_CS_Val_Notif_Change(uint8_t val_notif)
  *                                compare with KE_MSG_CONSUMED
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
+#ifdef APP_RM_ENABLE
+int APP_Timer(ke_msg_id_t const msg_id, void const *param,
+              ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+    if (ble_env.state == APPM_CONNECTED)
+        Sys_GPIO_Set_High(LED_DIO);
+    else if (ble_env.state == APPM_ADVERTISING)
+        Sys_GPIO_Toggle(LED_DIO);
+    else
+        Sys_GPIO_Set_Low(LED_DIO);
+
+    return (KE_MSG_CONSUMED);
+}
+#endif
+
 int Msg_Handler(ke_msg_id_t const msg_id, void *param,
                 ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
@@ -504,6 +521,14 @@ int Msg_Handler(ke_msg_id_t const msg_id, void *param,
  * ------------------------------------------------------------------------- */
 void AUDIOSINK_PERIOD_IRQHandler(void)
 {
+#ifdef APP_RM_ENABLE
+    if (app_env.audio_streaming)
+    {
+        Ascc_period_isr();
+        return;
+    }
+#endif
+
     /* Parameters for RC oscillator period measurements */
     static uint32_t num_measurement = LOW_POWER_CLK_INITIAL_MEASUREMENT;
     static uint32_t audiosink_period = 0;

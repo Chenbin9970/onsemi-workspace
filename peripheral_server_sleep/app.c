@@ -64,6 +64,10 @@ void Main_Loop(void)
     {
         Kernel_Schedule();
 
+#ifdef APP_RM_ENABLE
+        RM_StatusHandler();
+#endif
+
         if (ble_env.state == APPM_CONNECTED)
         {
             if (app_env.send_batt_ntf && bass_support_env.enable)
@@ -95,7 +99,12 @@ void Main_Loop(void)
         Sys_Watchdog_Refresh();
 
         /* If not in the middle of a period measurement for RSOSC, allow the
-         * application to go to sleep power mode. */
+         * application to go to sleep power mode.
+         * Skip sleep when audio streaming is active. */
+#ifdef APP_RM_ENABLE
+        if (!app_env.audio_streaming)
+        {
+#endif
         if (low_power_clk_param.low_power_enable ||
             (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K))
         {
@@ -105,8 +114,16 @@ void Main_Loop(void)
             BLE_Power_Mode_Enter(&sleep_mode_env, POWER_MODE_SLEEP);
             GLOBAL_INT_RESTORE();
         }
+#ifdef APP_RM_ENABLE
+        }
+#endif
 
         /* Wait for an interrupt before executing the scheduler again */
+#ifdef APP_RM_ENABLE
+        if (app_env.audio_streaming)
+            SYS_WAIT_FOR_EVENT;
+        else
+#endif
         SYS_WAIT_FOR_INTERRUPT;
     }
 }
