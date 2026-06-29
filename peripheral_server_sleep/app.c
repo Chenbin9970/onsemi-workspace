@@ -66,6 +66,11 @@ void Main_Loop(void)
     {
         Kernel_Schedule();
 
+#ifdef DEBUG_UART_ENABLE
+        PRINTF("tick\r\n");
+        Sys_Delay_ProgramROM(SystemCoreClock);
+#endif
+
         if (ble_env.state == APPM_CONNECTED)
         {
             if (app_env.send_batt_ntf && bass_support_env.enable)

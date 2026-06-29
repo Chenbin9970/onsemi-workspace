@@ -283,17 +283,63 @@ ble_android_asha 自带 UART printf（`app_trace.h`），开箱即用：
 
 ---
 
+## peripheral_server_sleep — CLI 编译 + 下载 + printf
+
+Demo 工程与 asha 一样是 Eclipse CDT 项目，使用 IDE 生成的 `Debug/` Makefile。
+
+### 前置条件
+
+先在 IDE 中添加 **RTE Utility 组件**（提供 `printf.c/h`），然后 **Build 一次** 生成 `Debug/` 目录及其子 makefile。
+
+### 编译下载（一行脚本）
+
+```bash
+export PATH="/c/Program Files (x86)/onsemi/IDE_V4.3.1.132/arm_tools/bin:$PATH"
+cd peripheral_server_sleep/Debug && make clean && make all && \
+cat > flash.jlink <<'EOF'
+erase
+loadfile "C:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/Debug/peripheral_server_sleep.hex"
+r
+g
+exit
+EOF
+"/c/Program Files (x86)/SEGGER/JLink/JLink.exe" \
+  -device RSL10 -if SWD -speed 4000 -autoconnect 1 \
+  -CommanderScript flash.jlink && \
+rm flash.jlink
+```
+
+### Debug UART printf
+
+通过 `#define DEBUG_UART_ENABLE`（[app.h](peripheral_server_sleep/include/app.h)）控制：
+
+| 配置 | 值 |
+|------|-----|
+| UART TX | DIO5 |
+| UART RX | DIO4 |
+| 波特率 | 115200 |
+| 宏 | `PRINTF(...)`，通过 SDK `printf.h` 提供 |
+
+**启用时**：
+- 跳过 `Load_Trim_Values_And_Calibrate_MANU_CALIB()`（NVR4 读取会破坏 DMA 状态，导致 printf 无输出）
+- `App_Initialize()` 末尾调用 `printf_init()` + `PRINTF("DEVICE INITIALIZED")`
+- 不关闭 DIO4/5（`app.c` 和 `app_process.c` 的 `Continue_Application`）
+
+**关闭时**（注释掉宏）：
+- 恢复原始低功耗行为：校准、DIO4/5 关闭、零代码膨胀
+
+### UART 打印根因
+
+`Load_Trim_Values_And_Calibrate_MANU_CALIB()` 内部通过 `Sys_GetTrim()` 读取 NVR4 Flash，会污染 DMA 控制器状态。后续 `printf_init()` 中 `Sys_DMA_ChannelConfig(DMA7, ...)` 虽然重新配置了通道，但 DMA 控制器全局状态已被破坏，UART TX DMA 无法触发。
+
+**验证过程**：从可工作的 `App_RM_BLE_Initialize` 出发，逐个加回 demo 的函数调用，最终定位到校准函数是唯一导致 printf 失效的调用。其他函数（`BLE_LLD_Sleep_Params_Set`、`Sys_RFFE_SetTXPower`、`Sys_Clocks_OscRCCalibratedConfig`、`Sleep_Mode_Configure`、`BLE_Is_Awake_Flag_Set`）均无影响。
+
+---
+
 ## 已知问题
 
-1. **IDE 和 Makefile 文件来源不同** — `syslib/` 和 RM 源文件在 `.cproject` 中被排除，IDE 使用 RTE 版本。修改这些文件时需注意版本一致性。
-2. **`APP_RM_ENABLE` 在 `app.h` 中硬编码** — 如需禁用远程麦功能，注释掉 `include/app.h:29` 的 `#define APP_RM_ENABLE`。
+1. **printf 与校准冲突** — `Load_Trim_Values_And_Calibrate_MANU_CALIB` 的 NVR4 读取会破坏 DMA 状态。启用 `DEBUG_UART_ENABLE` 时自动跳过校准。
+2. **HTTPS 推送不可用** — GitHub 推送请用 SSH：`git@github.com:Chenbin9970/onsemi-workspace.git`
 3. **IDE 命令行编译要求 IDE 未运行** — 否则报 `Workspace already in use!`。
-4. **`syslib/` 文件从 CMSIS-Pack 复制** — 更新 SDK 版本时需同步，命令：
-   ```bash
-   SDK=/c/Users/admin/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.7.606
-   for f in rsl10_sys_clocks.c rsl10_sys_power.c rsl10_sys_power_modes.c \
-            rsl10_sys_rffe.c rsl10_sys_dma.c rsl10_sys_flash.c rsl10_sys_timers.c
-   do cp "$SDK/source/firmware/syslib/code/$f" syslib/; done
-   ```
-5. **HTTPS 推送不可用** — GitHub 推送请用 SSH：`git@github.com:Chenbin9970/onsemi-workspace.git`
-6. **`.cproject` 会被 IDE 覆盖** — 不要在 IDE 打开时手动编辑 `.cproject`，如需修改排除列表，先关 IDE。
+4. **`.cproject` 会被 IDE 覆盖** — 不要在 IDE 打开时手动编辑 `.cproject`。
+5. **J-Link 偶发首次编程失败** — 重试一次即可，属于 J-Link OB 的已知问题。

@@ -59,6 +59,10 @@ extern "C"
 
 #define DEBUG_UART_ENABLE
 
+#ifdef DEBUG_UART_ENABLE
+#include "printf.h"
+#endif
+
 /* DIO number that is used for easy re-flashing (recovery mode) */
 #define RECOVERY_DIO                    12
 
@@ -83,7 +87,7 @@ extern "C"
 
 /* Configure RF 48 MHz XTAL divided clock frequency in Hz
  * Options: 8, 12, 16, 24, 48 */
-#define RFCLK_FREQ                      8000000
+#define RFCLK_FREQ                      16000000
 
 /* Define clock divider and flash timings depending on RF clock frequency */
 #if (RFCLK_FREQ == 8000000)

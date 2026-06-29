@@ -18,9 +18,6 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
-#ifdef DEBUG_UART_ENABLE
-#include "printf.h"
-#endif
 
 /* Application Environment Structure */
 struct app_env_tag app_env;
