@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init *)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" status)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" remote -v)",
+      "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add .gitignore CLAUDE.md peripheral_server_sleep/ .claude/)"
+    ]
+  }
+}

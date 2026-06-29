@@ -1,0 +1,35 @@
+# Eclipse workspace metadata
+.metadata/
+
+# Eclipse remote system temp
+RemoteSystemsTempFiles/
+
+# Build output
+Debug/
+Release/
+
+# Eclipse project settings (user-specific)
+.settings/
+
+# PDOM index files (Eclipse CDT)
+*.pdom
+
+# Object files
+*.o
+*.obj
+
+# Libraries (built locally)
+*.a
+
+# Executables
+*.elf
+*.hex
+*.bin
+*.out
+
+# Listing files
+*.lst
+*.map
+
+# Dependency files
+*.d
