@@ -37,3 +37,4 @@ __pycache__/
 
 # Dependency files
 *.d
+ble_android_asha/
