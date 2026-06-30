@@ -3911,7 +3911,7 @@
 //   <i> Defines VDDT retention regulator trim value to use
 //   <i> Default: 0x1 (Recommended for Consumer Applications)
 #ifndef RTE_VDDTRET_TRIM_VALUE
- #define RTE_VDDTRET_TRIM_VALUE 0x3
+ #define RTE_VDDTRET_TRIM_VALUE 0x1
 #endif
 //   <o>VDDMRet Trim value
 //       <0x0=> 0x0

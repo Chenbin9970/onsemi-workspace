@@ -72,7 +72,7 @@ extern "C"
 /* Enable/disable buck converter
  * Options: VCC_BUCK_BITBAND or VCC_LDO_BITBAND */
 #ifndef VCC_BUCK_LDO_CTRL
-#define VCC_BUCK_LDO_CTRL               VCC_BUCK_BITBAND
+#define VCC_BUCK_LDO_CTRL               VCC_LDO_BITBAND
 #endif
 
 /* Minimum and maximum VBAT measurements */
@@ -87,7 +87,7 @@ extern "C"
 
 /* Configure RF 48 MHz XTAL divided clock frequency in Hz
  * Options: 8, 12, 16, 24, 48 */
-#define RFCLK_FREQ                      16000000
+#define RFCLK_FREQ                      8000000
 
 /* Define clock divider and flash timings depending on RF clock frequency */
 #if (RFCLK_FREQ == 8000000)
