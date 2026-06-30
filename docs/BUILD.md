@@ -334,32 +334,6 @@ rm flash.jlink
 
 **验证过程**：从可工作的 `App_RM_BLE_Initialize` 出发，逐个加回 demo 的函数调用，最终定位到校准函数是唯一导致 printf 失效的调用。其他函数（`BLE_LLD_Sleep_Params_Set`、`Sys_RFFE_SetTXPower`、`Sys_Clocks_OscRCCalibratedConfig`、`Sleep_Mode_Configure`、`BLE_Is_Awake_Flag_Set`）均无影响。
 
-### 主循环打印与休眠互斥
-
-启用 `DEBUG_UART_ENABLE` 时，demo 的主循环 `Main_Loop()` 会跳过以下三个低功耗行为：
-
-| 代码位置 | 原行为 | `DEBUG_UART_ENABLE` 时 | 原因 |
-|----------|--------|------------------------|------|
-| `BLE_Power_Mode_Enter()` | 进入深度睡眠 | `#ifndef` 跳过 | 深度睡眠断开 SWD，无法再次烧录 |
-| `SYS_WAIT_FOR_INTERRUPT` | WFI 暂停 CPU | `#ifndef` 跳过 | WFI 后只有 BLE 事件才唤醒，10.24s 广播下迭代太慢（100 次要 17 分钟才打一条 tick） |
-| DIO4/DIO5 禁用 | 关闭空闲 IO 省电 | `#ifndef` 跳过 | DIO5 用于 UART TX，关闭后 printf 无输出 |
-
-**打印与广播间隔的关系**：
-
-循环末尾 `SYS_WAIT_FOR_INTERRUPT` 使 CPU 等待 BLE 基带定时器。广播模式每 10.24s 醒一次，连接模式每 500ms 醒一次。循环计数器 `tick_cnt` 每醒一次加 1：
-
-```
-tick 间隔 = cnt 阈值 × 唤醒间隔
-广播: 100 × 10.24s ≈ 17分钟
-连接: 100 × 500ms  = 50秒
-```
-
-**调试时的行为**（`DEBUG_UART_ENABLE` 打开）：
-- 休眠关闭、WFI 跳过 → CPU 全速运行，tick 每 ~N 毫秒（N = cnt / CPU 频率）
-- BLE 连接正常（事件在中断中入队，全速调度器立即处理）
-- SWD 始终可用，无需断电重插
-- **功耗较高**（全速运行），调试完需关闭宏
-
 ---
 
 ## 已知问题
