@@ -41,7 +41,9 @@
       "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add peripheral_server_sleep/Makefile peripheral_server_sleep/syslib/ peripheral_server_sleep/BUILD.md .gitignore)",
       "Bash(git -C \"c:/Users/admin/onsemi-workspace4.5\" add -A)",
       "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -device RSL10 -if SWD -speed 4000 -autoconnect 1 -CommanderScript \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/Debug/flash.jlink\")",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code"
