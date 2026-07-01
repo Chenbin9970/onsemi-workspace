@@ -27,6 +27,8 @@
 #ifndef APP_H
 #define APP_H
 
+#define APP_RM_ENABLE
+
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -46,6 +48,7 @@ extern "C"
 #include <rsl10_map_nvr.h>
 #include <stdbool.h>
 #include <rsl10_protocol.h>
+#include <rm_pkt.h>
 
 #include "ble_std.h"
 #include "ble_custom.h"
@@ -57,7 +60,7 @@ extern "C"
  * Defines
  * ------------------------------------------------------------------------- */
 
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 
 #ifdef DEBUG_UART_ENABLE
 #include "printf.h"
@@ -85,9 +88,40 @@ extern "C"
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
 
+/* ----------------------------------------------------------------------------
+ * Remote Microphone Defines
+ * ------------------------------------------------------------------------- */
+#ifdef APP_RM_ENABLE
+
+/* Remote mic hopping list (Nordic channel/2 - 1) */
+#define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
+#define KEY_AES_128_ECB                 { 0x4138684C, \
+                                          0xD874F539, \
+                                          0x4EF3BC36, \
+                                          0xBF01FB9D }
+
+#define APP_RM_ROLE                     RM_SLAVE_ROLE
+#define CRY_AES_128_ECB                 0
+
+#define RM_LEFT                         0
+#define RM_RIGHT                        1
+
+#define DEBUG_DIO_FIRST                 15
+#define DEBUG_DIO_SECOND                11
+#define DEBUG_DIO_THIRD                 10
+
+/* Initial side channel */
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
+#define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
+
+#define BUTTON_DIO                      2
+#define MEMCPY_DMA_NUM                  0
+
+#endif /* APP_RM_ENABLE */
+
 /* Configure RF 48 MHz XTAL divided clock frequency in Hz
  * Options: 8, 12, 16, 24, 48 */
-#define RFCLK_FREQ                      8000000
+#define RFCLK_FREQ                      16000000
 
 /* Define clock divider and flash timings depending on RF clock frequency */
 #if (RFCLK_FREQ == 8000000)
@@ -240,8 +274,12 @@ typedef void (*appm_add_svc_func_t)(void);
                                                    (ke_msg_func_t)handler }
 
 /* List of message handlers that are used by the different profiles/services */
+#ifdef APP_RM_ENABLE
 #define APP_MESSAGE_HANDLER_LIST \
-
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer)
+#else
+#define APP_MESSAGE_HANDLER_LIST
+#endif
 
 /* List of functions used to create the database */
 #define SERVICE_ADD_FUNCTION_LIST                        \
@@ -273,6 +311,17 @@ struct app_env_tag
     uint8_t send_batt_ntf;
 
     uint32_t sleep_cycles;
+
+#ifdef APP_RM_ENABLE
+    uint8_t RM_on_off;
+    uint8_t volume;
+    struct rm_param_tag rm_param;
+    uint8_t rm_link_status;
+    uint16_t rm_lostLink_counter;
+    uint16_t rm_unsuccessLink_counter;
+    uint8_t audio_streaming;
+    uint8_t rm_started;
+#endif
 };
 
 struct low_power_clk_param_tag
@@ -327,6 +376,15 @@ extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const src_id);
 
 extern void AUDIOSINK_PERIOD_IRQHandler(void);
+
+#ifdef APP_RM_ENABLE
+extern uint8_t ear_side;
+extern void APP_RM_Init(uint8_t side);
+extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
+extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
+extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
+                     ke_task_id_t const dest_id, ke_task_id_t const src_id);
+#endif /* APP_RM_ENABLE */
 
 /* ----------------------------------------------------------------------------
  * Close the 'extern "C"' block

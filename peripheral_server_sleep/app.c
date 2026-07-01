@@ -66,6 +66,10 @@ void Main_Loop(void)
     {
         Kernel_Schedule();
 
+#ifdef APP_RM_ENABLE
+        RM_StatusHandler();
+#endif
+
         Sys_Watchdog_Refresh();
 
 #ifdef DEBUG_UART_ENABLE
@@ -110,7 +114,12 @@ void Main_Loop(void)
         Sys_Watchdog_Refresh();
 
         /* If not in the middle of a period measurement for RSOSC, allow the
-         * application to go to sleep power mode. */
+         * application to go to sleep power mode.
+         * Skip sleep when RM audio streaming is active. */
+#ifdef APP_RM_ENABLE
+        if (!app_env.audio_streaming)
+        {
+#endif
 #ifndef DEBUG_UART_ENABLE
         if (low_power_clk_param.low_power_enable ||
             (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K))
@@ -122,8 +131,16 @@ void Main_Loop(void)
             GLOBAL_INT_RESTORE();
         }
 #endif
+#ifdef APP_RM_ENABLE
+        }
+#endif
 
 #ifndef DEBUG_UART_ENABLE
+#ifdef APP_RM_ENABLE
+        if (app_env.audio_streaming)
+            SYS_WAIT_FOR_EVENT;
+        else
+#endif
         /* Wait for an interrupt before executing the scheduler again */
         SYS_WAIT_FOR_INTERRUPT;
 #endif

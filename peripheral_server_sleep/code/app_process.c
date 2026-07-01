@@ -486,6 +486,33 @@ uint8_t Emulate_CS_Val_Notif_Change(uint8_t val_notif)
  *                                compare with KE_MSG_CONSUMED
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
+#ifdef APP_RM_ENABLE
+int APP_Timer(ke_msg_id_t const msg_id, void const *param,
+              ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+    /* Wait for BLE to be ready before starting RM */
+    if (!app_env.rm_started &&
+        (ble_env.state == APPM_ADVERTISING || ble_env.state == APPM_CONNECTED))
+    {
+        app_env.rm_started = 1;
+        RF_SwitchToCPMode();
+        RM_Enable(1000);
+        app_env.audio_streaming = 1;
+    }
+
+    if (ble_env.state == APPM_CONNECTED)
+        Sys_GPIO_Set_High(LED_DIO);
+    else if (ble_env.state == APPM_ADVERTISING)
+        Sys_GPIO_Toggle(LED_DIO);
+    else
+        Sys_GPIO_Set_Low(LED_DIO);
+
+    return (KE_MSG_CONSUMED);
+}
+#endif
+
 int Msg_Handler(ke_msg_id_t const msg_id, void *param,
                 ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {

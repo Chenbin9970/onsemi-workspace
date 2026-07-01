@@ -200,6 +200,11 @@ void App_Initialize(void)
     /* Initialize environment */
     App_Env_Initialize();
 
+#ifdef DEBUG_UART_ENABLE
+    printf_init();
+    PRINTF("\r\nDEVICE INITIALIZED\r\n");
+#endif
+
     if (RTC_CLK_SRC != RTC_CLK_SRC_XTAL32K)
     {
         low_power_clk_param.dynamic_measurement_enable = false;
@@ -219,9 +224,9 @@ void App_Initialize(void)
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);
 
-#ifdef DEBUG_UART_ENABLE
-    printf_init();
-    PRINTF("\r\nDEVICE INITIALIZED\r\n");
+#ifdef APP_RM_ENABLE
+    APP_RM_Init(ear_side);
+    RF_SwitchToBLEMode();
 #endif
 }
 
@@ -240,6 +245,10 @@ void App_Env_Initialize(void)
 
     /* Create the application task handler */
     ke_task_create(TASK_APP, &TASK_DESC_APP);
+
+#ifdef APP_RM_ENABLE
+    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+#endif
 
     /* Initialize the custom service environment */
     CustomService_Env_Initialize();
