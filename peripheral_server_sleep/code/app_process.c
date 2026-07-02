@@ -492,16 +492,6 @@ int APP_Timer(ke_msg_id_t const msg_id, void const *param,
 {
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    /* Wait for BLE to be ready before starting RM */
-    if (!app_env.rm_started &&
-        (ble_env.state == APPM_ADVERTISING || ble_env.state == APPM_CONNECTED))
-    {
-        app_env.rm_started = 1;
-        RF_SwitchToCPMode();
-        RM_Enable(1000);
-        app_env.audio_streaming = 1;
-    }
-
     if (ble_env.state == APPM_CONNECTED)
         Sys_GPIO_Set_High(LED_DIO);
     else if (ble_env.state == APPM_ADVERTISING)

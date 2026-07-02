@@ -64,6 +64,8 @@ extern "C"
 #define APP_SLEEP_2MBPS_SUPPORT
 
 
+#define CFG_ADV_INTERVAL_MS             100
+
 /* Define the advertisement interval for connectable mode (units of 625us)
  * Notes: the interval can be 20ms up to 10.24s */
 #ifdef CFG_ADV_INTERVAL_MS

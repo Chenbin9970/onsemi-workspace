@@ -85,6 +85,16 @@ void Main_Loop(void)
 
         if (ble_env.state == APPM_CONNECTED)
         {
+#ifdef DEBUG_UART_ENABLE
+            {
+                static uint8_t ble_connected_printed = 0;
+                if (!ble_connected_printed)
+                {
+                    ble_connected_printed = 1;
+                    PRINTF("__BLE_CONNECTED\r\n");
+                }
+            }
+#endif
             if (app_env.send_batt_ntf && bass_support_env.enable)
             {
                 app_env.send_batt_ntf = 0;
@@ -135,14 +145,18 @@ void Main_Loop(void)
         }
 #endif
 
-#ifndef DEBUG_UART_ENABLE
 #ifdef APP_RM_ENABLE
         if (app_env.audio_streaming)
+        {
             SYS_WAIT_FOR_EVENT;
+        }
         else
 #endif
-        /* Wait for an interrupt before executing the scheduler again */
-        SYS_WAIT_FOR_INTERRUPT;
+        {
+#ifndef DEBUG_UART_ENABLE
+            /* Wait for an interrupt before executing the scheduler again */
+            SYS_WAIT_FOR_INTERRUPT;
 #endif
+        }
     }
 }
