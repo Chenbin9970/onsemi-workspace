@@ -20,6 +20,8 @@
 #include "app.h"
 #include <printf.h>
 
+#ifdef APP_RM_ENABLE
+
 uint8_t ear_side = APP_RM_AUDIO_CHANNEL;
 
 uint32_t data_rd = 0;
@@ -250,3 +252,5 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
     app_env.rm_link_status = status;
     return (0);
 }
+
+#endif /* APP_RM_ENABLE */
