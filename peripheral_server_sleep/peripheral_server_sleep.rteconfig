@@ -33,6 +33,14 @@
       <file category="source" deviceDependent="1" name="source/firmware/calibratelib/code/rsl10_calibrate_clock.c"/>
       <file category="source" deviceDependent="1" name="source/firmware/calibratelib/code/rsl10_calibrate_power.c"/>
     </component>
+    <component Cclass="Device" Cgroup="Libraries" Csub="Remote_Mic" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.7.606"/>
+      <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
+      <file category="header" deviceDependent="1" name="include/rm_pkt.h"/>
+      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/config_data.c"/>
+      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/rm_event.c"/>
+      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/rm_pkt_hdl.c"/>
+    </component>
     <component Cclass="Device" Cgroup="Libraries" Csub="System" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
       <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.7.606"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
@@ -89,13 +97,6 @@
       <file attr="config" category="source" condition="GCC_Condition" deviceDependent="1" name="source/firmware/cmsis/source/GCC/startup_rsl10.S" version="1.0.0"/>
       <file attr="config" category="linkerScript" condition="GCC_Condition" deviceDependent="1" name="source/firmware/cmsis/source/GCC/sections.ld" version="1.0.0"/>
       <file attr="config" category="header" deviceDependent="1" name="source/firmware/drivers/RTE_config/RTE_Device.h" version="1.0.0"/>
-    </component>
-    <component Cclass="Device" Cgroup="Libraries" Csub="Remote_Mic" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.7.606"/>
-      <file category="header" deviceDependent="1" name="include/rm_pkt.h"/>
-      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/config_data.c"/>
-      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/rm_event.c"/>
-      <file category="source" deviceDependent="1" name="source/firmware/remote_micLib/rm_pkt_hdl.c"/>
     </component>
     <component Cclass="Utility" Cgroup="IO" Csub="Printf wrapper" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
       <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.7.606"/>

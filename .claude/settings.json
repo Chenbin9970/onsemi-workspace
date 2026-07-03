@@ -43,10 +43,19 @@
       "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -device RSL10 -if SWD -speed 4000 -autoconnect 1 -CommanderScript \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/Debug/flash.jlink\")",
       "Bash(git add *)",
       "Bash(git commit -m ' *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git checkout *)",
+      "Bash(git commit *)",
+      "Bash(ls \"C:/Program Files/Eclipse\" 2>/dev/null || echo \"no Eclipse\"; ls \"C:/Program Files \\(x86\\)/Eclipse\" 2>/dev/null || echo \"no Eclipse x86\"; ls \"C:/\" 2>/dev/null | grep -i -E \"eclipse|arm|keil|onsemi|onsemi\")",
+      "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -device RSL10 -if SWD -speed 1000 -autoconnect 1 -CommanderScript flash.jlink)",
+      "Bash(rm flash.jlink)",
+      "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -device RSL10 -if SWD -speed 1000 -autoconnect 1 -CommanderScript \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/Debug/flash.jlink\")",
+      "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -device RSL10 -if SWD -speed 100 -autoconnect 1 -CommanderScript \"c:/Users/admin/onsemi-workspace4.5/peripheral_server_sleep/Debug/flash.jlink\")",
+      "Bash(git log *)"
     ],
     "additionalDirectories": [
-      "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code"
+      "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code",
+      "c:\\Users\\admin\\.claude\\projects\\c--Users-admin-onsemi-workspace4-5\\memory"
     ]
   }
 }
