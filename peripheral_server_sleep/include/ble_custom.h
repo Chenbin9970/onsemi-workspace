@@ -47,6 +47,9 @@ extern "C"
 #define CS_CHARACTERISTIC_RX_UUID       { 0x24, 0xdc, 0x0e, 0x6e, 0x03, 0x40, \
                                           0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
                                           0xb5, 0xf3, 0x93, 0xe0 }
+#define CS_CHARACTERISTIC_RM_ONOFF_UUID { 0x24, 0xdc, 0x0e, 0x6e, 0x04, 0x40, \
+                                          0xca, 0x9e, 0xe5, 0xa9, 0xa3, 0x00, \
+                                          0xb5, 0xf3, 0x93, 0xe0 }
 
 #define ATT_DECL_CHAR() \
     { ATT_DECL_CHARACTERISTIC_128, PERM(RD, ENABLE), 0, 0 }
@@ -77,16 +80,23 @@ enum cs_idx_att
     CS_IDX_RX_VALUE_CCC,
     CS_IDX_RX_VALUE_USR_DSCP,
 
+    /* RM ON_OFF Characteristic */
+    CS_IDX_RM_ONOFF_CHAR,
+    CS_IDX_RM_ONOFF_VAL,
+    CS_IDX_RM_ONOFF_USR_DSCP,
+
     /* Max number of characteristics */
     CS_IDX_NB,
 };
 
 #define CS_TX_VALUE_MAX_LENGTH          20
 #define CS_RX_VALUE_MAX_LENGTH          20
+#define CS_RM_ONOFF_VALUE_MAX_LENGTH    1
 #define CS_USER_DESCRIPTION_MAX_LENGTH  16
 
 #define CS_TX_CHARACTERISTIC_NAME       "TX_VALUE"
 #define CS_RX_CHARACTERISTIC_NAME       "RX_VALUE"
+#define CS_RM_ONOFF_CHARACTERISTIC_NAME "RM_ON_OFF"
 
 /* List of message handlers that are used by the custom service application manager */
 #define CS_MESSAGE_HANDLER_LIST                                     \
@@ -140,6 +150,9 @@ struct cs_env_tag
     /* Custom service */
     uint16_t cnt_notifc;
     uint8_t val_notif;
+
+    /* RM characteristic value */
+    uint8_t rm_onoff_value;
 };
 
 extern struct cs_env_tag cs_env;

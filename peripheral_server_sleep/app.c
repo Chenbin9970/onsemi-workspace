@@ -68,6 +68,26 @@ void Main_Loop(void)
 
 #ifdef APP_RM_ENABLE
         RM_StatusHandler();
+
+        if (app_env.rm_start_requested)
+        {
+            app_env.rm_start_requested = 0;
+            RF_SwitchToCPMode();
+            RM_Enable(1000);
+            app_env.audio_streaming = 1;
+        }
+
+        if (app_env.rm_stop_requested)
+        {
+            app_env.rm_stop_requested = 0;
+            RM_Disable();
+            Sys_Timers_Stop(SELECT_TIMER0);
+            Sys_Timers_Stop(SELECT_TIMER1);
+            NVIC_ClearPendingIRQ(TIMER0_IRQn);
+            NVIC_ClearPendingIRQ(TIMER1_IRQn);
+            RF_SwitchToBLEMode();
+            app_env.audio_streaming = 0;
+        }
 #endif
 
         Sys_Watchdog_Refresh();

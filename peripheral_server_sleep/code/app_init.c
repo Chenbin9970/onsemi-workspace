@@ -278,7 +278,7 @@ void App_RM_BLE_Initialize(void)
                      USRCLK_PRESCALE_1);
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_8 | DCCLK_PRESCALE_4);
 
-    BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
+    BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
     /* Configure ADC channel 0 to measure VBAT/2 */
     Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
@@ -373,7 +373,7 @@ void App_Initialize(void)
     RF->XTAL_CTRL = ((RF->XTAL_CTRL & ~XTAL_CTRL_DISABLE_OSCILLATOR) |
                      XTAL_CTRL_REG_VALUE_SEL_INTERNAL);
 
-    RF_REG2F->CK_DIV_1_6_CK_DIV_1_6_BYTE = RF_CK_DIV_PRESCALE_VALUE;
+    RF_REG2F->CK_DIV_1_6_CK_DIV_1_6_BYTE = CK_DIV_1_6_PRESCALE_3_BYTE;
 
     /* Wait until 48 MHz oscillator is started */
     while (RF_REG39->ANALOG_INFO_CLK_DIG_READY_ALIAS !=
@@ -385,11 +385,11 @@ void App_Initialize(void)
                                SYSCLK_CLKSRC_RFCLK);
 
     /* Configure clock dividers */
-    CLK->DIV_CFG0 = SLOWCLK_PRESCALE_VALUE | BBCLK_PRESCALE_VALUE |
-                    USRCLK_PRESCALE_1;
-    CLK_DIV_CFG2->DCCLK_BYTE = DCCLK_BYTE_VALUE;
+    CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
+                     USRCLK_PRESCALE_1);
+    CLK->DIV_CFG2 = (CPCLK_PRESCALE_8 | DCCLK_PRESCALE_4);
 
-    BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_DEEP_SLEEP;
+    BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
     /* Configure ADC channel 0 to measure VBAT/2 */
     Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
@@ -440,7 +440,6 @@ void App_Initialize(void)
 #ifdef APP_RM_ENABLE
     APP_RM_Init(ear_side);
     RF_SwitchToBLEMode();
-    /* RM_Enable disabled: test RM init-only low-power */
     app_env.audio_streaming = 0;
 #endif
 
@@ -460,6 +459,8 @@ void App_Initialize(void)
 
     /* Enable CM3 loop cache */
     SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
+
+    app_env.init_done = 1;
 
     /* Stop masking interrupts */
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);

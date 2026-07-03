@@ -86,6 +86,14 @@ void CustomService_ServiceAdd(void)
                                                             CS_RX_VALUE_MAX_LENGTH),
         [CS_IDX_RX_VALUE_CCC]      = ATT_DECL_CHAR_CCC(),
         [CS_IDX_RX_VALUE_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+        /* RM ON_OFF Characteristic */
+        [CS_IDX_RM_ONOFF_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RM_ONOFF_VAL]      = ATT_DECL_CHAR_UUID_128(CS_CHARACTERISTIC_RM_ONOFF_UUID,
+                                                            PERM(RD, ENABLE)
+                                                            | PERM(WRITE_REQ, ENABLE) | PERM(WRITE_COMMAND, ENABLE),
+                                                            CS_RM_ONOFF_VALUE_MAX_LENGTH),
+        [CS_IDX_RM_ONOFF_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
     };
 
     /* Fill the add custom service message */
@@ -232,6 +240,20 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
             }
             break;
 
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                length = CS_RM_ONOFF_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&cs_env.rm_onoff_value;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_USR_DSCP:
+            {
+                length = strlen(CS_RM_ONOFF_CHARACTERISTIC_NAME);
+                valptr = (uint8_t *)CS_RM_ONOFF_CHARACTERISTIC_NAME;
+            }
+            break;
+
             default:
             {
                 status = ATT_ERR_READ_NOT_PERMITTED;
@@ -333,6 +355,23 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             case CS_IDX_TX_VALUE_CCC:
             {
                 valptr = (uint8_t *)&cs_env.tx_cccd_value;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                valptr = (uint8_t *)&cs_env.rm_onoff_value;
+                if (param->length >= 1)
+                {
+                    if (param->value[0] == 0x01)
+                    {
+                        app_env.rm_start_requested = 1;
+                    }
+                    else if (param->value[0] == 0x00)
+                    {
+                        app_env.rm_stop_requested = 1;
+                    }
+                }
             }
             break;
 

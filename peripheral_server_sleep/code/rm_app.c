@@ -18,9 +18,15 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
-#include <printf.h>
 
 #ifdef APP_RM_ENABLE
+
+#ifdef DEBUG_UART_ENABLE
+#include <printf.h>
+#define RM_PRINTF(...) PRINTF(__VA_ARGS__)
+#else
+#define RM_PRINTF(...)
+#endif
 
 uint8_t ear_side = APP_RM_AUDIO_CHANNEL;
 
@@ -160,6 +166,20 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
         case RM_RX_TRANSFER_BADCRCPKT:
         case RM_RX_TRANSFER_NOPKT:
         {
+            static uint32_t trx_cnt = 0;
+            trx_cnt++;
+            if (type == RM_RX_TRANSFER_NOPKT && *length == 0)
+            {
+                RM_PRINTF("RM_TRX: NOPKT(empty) #%lu\r\n", trx_cnt);
+            }
+            else if (type == RM_RX_TRANSFER_NOPKT)
+            {
+                RM_PRINTF("RM_TRX: NOPKT(len=%d) #%lu\r\n", *length, trx_cnt);
+            }
+            else if (type == RM_RX_TRANSFER_GOODPKT)
+            {
+                RM_PRINTF("RM_TRX: GOODPKT #%lu\r\n", trx_cnt);
+            }
             if ((*length) == 0)
             {
                 /* PLC should be applied as tx hasn't sent data
@@ -225,7 +245,18 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
     {
         case LINK_DISCONNECTED:
         {
-            PRINTF("__RM_LINK_DISCONNECTED\n");
+            if (app_env.init_done)
+            {
+                RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
+                RM_Disable();
+                Sys_Timers_Stop(SELECT_TIMER0);
+                Sys_Timers_Stop(SELECT_TIMER1);
+                NVIC_ClearPendingIRQ(TIMER0_IRQn);
+                NVIC_ClearPendingIRQ(TIMER1_IRQn);
+                RF_SwitchToBLEMode();
+                low_power_clk_param.low_power_enable = true;
+                app_env.audio_streaming = 0;
+            }
             app_env.rm_lostLink_counter++;
         }
         break;
@@ -238,7 +269,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 
         case LINK_ESTABLISHED:
         {
-            PRINTF("__RM_LINK_ESTABLISHED\n");
+            RM_PRINTF("__RM_LINK_ESTABLISHED\n");
 
         }
         break;

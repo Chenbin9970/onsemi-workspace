@@ -28,7 +28,8 @@
 #define APP_H
 
 #define APP_RM_ENABLE
-
+#define APP_SLEEP_2MBPS_SUPPORT
+//#define DEBUG_UART_ENABLE
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -60,7 +61,6 @@ extern "C"
  * Defines
  * ------------------------------------------------------------------------- */
 
-//#define DEBUG_UART_ENABLE
 
 #ifdef DEBUG_UART_ENABLE
 #include "printf.h"
@@ -115,13 +115,13 @@ extern "C"
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
 #define BUTTON_DIO                      2
-#define MEMCPY_DMA_NUM                  0
+#define MEMCPY_DMA_NUM                  3
 
 #endif /* APP_RM_ENABLE */
 
 /* Configure RF 48 MHz XTAL divided clock frequency in Hz
  * Options: 8, 12, 16, 24, 48 */
-#define RFCLK_FREQ                      8000000
+#define RFCLK_FREQ                      16000000
 
 /* Define clock divider and flash timings depending on RF clock frequency */
 #if (RFCLK_FREQ == 8000000)
@@ -255,10 +255,10 @@ extern "C"
 /* Total measurement cycles to count after first update */
 #define LOW_POWER_CLK_DYNAMIC_MEASUREMENT          200
 
-/* Scaling factor taking into account 8MHz clock and 16 audio sink periods.
- *  8*16 = 128. If the system core clock frequency or the number of audiosink
- *  measurements are changed, change this value accordingly. */
-#define LOW_POWER_CLK_SCALE_AVERAGE_PERIOD         128.0
+/* Scaling factor: system clock MHz * 16 audio sink periods.
+ *  Adjusts automatically with RFCLK_FREQ. */
+#define LOW_POWER_CLK_SCALE_AVERAGE_PERIOD \
+    ((float)(RFCLK_FREQ / 1000000) * 16.0)
 
 extern const struct ke_task_desc TASK_DESC_APP;
 
@@ -326,6 +326,10 @@ struct app_env_tag
     uint16_t rm_unsuccessLink_counter;
     uint8_t audio_streaming;
     uint8_t rm_started;
+    uint8_t rm_start_requested;
+    uint8_t rm_stop_requested;
+    uint8_t rm_was_enabled;
+    uint8_t init_done;
 #endif
 };
 

@@ -296,9 +296,9 @@ void Continue_Application(void)
                                   ADC_POS_INPUT_VBAT_DIV2));
 
     /* Configure clock dividers */
-    CLK->DIV_CFG0 = SLOWCLK_PRESCALE_VALUE | BBCLK_PRESCALE_VALUE |
-                    USRCLK_PRESCALE_1;
-    CLK_DIV_CFG2->DCCLK_BYTE = DCCLK_BYTE_VALUE;
+    CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
+                     USRCLK_PRESCALE_1);
+    CLK->DIV_CFG2 = (CPCLK_PRESCALE_8 | DCCLK_PRESCALE_4);
 
     /* Update Flash timing */
     FLASH->DELAY_CTRL = DEFAULT_READ_MARGIN | FLASH_DELAY_VALUE;
@@ -523,6 +523,11 @@ int Msg_Handler(ke_msg_id_t const msg_id, void *param,
  * ------------------------------------------------------------------------- */
 void AUDIOSINK_PERIOD_IRQHandler(void)
 {
+    if (app_env.audio_streaming)
+    {
+        return;
+    }
+
     /* Parameters for RC oscillator period measurements */
     static uint32_t num_measurement = LOW_POWER_CLK_INITIAL_MEASUREMENT;
     static uint32_t audiosink_period = 0;
