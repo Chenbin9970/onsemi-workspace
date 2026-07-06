@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -65,7 +65,17 @@ extern "C"
 #ifdef DEBUG_UART_ENABLE
 #include "printf.h"
 #endif
-
+#define WAKEUP_DIO                      12
+#define WAKEUP_EVENT_SET_FLAGS               (WAKEUP_DCDC_OVERLOAD_SET |\
+                                              WAKEUP_PAD_EVENT_SET |\
+                                              WAKEUP_RTC_ALARM_EVENT_SET |\
+                                              WAKEUP_BB_TIMER_EVENT_SET |\
+                                              WAKEUP_DIO0_EVENT_SET |\
+                                              WAKEUP_DIO1_EVENT_SET |\
+                                              WAKEUP_DIO2_EVENT_SET |\
+                                              WAKEUP_DIO3_EVENT_SET)
+#define CLEAR_ALL_ENABLED_WAKEUP_FLAGS    (WAKEUP_BB_TIMER_CLEAR         |\
+                                           (WAKEUP_DIO0_EVENT_CLEAR << WAKEUP_DIO))
 /* DIO number that is used for easy re-flashing (recovery mode) */
 #define RECOVERY_DIO                    12
 
@@ -115,7 +125,272 @@ extern "C"
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
 #define BUTTON_DIO                      2
+#define DIO_SYNC_PULSE                  8
 #define MEMCPY_DMA_NUM                  3
+
+/* ----------------------------------------------------------------------------
+ * Audio Output (SPI RAW) Defines — from remote_mic_rx_coex
+ * ------------------------------------------------------------------------- */
+#if 0
+#define NO_TX_OUTPUT                    2
+#define SPI_TX_CODED_OUTPUT             3
+#define SPI_TX_RAW_OUTPUT               4
+#define OUTPUT_INTRF                    SPI_TX_RAW_OUTPUT
+#define SIMUL                           0
+
+/* DMA IRQ helpers */
+#define THREE_BLOCK_APPN(x, y, z)       x##y##z
+#define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)
+#define TIMER_IRQn(x)                   THREE_BLOCK_APPN(TIMER, x, _IRQn)
+#define DMA_IRQ_FUNC(x)                 THREE_BLOCK_APPN(DMA, x, _IRQHandler)
+#define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)
+
+/* DMA channel numbers */
+#define ASRC_IN_IDX                     3
+#define ASRC_OUT_IDX                    4
+#define TX_DMA_NUM                      6
+
+/* Timer number */
+#define TIMER_REGUL                     2
+
+/* DMA config for ASRC input (RX) */
+#define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* DMA config for ASRC output (RX, to SPI) */
+#define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
+                                         DMA_DEST_SPI0 |            \
+                                         DMA_TRANSFER_P_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
+/* DIO pins for SPI */
+#define SPI_SER_DI                      2
+#define SPI_SER_DO                      1
+#define SPI_CLK_DO                      3
+#define SPI_CS_DO                       0
+
+#define SAMPL_CLK                       7
+
+/* LPDSP32 CODEC memory addresses */
+#define MEM_CM2DSP_ADDR0_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4)
+#define MEM_CM2DSP_ADDR1_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4 + 80)
+#define MEM_DSP2CM_ADDR0_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 4)
+#define MEM_DSP2CM_ADDR1_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 6)
+#define MEM_MESSAGE                     (uint8_t *)(DSP_DRAM4_BASE + 12 * 160)
+#define CODEC_MODE                      3
+
+/* Subframe and frame sizes */
+#define SUBFRAME_LENGTH                 8
+#define FRAME_LENGTH                    160
+#define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
+#define ENCODED_SUBFRAME_LENGTH         (3 * (SUBFRAME_LENGTH / 8))
+
+/* Audio processing */
+#define SHIFT_BIT                       20
+#define ASRC_CFG_THR                    16
+#define STABLE_THR                      400
+
+/* Encoder DMA addresses (not used in RX, defined for compilation) */
+#define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
+#define MEM_CM2DSP_ADDR1_ENC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 2)
+#define MEM_DSP2CM_ADDR0_ENC            (uint8_t *)(DSP_DRAM4_BASE)
+#define MEM_DSP2CM_ADDR1_ENC            (uint8_t *)(DSP_DRAM4_BASE + 80)
+
+#include "dsp_pm_dm.h"
+
+
+#else
+#if 1
+
+#define SAMPL_CLK                       7
+
+#define DMIC_CLK_PIN                    3
+#define DMIC_DATA_PIN                   1
+
+extern int16_t cailleftbuf[64];
+extern int16_t cailrightbuf[64];
+//extern int32_t dmic_buffer_in[64];
+
+#define DMIC_CFG                        (DMIC0_DCRM_CUTOFF_20HZ | \
+                                         DMIC1_DCRM_CUTOFF_20HZ | \
+                                         DMIC1_DELAY_DISABLE |    \
+                                         DMIC0_FALLING_EDGE |     \
+                                         DMIC1_RISING_EDGE)
+
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
+                                                    AUDIO_CFG_DEC_RATE_Pos))
+
+#define DMIC_AUDIO_CFG                  (OD_AUDIOCLK                        | \
+											OD_UNDERRUN_PROTECT_ENABLE         | \
+											OD_DMA_REQ_ENABLE                  | \
+											OD_INT_GEN_DISABLE                 | \
+											DECIMATE_BY_200                    | \
+											OD_ENABLE                          |    \
+											 DMIC0_ENABLE |    \
+											 DMIC1_ENABLE |    \
+											 DECIMATE_BY_200 | \
+											 DMIC_AUDIOCLK |   \
+											 DMIC0_DMA_REQ_ENABLE)
+
+#define DMIC_MAX_GAIN                   0xFFF
+
+#define DMA_RX_CONFIG                   (DMA_LITTLE_ENDIAN |       \
+                                         DMA_ENABLE |              \
+                                         DMA_DISABLE_INT_DISABLE | \
+                                         DMA_ERROR_INT_DISABLE |   \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE |   \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
+                                         DMA_DEST_ADDR_INC |       \
+                                         DMA_PRIORITY_0 |          \
+                                         DMA_TRANSFER_P_TO_M |     \
+                                         DMA_SRC_ADDR_STATIC |     \
+                                         DMA_SRC_DMIC |            \
+                                         DMA_ADDR_CIRC)
+
+#define SIMUL                           0    /*For test */
+
+#define THREE_BLOCK_APPN(x, y, z)       x##y##z
+#define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)    /*DMAx_IRQn */
+#define TIMER_IRQn(x)                   THREE_BLOCK_APPN(TIMER, x, _IRQn)    /*TIMERx_IRQn */
+#define DMA_IRQ_FUNC(x)                 THREE_BLOCK_APPN(DMA, x, _IRQHandler)    /*DMAx_IRQHandler */
+#define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)    /*TIMERx_IRQHandler */
+
+extern uint8_t *Dsp2CmBuff0dec;
+
+#define MEMCPY_DMA_NUM                  0
+#define OD_DMA_NUM                      1
+#define ASRC_IN_IDX                     3
+#define ASRC_OUT_IDX                    4
+#define RX_DMA_NUM                      5
+#define TX_DMA_NUM                      6
+#define UART_TX_NUM                     7
+
+#define TIMER_REGUL                     2
+
+#define OD_P_DIO                        0
+#define OD_N_DIO                        1
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
+                                                    AUDIO_CFG_DEC_RATE_Pos))
+#define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200                    | \
+                                         OD_ENABLE)
+
+
+#define RX_DMA_OD                      (DMA_LITTLE_ENDIAN |        \
+                                        DMA_ENABLE |               \
+                                        DMA_DISABLE_INT_DISABLE |  \
+                                        DMA_ERROR_INT_DISABLE |    \
+                                        DMA_COMPLETE_INT_DISABLE | \
+                                        DMA_COUNTER_INT_DISABLE |  \
+                                        DMA_START_INT_DISABLE |    \
+                                        DMA_DEST_WORD_SIZE_16 |    \
+                                        DMA_SRC_WORD_SIZE_32 |     \
+                                        DMA_SRC_ADDR_INC |         \
+                                        DMA_TRANSFER_M_TO_P |      \
+                                        DMA_DEST_ADDR_STATIC |     \
+                                        DMA_DEST_OD |              \
+                                        DMA_PRIORITY_0 |           \
+                                        DMA_ADDR_CIRC)
+
+
+#define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+#define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
+/* LPDSP32 CODEC related defines */
+#define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
+#define MEM_CM2DSP_ADDR1_ENC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 2)
+#define MEM_DSP2CM_ADDR0_ENC            (uint8_t *)(DSP_DRAM4_BASE)
+#define MEM_DSP2CM_ADDR1_ENC            (uint8_t *)(DSP_DRAM4_BASE + 80)
+#define MEM_CM2DSP_ADDR0_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4)
+#define MEM_CM2DSP_ADDR1_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4 + 80)
+#define MEM_DSP2CM_ADDR0_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 4)
+#define MEM_DSP2CM_ADDR1_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 6)
+#define MEM_MESSAGE                     (uint8_t *)(DSP_DRAM4_BASE + 12 * 160)
+#define CODEC_MODE                      3
+
+/* Subframe length in uint16_t */
+#define SUBFRAME_LENGTH                 8
+
+/* Total subframe length accounting for left and right channel samples in uint16_t */
+#define SUBFRAME_LENGTH_LEFT_AND_RIGHT  (SUBFRAME_LENGTH * 2)
+
+/* Frame length in uint16_t */
+#define FRAME_LENGTH                    160
+
+/* Encoded frame length in uint8_t */
+#if (CODEC_MODE == 3)
+#define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
+
+/* Encoded subframe length in uint8_t */
+#define ENCODED_SUBFRAME_LENGTH         (3 * (SUBFRAME_LENGTH / 8))
+#endif    /* if (CODEC_MODE == 3) */
+
+
+#define ASRC_CFG_THR                    16
+
+/* Threshold for allowed read/write pointer crossing */
+#define PTR_RST_THR                     10
+
+/* the number of shifts of ASRC registers for using fix point variables */
+#define SHIFT_BIT                       20
+
+#define STABLE_THR                      400
+
+
+extern void Packet_regulator_timer_isr(void);
+extern void Asrc_reconfig(void);
+extern void DspDec_isr(void);
+extern void Ascc_phase_isr(void);
+extern void Ascc_period_isr(void);
+extern void Rendering_func(uint8_t *src_addr);
+extern void Start_Dec_Lpdsp32(uint8_t *src_addr);
+extern void Asrc_in_dma_isr(void);
+#endif
+#endif
 
 #endif /* APP_RM_ENABLE */
 
@@ -393,6 +668,25 @@ extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
 extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
 extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
                      ke_task_id_t const dest_id, ke_task_id_t const src_id);
+
+/* Audio output — RAW mode externs */
+extern uint8_t ear_side;
+extern uint8_t *Dsp2CmBuff0dec;
+extern bool asrc_stable;
+extern uint32_t cntr_stability;
+extern bool flag_ascc_phase;
+extern int64_t audio_sink_cnt;
+extern int64_t audio_sink_period_cnt;
+
+/* Audio output functions */
+void Rendering_func(uint8_t *src_addr);
+void Start_Dec_Lpdsp32(uint8_t *src_addr);
+void Asrc_reconfig(void);
+void DspDec_isr(void);
+void Ascc_phase_isr(void);
+void Packet_regulator_timer_isr(void);
+void Asrc_in_dma_isr(void);
+void Ascc_period_isr(void);
 #endif /* APP_RM_ENABLE */
 
 /* ----------------------------------------------------------------------------
