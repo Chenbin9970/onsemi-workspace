@@ -185,8 +185,14 @@ SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 | BLE → RM（指令 0x01） | 正常 |
 | RM → BLE（指令 0x00） | 正常 |
 
+### 功耗基准
+
+| 模式 | 平均电流 | 说明 |
+|------|---------|------|
+| BLE 低功耗 | **622 µA** | DSP 固件未加载 (#if 0)，无音频硬件 |
+
 ### 下一步
 
-1. 定位 DSP 固件加载（`Sys_Flash_Copy`）为何导致 `RF_SwitchToBLEMode` 死机
-2. 修复后启用 `Audio_Init()` 调用 → 音频 + BLE↔RM 切换同时工作
-3. RM→BLE 切换时需先停 DSP + 关音频 ISR + 停 DMAs
+1. ~~定位 DSP 固件加载为何导致 `RF_SwitchToBLEMode` 死机~~ → **已定位**：DSP **运行**（非 `Sys_Flash_Copy`）时切 RF 会死机，需在 `rm_stop_requested` 中先 `DSS_LPDSP32_PAUSE`
+2. 启用 DSP 固件加载 + `DSS_LPDSP32_RESUME`，`rm_stop_requested` 加 `DSS_PAUSE` 保护
+3. 启用 `Audio_Init()` 调用 → 音频 + BLE↔RM 切换完整工作
