@@ -332,8 +332,6 @@ int16_t BufferOut[2 * FRAME_LENGTH];
 /* Audio pipeline init — called before RM_Enable in BLE+switch flow */
 void Audio_Init(void)
 {
-    uint32_t i;
-
     ACS_VCC_CTRL->ICH_TRIM_BYTE  = VCC_ICHTRIM_16MA_BYTE;
     ACS_VDDA_CP_CTRL->PTRIM_BYTE = VDDA_PTRIM_16MA_BYTE;
     BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP;
@@ -356,12 +354,16 @@ void Audio_Init(void)
     Sys_RFFE_SetTXPower(0);
 
     NVIC_SetPriority(DSP1_IRQn, 4);
+    NVIC_ClearPendingIRQ(DSP1_IRQn);
     NVIC_EnableIRQ(DSP1_IRQn);
     NVIC_SetPriority(TIMER_IRQn(TIMER_REGUL), 4);
+    NVIC_ClearPendingIRQ(TIMER_IRQn(TIMER_REGUL));
     NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
     NVIC_SetPriority(AUDIOSINK_PERIOD_IRQn, 4);
+    NVIC_ClearPendingIRQ(AUDIOSINK_PERIOD_IRQn);
     NVIC_EnableIRQ(AUDIOSINK_PERIOD_IRQn);
     NVIC_SetPriority(AUDIOSINK_PHASE_IRQn, 4);
+    NVIC_ClearPendingIRQ(AUDIOSINK_PHASE_IRQn);
     NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
 
     Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
@@ -375,10 +377,13 @@ void Audio_Init(void)
     Sys_DMA_ChannelDisable(OD_DMA_NUM);
     Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
                           (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
-    for (i = 0; i < 10000; i++)
     {
-        Sys_Watchdog_Refresh();
-        Sys_Delay_ProgramROM(1000);
+        uint32_t i;
+        for (i = 0; i < 10000; i++)
+        {
+            Sys_Watchdog_Refresh();
+            Sys_Delay_ProgramROM(1000);
+        }
     }
     DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
 

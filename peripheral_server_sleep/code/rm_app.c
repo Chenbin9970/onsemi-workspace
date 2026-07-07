@@ -170,19 +170,8 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
             }
             else
             {
-                if (type == RM_RX_TRANSFER_GOODPKT)
-                {
-                    if ((app_receiveCntr + 1) != (((outTempBuff[1] << 8) |
-                                                   outTempBuff[0])))
-                    {
-                        app_err2++;
-                    }
-                    app_receiveCntr = ((outTempBuff[1] << 8) | outTempBuff[0]);
-                }
-                else
-                {
-                    app_err1++;
-                }
+                memcpy(outTempBuff, ptr, *length);
+                Rendering_func(outTempBuff);
             }
         }
         break;
@@ -232,6 +221,18 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
         case LINK_ESTABLISHED:
         {
             RM_PRINTF("__RM_LINK_ESTABLISHED\n");
+            asrc_stable     = false;
+            cntr_stability  = 0;
+            audio_sink_cnt  = 0;
+            flag_ascc_phase = false;
+
+            Sys_ASRC_Reset();
+
+            NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
+            NVIC_EnableIRQ(AUDIOSINK_PERIOD_IRQn);
+            NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
+            NVIC_EnableIRQ(DSP1_IRQn);
+            NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
         }
         break;
 

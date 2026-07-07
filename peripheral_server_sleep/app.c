@@ -72,6 +72,7 @@ void Main_Loop(void)
         if (app_env.rm_start_requested)
         {
             app_env.rm_start_requested = 0;
+            Audio_Init();
             RF_SwitchToCPMode();
             RM_Enable(1000);
             app_env.audio_streaming = 1;
@@ -80,7 +81,17 @@ void Main_Loop(void)
         if (app_env.rm_stop_requested)
         {
             app_env.rm_stop_requested = 0;
+            /* Stop audio pipeline before RF switch */
+            NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
+            NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
+            NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
+            NVIC_DisableIRQ(DSP1_IRQn);
+            NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
+            Sys_Timers_Stop(1 << TIMER_REGUL);
+            Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+            Sys_DMA_ChannelDisable(OD_DMA_NUM);
             SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+            BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP;
             RM_Disable();
             Sys_Timers_Stop(SELECT_TIMER0);
             Sys_Timers_Stop(SELECT_TIMER1);
