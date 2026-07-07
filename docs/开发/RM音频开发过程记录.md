@@ -173,10 +173,11 @@ SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 | `rm_app.c` LINK_DISCONNECTED | 正常 | RM_Disable → Stop timer → BLE 切换 |
 | `app_process.c` DSP 保留 | 已启用 | `DSP_PRAM0/DRAM0/1/4/5` 在 sleep 中保留 |
 | `app_process.c` DSS resume | 已启用 | `Continue_Application` 每次 wakeup 恢复 DSP |
-| `app_init.c` DSP 固件加载 | **#if 0** | 开机加载会导致 `RF_SwitchToBLEMode` 崩溃 |
+| `app_init.c` DSP 固件加载 | **已启用** | `Sys_Flash_Copy` 正常，功耗无影响 |
 | `app_init.c` Audio_Init() | 已定义未调用 | 重配音频管线外围，DSP 固件靠 sleep 保留 |
 | `app.c` rm_start_requested | 无音频 | 直接 `RF_SwitchToCPMode` + `RM_Enable`，不调 `Audio_Init` |
-| `app.c` rm_stop_requested | 正常 | 和 `LINK_DISCONNECTED` 一致 |
+| `app.c` rm_stop_requested | 正常 | 切 BLE 前 `DSS_LPDSP32_PAUSE` 停 DSP（修复 `RF_SwitchToBLEMode` 死机） |
+| **功耗** | BLE 622µA | DSP 运行无额外功耗 |
 
 ### BLE↔RM 切换验证结果
 

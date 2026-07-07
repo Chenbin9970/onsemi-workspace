@@ -475,7 +475,6 @@ void App_Initialize(void)
         }
     }
 
-#if 0 /* TODO: DSP firmware load breaks RF_SwitchToBLEMode — enable after fix */
     /* Load DSP firmware (retained during sleep) */
     {
         uint32_t dsp_i;
@@ -512,7 +511,6 @@ void App_Initialize(void)
 
         SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
     }
-#endif
 
     /* Trim RC oscillator to 3 MHz (required by Sys_PowerModes_Wakeup) */
     Sys_Clocks_OscRCCalibratedConfig(3000);

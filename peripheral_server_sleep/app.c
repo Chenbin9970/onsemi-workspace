@@ -80,6 +80,7 @@ void Main_Loop(void)
         if (app_env.rm_stop_requested)
         {
             app_env.rm_stop_requested = 0;
+            SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
             RM_Disable();
             Sys_Timers_Stop(SELECT_TIMER0);
             Sys_Timers_Stop(SELECT_TIMER1);
