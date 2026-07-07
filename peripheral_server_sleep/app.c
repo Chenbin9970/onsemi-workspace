@@ -72,6 +72,7 @@ void Main_Loop(void)
         if (app_env.rm_start_requested)
         {
             app_env.rm_start_requested = 0;
+            APP_RM_Init(ear_side);
             Audio_Init();
             RF_SwitchToCPMode();
             RM_Enable(1000);

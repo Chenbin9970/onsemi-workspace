@@ -176,7 +176,8 @@ SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 | `app_init.c` DSP 固件加载 | **已启用** | `Sys_Flash_Copy` 正常，功耗无影响 |
 | `app_init.c` Audio_Init() | 已定义未调用 | 重配音频管线外围，DSP 固件靠 sleep 保留 |
 | `app.c` rm_start_requested | 无音频 | 直接 `RF_SwitchToCPMode` + `RM_Enable`，不调 `Audio_Init` |
-| `app.c` rm_stop_requested | 正常 | 切 BLE 前 `DSS_LPDSP32_PAUSE` 停 DSP（修复 `RF_SwitchToBLEMode` 死机） |
+| `app.c` rm_stop_requested | 正常 | 关 ISR → 停 DMA → DSS_PAUSE → BB_DEEP_SLEEP → RM_Disable → RF 切换 |
+| `rm_app.c` LINK_DISCONNECTED | 正常 | 加 `audio_streaming` 保护，避免 APP_RM_Init 误触发 |
 | **功耗** | BLE 622µA | DSP 运行无额外功耗 |
 
 ### BLE↔RM 切换验证结果
@@ -193,7 +194,14 @@ SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 | BLE 低功耗 | **622 µA** | DSP 固件未加载 (#if 0)，无音频硬件 |
 
 ### 下一步
+- ~~全部完成~~ 音频 + BLE↔RM 反复切换均正常
 
-1. ~~定位 DSP 固件加载为何导致 `RF_SwitchToBLEMode` 死机~~ → **已定位**：DSP **运行**（非 `Sys_Flash_Copy`）时切 RF 会死机，需在 `rm_stop_requested` 中先 `DSS_LPDSP32_PAUSE`
-2. 启用 DSP 固件加载 + `DSS_LPDSP32_RESUME`，`rm_stop_requested` 加 `DSS_PAUSE` 保护
-3. 启用 `Audio_Init()` 调用 → 音频 + BLE↔RM 切换完整工作
+### 最终修复要点
+
+| 问题 | 根因 | 修复 |
+|------|------|------|
+| 切 BLE 死机 | BB_WAKEUP 状态下切 RF | `BB_DEEP_SLEEP` 先恢复 |
+| 切 BLE 死机 | DSP 运行时切 RF | `DSS_LPDSP32_PAUSE` 先停 DSP |
+| 切 BLE 死机 | 音频 DMA 运行时切 RF | 先 `Sys_DMA_ChannelDisable` 停 DMA |
+| 第二次启 RM 崩溃 | `RM_Disable` 后未重配 RM | 每次启前调 `APP_RM_Init` |
+| APP_RM_Init 误触发 | LINK_DISCONNECTED 在 RM 未运行时调 RM_Disable | 加 `audio_streaming` 保护 |

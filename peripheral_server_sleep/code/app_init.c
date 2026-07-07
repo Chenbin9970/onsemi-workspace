@@ -336,6 +336,22 @@ void Audio_Init(void)
     ACS_VDDA_CP_CTRL->PTRIM_BYTE = VDDA_PTRIM_16MA_BYTE;
     BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP;
 
+    SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+    SYSCTRL->DSS_CTRL = DSS_RESET;
+    {
+        uint32_t d;
+        for (d = 0; d < 7000; d++) { Sys_Watchdog_Refresh(); }
+    }
+    {
+        uint8_t *m = MEM_MESSAGE;
+        m[0] = SUBFRAME_LENGTH;
+        m[1] = SUBFRAME_LENGTH;
+        m[2] = SUBFRAME_LENGTH;
+        m[3] = SUBFRAME_LENGTH;
+        m[4] = CODEC_MODE;
+    }
+    SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
+
     Sys_Audiosink_ResetCounters();
     Sys_Audiosink_InputClock(0, ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
     Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);

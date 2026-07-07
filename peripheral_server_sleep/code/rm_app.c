@@ -196,7 +196,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
     {
         case LINK_DISCONNECTED:
         {
-            if (app_env.init_done)
+            if (app_env.init_done && app_env.audio_streaming)
             {
                 RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
                 RM_Disable();
