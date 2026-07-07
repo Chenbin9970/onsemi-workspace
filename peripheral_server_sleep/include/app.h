@@ -115,7 +115,119 @@ extern "C"
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
 #define BUTTON_DIO                      2
-#define MEMCPY_DMA_NUM                  3
+#define DIO_SYNC_PULSE                  8
+
+#define SAMPL_CLK                       7
+
+#define THREE_BLOCK_APPN(x, y, z)       x##y##z
+#define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)
+#define TIMER_IRQn(x)                   THREE_BLOCK_APPN(TIMER, x, _IRQn)
+#define DMA_IRQ_FUNC(x)                 THREE_BLOCK_APPN(DMA, x, _IRQHandler)
+#define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)
+
+#define MEMCPY_DMA_NUM                  2
+#define OD_DMA_NUM                      5
+#define ASRC_IN_IDX                     3
+#define ASRC_OUT_IDX                    4
+#define RX_DMA_NUM                      5
+#define TX_DMA_NUM                      6
+#define UART_TX_NUM                     7
+
+#define TIMER_REGUL                     2
+
+#define OD_P_DIO                        0
+#define OD_N_DIO                        1
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
+                                                    AUDIO_CFG_DEC_RATE_Pos))
+#define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200                    | \
+                                         OD_ENABLE)
+
+#define RX_DMA_OD                      (DMA_LITTLE_ENDIAN |        \
+                                        DMA_ENABLE |               \
+                                        DMA_DISABLE_INT_DISABLE |  \
+                                        DMA_ERROR_INT_DISABLE |    \
+                                        DMA_COMPLETE_INT_DISABLE | \
+                                        DMA_COUNTER_INT_DISABLE |  \
+                                        DMA_START_INT_DISABLE |    \
+                                        DMA_DEST_WORD_SIZE_16 |    \
+                                        DMA_SRC_WORD_SIZE_32 |     \
+                                        DMA_SRC_ADDR_INC |         \
+                                        DMA_TRANSFER_M_TO_P |      \
+                                        DMA_DEST_ADDR_STATIC |     \
+                                        DMA_DEST_OD |              \
+                                        DMA_PRIORITY_0 |           \
+                                        DMA_ADDR_CIRC)
+
+#define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+#define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
+/* LPDSP32 CODEC related defines */
+#define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
+#define MEM_CM2DSP_ADDR1_ENC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 2)
+#define MEM_DSP2CM_ADDR0_ENC            (uint8_t *)(DSP_DRAM4_BASE)
+#define MEM_DSP2CM_ADDR1_ENC            (uint8_t *)(DSP_DRAM4_BASE + 80)
+#define MEM_CM2DSP_ADDR0_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4)
+#define MEM_CM2DSP_ADDR1_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4 + 80)
+#define MEM_DSP2CM_ADDR0_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 4)
+#define MEM_DSP2CM_ADDR1_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 6)
+#define MEM_MESSAGE                     (uint8_t *)(DSP_DRAM4_BASE + 12 * 160)
+#define CODEC_MODE                      3
+
+#define SUBFRAME_LENGTH                 8
+#define FRAME_LENGTH                    160
+#define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
+#define ENCODED_SUBFRAME_LENGTH         (3 * (SUBFRAME_LENGTH / 8))
+
+#define ASRC_CFG_THR                    16
+#define SHIFT_BIT                       20
+#define STABLE_THR                      400
+
+#define SIMUL                           0
+
+#include "dsp_pm_dm.h"
+
+extern uint8_t ear_side;
+extern uint8_t *Dsp2CmBuff0dec;
+extern int16_t BufferOut[2 * FRAME_LENGTH];
+extern bool asrc_stable;
+extern uint32_t cntr_stability;
+extern bool flag_ascc_phase;
+extern int64_t audio_sink_cnt;
+extern int64_t audio_sink_period_cnt;
+
+extern void Audio_Init(void);
+extern void Rendering_func(uint8_t *src_addr);
+extern void Asrc_reconfig(void);
+extern void DspDec_isr(void);
+extern void Ascc_phase_isr(void);
+extern void Packet_regulator_timer_isr(void);
+extern void Asrc_in_dma_isr(void);
+extern void Ascc_period_isr(void);
 
 #endif /* APP_RM_ENABLE */
 

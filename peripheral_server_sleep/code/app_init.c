@@ -327,6 +327,68 @@ void App_RM_BLE_Initialize(void)
  * Outputs       : None
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
+int16_t BufferOut[2 * FRAME_LENGTH];
+
+/* Audio pipeline init — called before RM_Enable in BLE+switch flow */
+void Audio_Init(void)
+{
+    uint32_t i;
+
+    ACS_VCC_CTRL->ICH_TRIM_BYTE  = VCC_ICHTRIM_16MA_BYTE;
+    ACS_VDDA_CP_CTRL->PTRIM_BYTE = VDDA_PTRIM_16MA_BYTE;
+    BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP;
+
+    Sys_Audiosink_ResetCounters();
+    Sys_Audiosink_InputClock(0, ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
+    Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
+    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
+    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
+
+    NVIC_ClearPendingIRQ(AUDIOSINK_PHASE_IRQn);
+    NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
+    NVIC_ClearPendingIRQ(AUDIOSINK_PERIOD_IRQn);
+    NVIC_EnableIRQ(AUDIOSINK_PERIOD_IRQn);
+
+    Sys_DMA_ChannelDisable(ASRC_IN_IDX);
+    Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
+                          (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
+
+    Sys_RFFE_SetTXPower(0);
+
+    NVIC_SetPriority(DSP1_IRQn, 4);
+    NVIC_EnableIRQ(DSP1_IRQn);
+    NVIC_SetPriority(TIMER_IRQn(TIMER_REGUL), 4);
+    NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
+    NVIC_SetPriority(AUDIOSINK_PERIOD_IRQn, 4);
+    NVIC_EnableIRQ(AUDIOSINK_PERIOD_IRQn);
+    NVIC_SetPriority(AUDIOSINK_PHASE_IRQn, 4);
+    NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
+
+    Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
+    Sys_Audio_Set_Config(AUDIO_CONFIG);
+    AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
+    AUDIO->SDM_CFG = 0x00002;
+    AUDIO->OD_GAIN = 0xfff;
+    Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
+                   DIO_NO_PULL | DIO_MODE_OD_P);
+
+    Sys_DMA_ChannelDisable(OD_DMA_NUM);
+    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
+    for (i = 0; i < 10000; i++)
+    {
+        Sys_Watchdog_Refresh();
+        Sys_Delay_ProgramROM(1000);
+    }
+    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+}
+
 void App_Initialize(void)
 {
     /* Mask all interrupts */
@@ -412,6 +474,45 @@ void App_Initialize(void)
             Sys_Delay_ProgramROM(1000);
         }
     }
+
+#if 0 /* TODO: DSP firmware load breaks RF_SwitchToBLEMode — enable after fix */
+    /* Load DSP firmware (retained during sleep) */
+    {
+        uint32_t dsp_i;
+
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Prog_40bit_PM[0], DSP_PRAM0_BASE,
+                       MEM_PM_SIZE, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[0], DSP_DRAM01_BASE,
+                       MEM_DMA_SIZE, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[MEM_DMA_SIZE + 3],
+                       DSP_DRAM4_BASE, 8000, COPY_TO_MEM_BITBAND);
+        Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM[(MEM_DMA_SIZE + 3) + 8001],
+                       (DSP_DRAM4_BASE + 0x1F41), (MEM_DMB_SIZE - 8000),
+                       COPY_TO_MEM_BITBAND);
+        while (FLASH_COPY_CTRL->BUSY_ALIAS != COPY_IDLE_BITBAND)
+        {
+            Sys_Watchdog_Refresh();
+        }
+
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+        SYSCTRL->DSS_CTRL = DSS_RESET;
+        for (dsp_i = 0; dsp_i < 7000; dsp_i++)
+        {
+            Sys_Watchdog_Refresh();
+        }
+
+        uint8_t *msg = MEM_MESSAGE;
+        msg[0] = SUBFRAME_LENGTH;
+        msg[1] = SUBFRAME_LENGTH;
+        msg[2] = SUBFRAME_LENGTH;
+        msg[3] = SUBFRAME_LENGTH;
+        msg[4] = CODEC_MODE;
+
+        SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
+    }
+#endif
 
     /* Trim RC oscillator to 3 MHz (required by Sys_PowerModes_Wakeup) */
     Sys_Clocks_OscRCCalibratedConfig(3000);

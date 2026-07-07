@@ -30,8 +30,10 @@
 volatile uint32_t loop_cnt = 0;
 
 #define MAX_BUF_CNT                     5
+#if 0
 float measure_buf[MAX_BUF_CNT];
 uint8_t buf_cnt = 0;
+#endif
 
 const struct ke_task_desc TASK_DESC_APP =
 {
@@ -215,14 +217,24 @@ void Sleep_Mode_Configure(struct sleep_mode_env_tag *sleep_mode_env)
     sleep_mode_env->mem_power_cfg = (DRAM0_POWER_ENABLE |
                                      DRAM1_POWER_ENABLE |
                                      DRAM2_POWER_ENABLE |
-                                     BB_DRAM0_POWER_ENABLE);
+                                     BB_DRAM0_POWER_ENABLE |
+                                     DSP_PRAM0_POWER_ENABLE |
+                                     DSP_DRAM0_POWER_ENABLE |
+                                     DSP_DRAM1_POWER_ENABLE |
+                                     DSP_DRAM4_POWER_ENABLE |
+                                     DSP_DRAM5_POWER_ENABLE);
 
     /* Configure memory at wake-up (PROM must be part of this) */
     sleep_mode_init_env.mem_power_cfg_wakeup = (PROM_POWER_ENABLE  |
                                                 DRAM0_POWER_ENABLE |
                                                 DRAM1_POWER_ENABLE |
                                                 DRAM2_POWER_ENABLE |
-                                                BB_DRAM0_POWER_ENABLE);
+                                                BB_DRAM0_POWER_ENABLE |
+                                                DSP_PRAM0_POWER_ENABLE |
+                                                DSP_DRAM0_POWER_ENABLE |
+                                                DSP_DRAM1_POWER_ENABLE |
+                                                DSP_DRAM4_POWER_ENABLE |
+                                                DSP_DRAM5_POWER_ENABLE);
 
     /* Set DMA channel used to save/restore RF registers
      * in each sleep/wake-up cycle */
@@ -338,6 +350,10 @@ void Continue_Application(void)
 
     /* Stop forcing baseband wake-up */
     BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_DEEP_SLEEP;
+
+#ifdef APP_RM_ENABLE
+    SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
+#endif
 
     /* Main application loop */
     Main_Loop();
@@ -521,6 +537,7 @@ int Msg_Handler(ke_msg_id_t const msg_id, void *param,
  * Outputs       : None
  * Assumptions   : Using 8 MHz System core clock.
  * ------------------------------------------------------------------------- */
+#if 0
 void AUDIOSINK_PERIOD_IRQHandler(void)
 {
     if (app_env.audio_streaming)
@@ -628,3 +645,4 @@ void AUDIOSINK_PERIOD_IRQHandler(void)
 
     AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = 1;
 }
+#endif /* 0 */

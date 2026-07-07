@@ -28,8 +28,6 @@
 #define RM_PRINTF(...)
 #endif
 
-uint8_t ear_side = APP_RM_AUDIO_CHANNEL;
-
 uint32_t data_rd = 0;
 
 /* For Test */
@@ -166,28 +164,8 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
         case RM_RX_TRANSFER_BADCRCPKT:
         case RM_RX_TRANSFER_NOPKT:
         {
-            static uint32_t trx_cnt = 0;
-            trx_cnt++;
-            if (type == RM_RX_TRANSFER_NOPKT && *length == 0)
-            {
-                RM_PRINTF("RM_TRX: NOPKT(empty) #%lu\r\n", trx_cnt);
-            }
-            else if (type == RM_RX_TRANSFER_NOPKT)
-            {
-                RM_PRINTF("RM_TRX: NOPKT(len=%d) #%lu\r\n", *length, trx_cnt);
-            }
-            else if (type == RM_RX_TRANSFER_GOODPKT)
-            {
-                RM_PRINTF("RM_TRX: GOODPKT #%lu\r\n", trx_cnt);
-            }
             if ((*length) == 0)
             {
-                /* PLC should be applied as tx hasn't sent data
-                 * for example: repeat previous packet, */
-                memset(outTempBuff, 0xaa, ((app_env.rm_param.audio_rate *
-                                            app_env.rm_param.interval_time) /
-                                           8000));
-
                 app_err1++;
             }
             else
@@ -199,23 +177,7 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
                     {
                         app_err2++;
                     }
-
                     app_receiveCntr = ((outTempBuff[1] << 8) | outTempBuff[0]);
-
-                    if (app_env.rm_param.audioChnl == RM_FIRST_AUDIO_CHANNEL)
-                    {
-                        if (outTempBuff[20] != 0xaf)
-                        {
-                            app_err3++;
-                        }
-                    }
-                    else
-                    {
-                        if (outTempBuff[20] != 0xbc)
-                        {
-                            app_err3++;
-                        }
-                    }
                 }
                 else
                 {
@@ -270,7 +232,6 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
         case LINK_ESTABLISHED:
         {
             RM_PRINTF("__RM_LINK_ESTABLISHED\n");
-
         }
         break;
 
