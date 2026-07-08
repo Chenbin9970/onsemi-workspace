@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -56,6 +56,10 @@ extern "C"
 #include "ble_bass.h"
 #include "calibration.h"
 #include "RTE_Device.h"
+#include "bs300_program_read.h"
+
+/* Enable BS300 I2C Flash Read test (requires DEBUG_UART_ENABLE for output) */
+#define BS300_TEST_ENABLE
 
 /* ----------------------------------------------------------------------------
  * Defines
@@ -487,6 +491,10 @@ extern void Continue_Application(void);
 extern void Enable_Audiosink_Measurement(void);
 
 extern void Main_Loop(void);
+
+#ifdef BS300_TEST_ENABLE
+extern void bs300_test_run(void);
+#endif
 
 extern void Measure_Battery_Level(void);
 

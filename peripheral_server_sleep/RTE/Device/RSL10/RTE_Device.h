@@ -2720,7 +2720,7 @@
 //   <i> Defines gpio pad number to be used as a data line.
 //   <i> Default: 0
 #ifndef RTE_I2C0_SDA_PIN_DEFAULT
- #define RTE_I2C0_SDA_PIN_DEFAULT  8
+ #define RTE_I2C0_SDA_PIN_DEFAULT  7
 #endif
 //   <o>SCL gpio pad
 //       <0x0=> 0
@@ -2742,7 +2742,7 @@
 //   <i> Defines gpio pad number to be used as a clock data line.
 //   <i> Default: 0
 #ifndef RTE_I2C0_SCL_PIN_DEFAULT
- #define RTE_I2C0_SCL_PIN_DEFAULT  7
+ #define RTE_I2C0_SCL_PIN_DEFAULT  8
 #endif
 // </h>
 // <h>Interrupt priority configuration

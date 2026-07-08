@@ -19,7 +19,11 @@
 int main()
 {
     App_Initialize();
-    //App_sleep_Initialize();
+
+#ifdef BS300_TEST_ENABLE
+    bs300_test_run();
+#endif
+
     /* Wait for 3 seconds to allow re-flashing directly after pressing RESET */
     Sys_Delay_ProgramROM(3 * SystemCoreClock);
 

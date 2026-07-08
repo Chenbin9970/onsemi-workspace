@@ -766,7 +766,7 @@ MDA 数据段为 16×48=768 字节的连续数据，直接按 byte 索引 0-767 
 
 | Byte | 字段 | 类型 | 范围 | 说明 |
 |------|------|------|------|------|
-| 0-2 | security_code | uint24 | [0, 16777215] | Data = communication code |
+| 0-2 | security_code | uint24 | [0, 16777215] | Data = communication code, **大端序** (MSB-first). 例: `0x012958` → `[0]=0x01 [1]=0x29 [2]=0x58` |
 | 3-47 | 0x00 | — | — | 填充 |
 
 ---
