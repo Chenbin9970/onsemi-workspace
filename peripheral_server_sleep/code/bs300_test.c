@@ -1,18 +1,13 @@
 /**
- * BS300 Flash Read — Hardware I2C Verification Test
+ * BS300 Driver Integration Test
  *
- * Complete startup sequence + program read:
- *   Phase 1: bs300_startup()  — MUTE → KEY_LOCK → VERIFY_COMM
- *   Phase 2: Calibration read — 3 packets (144 bytes)
- *   Phase 2: Global Profile   — 1 packet (48 bytes)
- *   Phase 3: Program Read     — READ_START → 10 packets (480 bytes)
- *   Phase 4: Parse + Print
+ * Uses bs300_driver_init() for one-shot init with NVR caching.
+ * On first boot: reads all 4 programs from BS300 chip via I2C (~2-3s).
+ * On subsequent boots: loads from NVR3 cache (~0 I2C time).
  */
 
 #include "bs300_test.h"
-#include "bs300_hal.h"
-#include "bs300_startup.h"
-#include "bs300_program_read.h"
+#include "bs300_driver.h"
 #include "app.h"
 
 #ifdef DEBUG_UART_ENABLE
@@ -33,66 +28,138 @@ static void hex_dump(const uint8_t *data, uint16_t len)
 }
 
 /* ============================================================
- * Key field printer
+ * Full program printer
  * ============================================================ */
 
-static void print_program_summary(const bs300_program_data_t *p)
+static void print_raw_data(const uint8_t *raw)
 {
-    PRINTF("=== BS300 Program 0 Decoded ===\r\n");
+    PRINTF("Raw 480B hex:");
+    hex_dump(raw, BS300_TOTAL_DATA);
+}
 
-    /* WDRC */
-    PRINTF("WDRC: %uKP, %u channels, limiter=%u\r\n",
-           p->wdrc.kneepoints_per_channel ? 2 : 1,
-           p->wdrc.num_channels,
-           p->wdrc.output_limiting_sel);
+static void print_wdrc(const bs300_wdrc_t *w)
+{
+    PRINTF("  num_channels=%u  KP=%u  limiter=%u\r\n",
+           w->num_channels,
+           w->kneepoints_per_channel ? 2 : 1,
+           w->output_limiting_sel);
 
-    PRINTF("WDRC BinGain[0..7]: ");
-    for (uint8_t i = 0; i < 8; i++)
-        PRINTF("%d ", (int8_t)(p->wdrc.bin_gain[i] - 27));
-    PRINTF("\r\n");
-
-    /* Volume */
-    PRINTF("Volume: beep=%u freq=%u min=%d max=%d\r\n",
-           p->volume.beep_level, p->volume.beep_frequency,
-           p->volume.min_volume, p->volume.max_volume);
-
-    /* Input */
-    PRINTF("Input: %s", p->inputs.input_type);
-    if (p->inputs.input_type[0] == 'm' && p->inputs.input_type[1] == 'm')
-        PRINTF(" ratio=%u type=%u", p->inputs.mic_mixing_ratio,
-               p->inputs.mm_type);
-    if (p->inputs.input_type[0] == 'd' && p->inputs.input_type[1] == 'd')
-        PRINTF(" mode=%u freq=%lu", p->inputs.mode, p->inputs.cutoff_frequency);
-    PRINTF("\r\n");
-
-    /* DFBC */
-    if (p->has_dfbc)
-        PRINTF("DFBC: mode=0x%02X\r\n", p->dfbc.dfbc_mode);
-
-    /* ENR */
-    if (p->has_enr) {
-        PRINTF("ENR: %u channels, nfsf=%u nhsf=%u nnsf=%u snasf=%u\r\n",
-               p->enr.num_channels, p->enr.nfsf, p->enr.nhsf,
-               p->enr.nnsf, p->enr.snasf);
+    PRINTF("  bin_gain (signed, offset 27):\r\n    ");
+    for (uint8_t i = 0; i < BS300_WDRC_BANDS; i++) {
+        PRINTF("%d ", (int8_t)(w->bin_gain[i] - 27));
+        if (i % 16 == 15) PRINTF("\r\n    ");
     }
 
-    /* ISS */
-    if (p->has_iss)
-        PRINTF("ISS: threshold=%d\r\n", p->iss.iss_threshold);
+    for (uint8_t i = 0; i < w->num_channels; i++) {
+        const bs300_wdrc_channel_t *ch = &w->channels[i];
+        PRINTF("  CH%-2u: fidx=%-2u  kp1_th=%-3d kp2_th=%-3d  lmt_th=%-3d  "
+               "epd(a=%u r=%u r_idx=%u)  "
+               "kp1(a=%u r=%u r_idx=%u)  "
+               "kp2(a=%u r=%u r_idx=%u)  "
+               "lmt(a=%u r=%u r_idx=%u)\r\n",
+               i, ch->frequency_idx,
+               (int8_t)ch->kp1_th, (int8_t)ch->kp2_th, (int8_t)ch->lmt_th,
+               ch->epd_at, ch->epd_rt, ch->epd_r,
+               ch->kp1_at, ch->kp1_rt, ch->kp1_r,
+               ch->kp2_at, ch->kp2_rt, ch->kp2_r,
+               ch->lmt_at, ch->lmt_rt, ch->lmt_r);
+    }
+}
 
-    /* WNR */
-    if (p->has_wnr)
-        PRINTF("WNR: dual_mic=%u strength=%u\r\n",
-               p->wnr.dual_mic_mode_sel,
-               p->wnr.suppression_strength_preset);
+static void print_volume(const bs300_volume_t *v)
+{
+    PRINTF("  beep_level=%u  beep_freq=%u  min_vol=%d  max_vol=%d  "
+           "batt_beep_level=%u  batt_beep_freq=%u\r\n",
+           v->beep_level, v->beep_frequency,
+           v->min_volume, v->max_volume,
+           v->battery_flat_beep_level, v->battery_flat_beep_frequency);
+}
 
-    /* AGCO */
-    if (p->has_agco)
-        PRINTF("AGCO: atk=%ums rel=%ums thr=%u\r\n",
-               p->agco.attack_time, p->agco.release_time,
-               p->agco.threshold);
+static void print_inputs(const bs300_inputs_t *inp)
+{
+    PRINTF("  type=%s", inp->input_type);
+    if (inp->input_type[0] == 'm' && inp->input_type[1] == 'm')
+        PRINTF("  ratio=%u  mm_type=%u", inp->mic_mixing_ratio, inp->mm_type);
+    if (inp->input_type[0] == 'd' && inp->input_type[1] == 'd')
+        PRINTF("  omni_thr=%u  mode=%u  cutoff=%lu",
+               inp->omni_threshold, inp->mode, inp->cutoff_frequency);
+    PRINTF("\r\n");
+}
 
-    PRINTF("---\r\n");
+static void print_dfbc(const bs300_dfbc_t *d)
+{
+    PRINTF("  mode=0x%02X\r\n", d->dfbc_mode);
+}
+
+static void print_enr(const bs300_enr_t *e)
+{
+    PRINTF("  num_channels=%u  nfsf=%u  nhsf=%u  nnsf=%u  snasf=%u\r\n",
+           e->num_channels, e->nfsf, e->nhsf, e->nnsf, e->snasf);
+    for (uint8_t i = 0; i < e->num_channels; i++) {
+        const bs300_enr_channel_t *ch = &e->channels[i];
+        PRINTF("  CH%-2u: fidx=%-2u  ma=%-2u  snrth=%-2u  nt=%-2u  unt=%-2u  "
+               "etr=%-3u  nrr=%-2u\r\n",
+               i, ch->frequency_idx, ch->ma, ch->snrth, ch->nt, ch->unt,
+               ch->etr, ch->nrr);
+    }
+}
+
+static void print_iss(const bs300_iss_t *s)
+{
+    PRINTF("  threshold=%u\r\n", s->iss_threshold);
+}
+
+static void print_wnr(const bs300_wnr_t *w)
+{
+    PRINTF("  dual_mic_mode=%u  strength_preset=%u\r\n",
+           w->dual_mic_mode_sel, w->suppression_strength_preset);
+}
+
+static void print_agco(const bs300_agco_t *a)
+{
+    PRINTF("  atk=%ums  rel=%ums  threshold=%u\r\n",
+           a->attack_time, a->release_time, a->threshold);
+}
+
+static void print_program_full(uint8_t idx, const bs300_program_data_t *p)
+{
+    PRINTF("\r\n========================================\r\n");
+    PRINTF("=== Program %u ===\r\n", idx);
+    PRINTF("========================================\r\n");
+
+    PRINTF("--- WDRC ---\r\n");
+    print_wdrc(&p->wdrc);
+
+    PRINTF("--- Volume/Beep ---\r\n");
+    print_volume(&p->volume);
+
+    PRINTF("--- Input ---\r\n");
+    print_inputs(&p->inputs);
+
+    if (p->has_dfbc) {
+        PRINTF("--- DFBC ---\r\n");
+        print_dfbc(&p->dfbc);
+    }
+
+    if (p->has_enr) {
+        PRINTF("--- ENR ---\r\n");
+        print_enr(&p->enr);
+    }
+
+    if (p->has_iss) {
+        PRINTF("--- ISS ---\r\n");
+        print_iss(&p->iss);
+    }
+
+    if (p->has_wnr) {
+        PRINTF("--- WNR ---\r\n");
+        print_wnr(&p->wnr);
+    }
+
+    if (p->has_agco) {
+        PRINTF("--- AGCO ---\r\n");
+        print_agco(&p->agco);
+    }
 }
 
 /* ============================================================
@@ -101,60 +168,33 @@ static void print_program_summary(const bs300_program_data_t *p)
 
 void bs300_test_run(void)
 {
-    static uint8_t             raw[BS300_TOTAL_DATA];
-    static uint8_t             profile[48];
-    static bs300_program_data_t prog;
-
-    PRINTF("\r\n=== BS300 Flash Read Test ===\r\n");
+    PRINTF("\r\n=== BS300 Driver Test ===\r\n");
     PRINTF("UART ready\r\n");
 
-    /* --- Hardware init --- */
-    PRINTF("I2C init... ");
-    if (!bs300_hal_init()) {
-        PRINTF("FAIL\r\n");
+    /* One-shot init: handles I2C + NVR cache transparently */
+    if (!bs300_driver_init()) {
+        PRINTF("BS300: driver init FAIL\r\n");
         return;
     }
-    PRINTF("OK (SCL=DIO%u SDA=DIO%u, %luHz)\r\n",
-           BS300_I2C_SCL_DIO, BS300_I2C_SDA_DIO,
-           (uint32_t)BS300_I2C_SPEED_HZ);
 
-    /* Wait 800ms for DSP power rail to stabilize */
-    bs300_delay_ms(800);
-
-    /* --- Phase 1: Startup (unlock chip) --- */
-    PRINTF("BS300 startup (MUTE → KEY_LOCK → VERIFY_COMM)... ");
-    if (!bs300_startup()) {
-        PRINTF("FAIL\r\n");
-        return;
+    /* Calibration */
+    const uint8_t *calib = bs300_driver_get_calibration();
+    if (calib) {
+        PRINTF("Calibration (144 bytes):");
+        hex_dump(calib, 144);
+    } else {
+        PRINTF("Calibration: not loaded (NVR cached boot)\r\n");
     }
-    PRINTF("OK\r\n");
 
-    /* --- Phase 2: Global Profile read --- */
-    PRINTF("Global Profile read... ");
-    if (!bs300_read_global_profile(profile)) {
-        PRINTF("FAIL\r\n");
-        return;
+    /* Print all 4 programs fully */
+    for (uint8_t i = 0; i < 4; i++) {
+        const bs300_program_data_t *prog = bs300_driver_get_program(i);
+        if (prog) {
+            print_program_full(i, prog);
+        } else {
+            PRINTF("Program %u: NULL\r\n", i);
+        }
     }
-    PRINTF("OK (48 bytes)\r\n");
-    hex_dump(profile, 48);
 
-    /* --- Phase 3: Program read --- */
-    PRINTF("Program 0 read (READ_START → 10 packets)... ");
-    if (!bs300_program_read(0, raw)) {
-        PRINTF("FAIL\r\n");
-        return;
-    }
-    PRINTF("OK (%u bytes)\r\n", BS300_TOTAL_DATA);
-    hex_dump(raw, BS300_TOTAL_DATA);
-
-    /* --- Phase 4: Parse --- */
-    PRINTF("Parsing... ");
-    if (!bs300_program_parse(raw, &prog)) {
-        PRINTF("FAIL\r\n");
-        return;
-    }
-    PRINTF("OK\r\n");
-    print_program_summary(&prog);
-
-    PRINTF("=== BS300 Flash Read Test DONE ===\r\n");
+    PRINTF("\r\n=== BS300 Driver Test DONE ===\r\n");
 }
