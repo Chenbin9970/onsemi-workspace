@@ -15,8 +15,13 @@
 #include "bs300_hal.h"
 #include "bs300_startup.h"
 #include "bs300_storage.h"
+#include "bs300_ram_sync.h"
 #include "app.h"
 #include <string.h>
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
 
 #define CALIB_SIZE  144
 
@@ -131,4 +136,13 @@ bool bs300_driver_refresh(void)
 
     s_initialized = true;
     return true;
+}
+
+bool bs300_driver_sync_ram(uint8_t prog_idx)
+{
+    if (!s_initialized) {
+        PRINTF("BS300: driver not initialized\r\n");
+        return false;
+    }
+    return bs300_ram_sync(prog_idx);
 }

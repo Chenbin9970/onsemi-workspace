@@ -19,6 +19,10 @@
 #include <string.h>
 #include "app.h"
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 #define HEADER_OFFSET           1920
 #define HEADER_SIZE             8
 #define PROG_OFFSET(idx)        ((idx) * BS300_TOTAL_DATA)

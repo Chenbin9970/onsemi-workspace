@@ -11,6 +11,10 @@
 #include "app.h"
 #include <string.h>
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* ============================================================
  * Internal Constants — frame payload lengths (addr excluded,
  * bs300_i2c_write sends addr via I2C hardware START).
