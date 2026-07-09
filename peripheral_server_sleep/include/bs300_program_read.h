@@ -43,7 +43,7 @@ typedef struct {
     uint8_t  num_channels;
     uint8_t  bin_gain[BS300_WDRC_BANDS];
     bs300_wdrc_channel_t channels[BS300_WDRC_MAX_CHANNELS];
-} bs300_wdrc_t;
+} bs300_wdrc_parsed_t;
 
 typedef struct {
     uint8_t  beep_level;
@@ -84,7 +84,7 @@ typedef struct {
     uint8_t  num_channels;
     uint8_t  snasf;
     bs300_enr_channel_t channels[BS300_ENR_MAX_CHANNELS];
-} bs300_enr_t;
+} bs300_enr_parsed_t;
 
 typedef struct {
     uint8_t iss_threshold;
@@ -102,13 +102,13 @@ typedef struct {
 } bs300_agco_t;
 
 typedef struct {
-    bs300_wdrc_t   wdrc;
+    bs300_wdrc_parsed_t   wdrc;
     bs300_volume_t volume;
     bs300_inputs_t inputs;
     bool           has_dfbc;
     bs300_dfbc_t   dfbc;
     bool           has_enr;
-    bs300_enr_t    enr;
+    bs300_enr_parsed_t    enr;
     bool           has_iss;
     bs300_iss_t    iss;
     bool           has_wnr;

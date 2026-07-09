@@ -122,7 +122,7 @@ static bool _decode_wdrc_channel(bs300_bitreader_t *br,
     return true;
 }
 
-static bool _decode_wdrc(const uint8_t *data, uint16_t len, bs300_wdrc_t *wdrc)
+static bool _decode_wdrc(const uint8_t *data, uint16_t len, bs300_wdrc_parsed_t *wdrc)
 {
     bs300_bitreader_t br;
     bs300_br_init(&br, data, len);
@@ -191,7 +191,7 @@ static void _decode_dfbc(const uint8_t *data, bs300_dfbc_t *dfbc)
     dfbc->dfbc_mode = data[0];
 }
 
-static bool _decode_enr(const uint8_t *data, uint16_t len, bs300_enr_t *enr)
+static bool _decode_enr(const uint8_t *data, uint16_t len, bs300_enr_parsed_t *enr)
 {
     bs300_bitreader_t br;
     bs300_br_init(&br, data, len);

@@ -94,3 +94,23 @@
 - 输出必须与 `param_commands_0.json` **和** `param_commands_1.json` 两个 Program 做逐 byte/word 对比。两个都通过才算完成。
 - 出现 FAIL 必须追到根因（参数映射错误 / 公式 bug / 已知问题），**禁止**以"校准数据差异"为由跳过。
 - **禁止**为同一任务写多个脚本（本次写了 6 个）。一个脚本，复用 codegen，输出 + 对比一次完成。
+- **验证必须覆盖完整链路**，不能只验证编码（encode），还要验证 Flash 解码（decode）。`crossval_flash_decode.py` 走全链路：Flash 480B → decode → value_in_MT → encode → 对照 param_commands。
+
+### 规则 17：BS300 Flash 解码必须逐字段确认偏移量，禁止假设 raw == value_in_MT
+- Flash 中存储的是**压缩编码值**，不是 value_in_MT。解码时每个字段有独立的偏移量，**必须逐一对照手册确认**，禁止假设 `raw == value_in_MT`。
+- **已验证的 Flash→value_in_MT 偏移表（不可凭记忆，每次实现前核对）**：
+
+| Flash 字段 | 位宽 | Flash 存储公式 | 解码操作 |
+|-----------|------|---------------|---------|
+| bin_gain | 7-bit | `raw = 27 + value_in_MT` | `value_in_MT = raw - 27` |
+| lmt_th (Limiter Threshold) | 7-bit | `raw = value_in_MT - 30` | `value_in_MT = raw + 30` |
+| noise_th / nt (ENR Noise Thr) | 6-bit | `raw = value_in_MT - 10` | `value_in_MT = raw + 10` |
+| upper_noise_th / unt (ENR Upper) | 6-bit | `raw = value_in_MT - 40` | `value_in_MT = raw + 40` |
+| kp1_th / kp2_th (KP Threshold) | 7-bit | `raw = value_in_MT` | 无偏移 |
+| snr_th (ENR SNR Threshold) | 5-bit | `raw = value_in_MT` | 无偏移 |
+| max_att (ENR Max Att) | 5-bit | `raw = value_in_MT` | 无偏移 |
+| etr_x100 (ENR ETR) | 7-bit | `raw = value_in_MT` | 无偏移 |
+| nrr_x10 (ENR NRR) | 4-bit | `raw = value_in_MT` | 无偏移 |
+
+- **历史 bug 教训**：`crossval_c_vs_py.py` 只验证编码（param_values → encode → param_commands），绕过了 Flash 解码步骤。导致 lmt_th（缺 +30）、noise_th（缺 +10）、upper_noise_th（缺 +40）三个字段的 Flash 解码在 C 代码中全部错误，而交叉验证仍然 PASS。**从 Flash 源码生成 C 代码时，必须把 Flash 解码也纳入验证闭环。**
+- **验证脚本**：`scripts/crossval_flash_decode.py` — 输入 `program_0/1.json` + `calibration.json`，输出与 `param_commands_0/1.json` 逐 byte 对比。两个 Program 都通过才算 Flash 解码正确。

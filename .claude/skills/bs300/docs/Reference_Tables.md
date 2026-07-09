@@ -23,6 +23,29 @@
 
 ## 2. 未实现模块（按优先级）
 
+## 2. Flash 解码偏移表（必读，禁止假设 raw == value_in_MT）
+
+Flash 480B 中存储的是**压缩编码值**，解码为 value_in_MT 时每个字段有独立偏移。**写 Flash 解码器前必须逐字段核对本表。**
+
+| Flash 字段 | 位宽 | Flash 存储公式 | 解码操作 | 说明 |
+|-----------|------|---------------|---------|------|
+| `bin_gain[i]` | 7-bit | `raw = 27 + value_in_MT` | `value_in_MT = raw - 27` | 有符号 [-27, 100] |
+| `kp1_th_db[i]` | 7-bit | `raw = value_in_MT` | 无偏移 | 直接存储 |
+| `kp2_th_db[i]` | 7-bit | `raw = value_in_MT` | 无偏移 | 直接存储 |
+| `lmt_th_db[i]` | 7-bit | `raw = value_in_MT - 30` | `value_in_MT = raw + 30` | **易错！** |
+| `noise_th_db[i]` (nt) | 6-bit | `raw = value_in_MT - 10` | `value_in_MT = raw + 10` | **易错！** |
+| `upper_noise_th_db[i]` (unt) | 6-bit | `raw = value_in_MT - 40` | `value_in_MT = raw + 40` | **易错！** |
+| `snr_th_db[i]` | 5-bit | `raw = value_in_MT` | 无偏移 | [4,30] |
+| `max_att_db[i]` (ma) | 5-bit | `raw = value_in_MT` | 无偏移 | [0,30] |
+| `etr_x100[i]` | 7-bit | `raw = value_in_MT` | 无偏移 | [20,100] |
+| `nrr_x10[i]` | 4-bit | `raw = value_in_MT` | 无偏移 | [1,15] |
+
+**历史 bug（2026-07-09）**：lmt_th、noise_th、upper_noise_th 三个字段的 Flash 解码在 C 代码中漏加偏移量。根因是 `crossval_c_vs_py.py` 只验证编码（param_values → encode），绕过了 Flash 解码步骤。已通过新增 `crossval_flash_decode.py`（全链路验证）修复。
+
+**验证要求**：任何 Flash 解码器的变更，必须跑 `scripts/crossval_flash_decode.py`，输入 `program_0/1.json`，输出与 `param_commands_0/1.json` 逐 byte 对比，两个 Program 都通过。
+
+## 3. 未实现模块（按优先级）
+
 **高优**：基本控制 (Mute/Active/IsConnect 等 8 条)、WDRC Display (4 条)、Device Config (3 包)
 
 **中优**：系统配置 (Digital VC/Standby/Volume Learning 等 12 条)、信号发生器 (Stimulate/ToneGen 3 条)、WDRC Acclim Param (4 条)、Flash Noise Gen2 + WDRC Acclim

@@ -37,7 +37,7 @@ static void print_raw_data(const uint8_t *raw)
     hex_dump(raw, BS300_TOTAL_DATA);
 }
 
-static void print_wdrc(const bs300_wdrc_t *w)
+static void print_wdrc(const bs300_wdrc_parsed_t *w)
 {
     PRINTF("  num_channels=%u  KP=%u  limiter=%u\r\n",
            w->num_channels,
@@ -91,7 +91,7 @@ static void print_dfbc(const bs300_dfbc_t *d)
     PRINTF("  mode=0x%02X\r\n", d->dfbc_mode);
 }
 
-static void print_enr(const bs300_enr_t *e)
+static void print_enr(const bs300_enr_parsed_t *e)
 {
     PRINTF("  num_channels=%u  nfsf=%u  nhsf=%u  nnsf=%u  snasf=%u\r\n",
            e->num_channels, e->nfsf, e->nhsf, e->nnsf, e->snasf);
