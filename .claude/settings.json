@@ -90,7 +90,9 @@
       "Bash(ls Debug/code/bs300*)",
       "Bash(grep -l bs300 Debug/RTE/Utility/subdir.mk Debug/subdir.mk)",
       "Bash(py -X utf8 scripts/crossval_c_vs_py.py)",
-      "Bash(py -X utf8 scripts/crossval_flash_decode.py)"
+      "Bash(py -X utf8 scripts/crossval_flash_decode.py)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code",

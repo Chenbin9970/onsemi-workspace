@@ -14,6 +14,10 @@
 #include "printf.h"
 #endif
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* ============================================================
  * Hex dump helper
  * ============================================================ */
@@ -194,6 +198,12 @@ void bs300_test_run(void)
         } else {
             PRINTF("Program %u: NULL\r\n", i);
         }
+    }
+
+    /* Sync program 0 to BS300 RAM */
+    PRINTF("\r\n=== Syncing Program 0 to RAM ===\r\n");
+    if (!bs300_driver_sync_ram(0)) {
+        PRINTF("BS300: RAM sync FAIL\r\n");
     }
 
     PRINTF("\r\n=== BS300 Driver Test DONE ===\r\n");
