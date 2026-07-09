@@ -19,6 +19,10 @@
 #include "app.h"
 #include <string.h>
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 static bool s_initialized;
 static uint8_t s_raw[BS300_TOTAL_DATA];  /* 480B — shared work buffer */
 
@@ -29,20 +33,20 @@ static bool read_and_save_all(void)
 {
     for (uint8_t i = 0; i < 4; i++) {
         if (!bs300_program_read(i, s_raw)) {
-            PRINTF("BS300: program %u read FAIL\r\n", i);
+            PRINTF("[BS300] program %u read FAIL\r\n", i);
             return false;
         }
         if (!bs300_storage_write_program(i, s_raw)) {
-            PRINTF("BS300: program %u NVR write FAIL\r\n", i);
+            PRINTF("[BS300] program %u NVR write FAIL\r\n", i);
             return false;
         }
         bs300_delay_ms(5);
         Sys_Watchdog_Refresh();
     }
-    PRINTF("BS300: 4 programs read + saved to NVR3\r\n");
+    PRINTF("[BS300] 4 programs read + saved to NVR3\r\n");
 
     if (!bs300_storage_finalize()) {
-        PRINTF("BS300: NVR3 finalize FAIL\r\n");
+        PRINTF("[BS300] NVR3 finalize FAIL\r\n");
         return false;
     }
     return true;
@@ -58,25 +62,25 @@ bool bs300_driver_init(void)
 
     /* Step 1: I2C init + DSP power stabilization */
     if (!bs300_hal_init()) {
-        PRINTF("BS300: I2C init FAIL\r\n");
+        PRINTF("[BS300] I2C init FAIL\r\n");
         return false;
     }
     bs300_delay_ms(2000);
 
     /* Step 2: Unlock chip (MUTE → KEY_LOCK → VERIFY_COMM) */
     if (!bs300_startup()) {
-        PRINTF("BS300: startup FAIL\r\n");
+        PRINTF("[BS300] startup FAIL\r\n");
         return false;
     }
-    PRINTF("BS300: startup OK\r\n");
+    PRINTF("[BS300] startup OK\r\n");
 
     /* Step 3: Load programs from NVR3 cache or read from BS300 Flash */
     if (bs300_storage_is_valid()) {
-        PRINTF("BS300: NVR cache valid, skip flash read\r\n");
+        PRINTF("[BS300] NVR cache valid, skip flash read\r\n");
     } else {
-        PRINTF("BS300: NVR empty, reading from chip...\r\n");
+        PRINTF("[BS300] NVR empty, reading from chip...\r\n");
         if (!bs300_storage_erase()) {
-            PRINTF("BS300: NVR3 erase FAIL\r\n");
+            PRINTF("[BS300] NVR3 erase FAIL\r\n");
             return false;
         }
         if (!read_and_save_all()) return false;
@@ -86,7 +90,7 @@ bool bs300_driver_init(void)
     bs300_cache_prog_inputs();
 
     /* Step 5: MUTE → sync active program → ACTIVE */
-    PRINTF("BS300: syncing active program to RAM...\r\n");
+    PRINTF("[BS300] syncing active program to RAM...\r\n");
     bs300_mute();
 
     {
@@ -98,7 +102,7 @@ bool bs300_driver_init(void)
     }
 
     bs300_active();
-    PRINTF("BS300: init complete, DSP active\r\n");
+    PRINTF("[BS300] init complete, DSP active\r\n");
 
     s_initialized = true;
     return true;

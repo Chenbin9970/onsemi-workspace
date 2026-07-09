@@ -6,6 +6,10 @@
 #include "bs300_encode_tables.h"
 /* rsl10: no app_config */
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* ================================================================
  *  Bit-level reading helpers for Flash decode
  * ================================================================ */
@@ -326,12 +330,12 @@ int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out)
 
     /* Validate header */
     if (flash_buf[1] != 0x80 || flash_buf[2] != 0x00) {
-        PRINTF("[BS300]bs300: flash_to_struct invalid header\r\n");
+        PRINTF("[BS300] flash_to_struct invalid header\r\n");
         return -1;
     }
     module_count = flash_buf[3] - 1;
     if (module_count == 0 || module_count > 16) {
-        PRINTF("[BS300]bs300: flash_to_struct bad module_count=%d\n",
+        PRINTF("[BS300] flash_to_struct bad module_count=%d\r\n",
                     module_count);
         return -1;
     }
@@ -378,14 +382,6 @@ int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out)
                 out->modules.polar_pattern = byte2 & 0x07;
                 out->modules.omni_threshold = ddm2[1];
 
-                PRINTF("[BS300]bs300: [DDM2-Flash] raw: %02X %02X %02X %02X %02X %02X\n",
-                            ddm2[0], ddm2[1], ddm2[2], ddm2[3], ddm2[4], ddm2[5]);
-                PRINTF("[BS300]bs300: [DDM2-Flash] open=%d adm_fdm=%d polar=%d omni=%d cutoff=0x%06X\n",
-                            out->modules.open_ear,
-                            out->modules.adm_fdm,
-                            out->modules.polar_pattern,
-                            out->modules.omni_threshold,
-                            (uint32_t)(ddm2[3] | (ddm2[4] << 8) | (ddm2[5] << 16)));
             }
             ret = 0;
             break;
@@ -409,14 +405,14 @@ int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out)
             break;
         }
         if (ret < 0) {
-            PRINTF("[BS300]bs300: flash_to_struct module=%d fail\n",
+            PRINTF("[BS300] flash_to_struct module=%d fail\n",
                         cmd_data);
             return ret;
         }
         pos += length_bytes;
     }
 
-    PRINTF("[BS300]bs300: flash_to_struct ok, modules=%d, channels=%d\n",
+    PRINTF("[BS300] flash_to_struct ok, modules=%d, channels=%d\r\n",
                 module_count, out->wdrc.total_channels);
     return 0;
 }

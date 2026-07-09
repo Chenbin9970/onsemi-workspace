@@ -18,6 +18,8 @@
 #define PRINTF(...) ((void)0)
 #endif
 
+#ifdef DEBUG_UART_ENABLE
+
 /* ============================================================
  * Hex dump helper
  * ============================================================ */
@@ -166,28 +168,34 @@ static void print_program_full(uint8_t idx, const bs300_program_data_t *p)
     }
 }
 
+#endif /* DEBUG_UART_ENABLE */
+
 /* ============================================================
  * Test Runner
  * ============================================================ */
 
 void bs300_test_run(void)
 {
-    PRINTF("\r\n=== BS300 Driver Test ===\r\n");
-    PRINTF("UART ready\r\n");
+#ifdef DEBUG_UART_ENABLE
+    PRINTF("\r\n[BS300] === Driver Test ===\r\n");
+#endif
 
     /* One-shot init: handles I2C + NVR cache transparently */
     if (!bs300_driver_init()) {
-        PRINTF("BS300: driver init FAIL\r\n");
+        PRINTF("[BS300] driver init FAIL\r\n");
         return;
     }
 
+#ifdef DEBUG_UART_ENABLE
     /* Calibration */
-    const uint8_t *calib = bs300_driver_get_calibration();
-    if (calib) {
-        PRINTF("Calibration (144 bytes):");
-        hex_dump(calib, 144);
-    } else {
-        PRINTF("Calibration: not loaded (NVR cached boot)\r\n");
+    {
+        const uint8_t *calib = bs300_driver_get_calibration();
+        if (calib) {
+            PRINTF("[BS300] Calibration (144 bytes):");
+            hex_dump(calib, 144);
+        } else {
+            PRINTF("[BS300] Calibration: not loaded (NVR cached boot)\r\n");
+        }
     }
 
     /* Print all 4 programs fully */
@@ -196,15 +204,19 @@ void bs300_test_run(void)
         if (prog) {
             print_program_full(i, prog);
         } else {
-            PRINTF("Program %u: NULL\r\n", i);
+            PRINTF("[BS300] Program %u: NULL\r\n", i);
         }
     }
 
+    PRINTF("\r\n[BS300] === Syncing Program 0 to RAM ===\r\n");
+#endif
+
     /* Sync program 0 to BS300 RAM */
-    PRINTF("\r\n=== Syncing Program 0 to RAM ===\r\n");
     if (!bs300_driver_sync_ram(0)) {
-        PRINTF("BS300: RAM sync FAIL\r\n");
+        PRINTF("[BS300] RAM sync FAIL\r\n");
     }
 
-    PRINTF("\r\n=== BS300 Driver Test DONE ===\r\n");
+#ifdef DEBUG_UART_ENABLE
+    PRINTF("\r\n[BS300] === Driver Test DONE ===\r\n");
+#endif
 }

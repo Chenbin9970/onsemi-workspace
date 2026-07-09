@@ -7,6 +7,10 @@
 #include <rsl10.h>
 #include <string.h>
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* ================================================================
  *  Boot-time cache + shared work buffer
  * ================================================================ */
@@ -337,7 +341,6 @@ static int sync_program_inner(bs300_prog_struct_t *prog,
 {
     bs300_calib_t calib;
     uint8_t input_type;
-    uint8_t _k;
 
     if (prog == NULL) return -1;
 
@@ -352,19 +355,10 @@ static int sync_program_inner(bs300_prog_struct_t *prog,
            prog->wdrc.total_channels, prog->wdrc.kp_mode,
            prog->wdrc.limiter, prog->enr.enable_num_ch,
            prog->modules.input_selection);
-    PRINTF("[BS300] CALIB mic1[0..31]:");
-    for (_k=0;_k<32;_k++) PRINTF(" %d", calib.mic1_band[_k]);
-    PRINTF("\r\n");
-    PRINTF("[BS300] CALIB out[0..31]:");
-    for (_k=0;_k<32;_k++) PRINTF(" %d", calib.output_band[_k]);
-    PRINTF("\r\n");
     PRINTF("[BS300] CALIB mic2_gd=%d mic_delay=%d tc_gd=%d dai_gd=%d fbc_bd=%d\r\n",
            calib.mic2_gain_diff, calib.mic_delay,
            calib.telecoil_gain_diff, calib.dai_gain_diff,
            calib.fbc_bulk_delay);
-    PRINTF("[BS300] WDRC bin_gain[0..31]:");
-    for (_k=0;_k<32;_k++) PRINTF(" %d", prog->wdrc.bin_gain[_k]);
-    PRINTF("\r\n");
 
     return bs300_sync_program_dynamic(prog, &calib, input_type, session);
 }

@@ -113,7 +113,7 @@ bool bs300_storage_finalize(void)
         != FLASH_ERR_NONE)
         return false;
 
-    PRINTF("BS300: NVR3 finalized (CRC=%04X)\r\n", crc);
+    PRINTF("[BS300] NVR3 finalized (CRC=%04X)\r\n", crc);
     return true;
 }
 

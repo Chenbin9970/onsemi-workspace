@@ -2,6 +2,10 @@
 #include "app.h"
 #include <string.h>
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 int bs300_parse_calibration(const uint8_t *raw, bs300_calib_t *out)
 {
     uint8_t i;

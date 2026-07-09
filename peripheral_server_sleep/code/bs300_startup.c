@@ -127,7 +127,7 @@ static bool _send_simple_cmd(uint32_t cmd_word, uint32_t wait_ms)
     build_simple_cmd(cmd_word, frame);
     uint8_t cmd_h = (uint8_t)((cmd_word >> 16) & 0xFF);
 
-    PRINTF("  I2C TX[%u] CMD=0x%06lX:", SIMPLE_CMD_LEN, cmd_word);
+    PRINTF("[BS300] I2C TX[%u] CMD=0x%06lX:", SIMPLE_CMD_LEN, cmd_word);
     for (uint8_t i = 0; i < SIMPLE_CMD_LEN; i++)
         PRINTF(" %02X", frame[i]);
     PRINTF("\r\n");
@@ -157,7 +157,7 @@ bool bs300_advanced_write(uint32_t cmd_word, const uint8_t *data)
     build_adv_write(cmd_word, data, frame);
     uint8_t cmd_h = (uint8_t)((cmd_word >> 16) & 0xFF);
 
-    PRINTF("  I2C TX[%u] CMD=0x%06lX:", ADV_WRITE_LEN, cmd_word);
+    PRINTF("[BS300] I2C TX[%u] CMD=0x%06lX:", ADV_WRITE_LEN, cmd_word);
     for (uint8_t i = 0; i < ADV_WRITE_LEN; i++)
         PRINTF(" %02X", frame[i]);
     PRINTF("\r\n");
@@ -188,7 +188,7 @@ bool bs300_read_packet(uint32_t prepare_cmd, uint8_t *data_out)
     /* Step 3: Read Request (len=0x10) → I2C Read 52 bytes */
     build_read_req(0x10, frame);
 
-    PRINTF("  I2C TX[%u] READ_REQ:", READ_REQ_LEN);
+    PRINTF("[BS300] I2C TX[%u] READ_REQ:", READ_REQ_LEN);
     for (uint8_t i = 0; i < READ_REQ_LEN; i++)
         PRINTF(" %02X", frame[i]);
     PRINTF("\r\n");
@@ -199,7 +199,7 @@ bool bs300_read_packet(uint32_t prepare_cmd, uint8_t *data_out)
     if (!bs300_i2c_read(BS300_I2C_ADDR, resp, DATA_RESP_LEN))
         return false;
 
-    PRINTF("  I2C RX[%u]:", DATA_RESP_LEN);
+    PRINTF("[BS300] I2C RX[%u]:", DATA_RESP_LEN);
     for (uint8_t i = 0; i < DATA_RESP_LEN; i++)
         PRINTF(" %02X", resp[i]);
     PRINTF("\r\n");
