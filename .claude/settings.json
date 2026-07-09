@@ -92,7 +92,8 @@
       "Bash(py -X utf8 scripts/crossval_c_vs_py.py)",
       "Bash(py -X utf8 scripts/crossval_flash_decode.py)",
       "Bash(git fetch *)",
-      "Bash(git pull *)"
+      "Bash(git pull *)",
+      "Bash(\"/c/Program Files \\(x86\\)/SEGGER/JLink/JLink.exe\" -CommanderScript \"c:/Users/admin/onsemi-workspace4.5/erase_nvr3.jlink\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\admin\\AppData\\Local\\Arm\\Packs\\ONSemiconductor\\RSL10\\3.7.606\\source\\firmware\\syslib\\code",
