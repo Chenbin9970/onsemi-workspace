@@ -18,8 +18,8 @@
 #define SCL_PIN   BS300_I2C_SCL_DIO   /* DIO8 */
 #define SDA_PIN   BS300_I2C_SDA_DIO   /* DIO7 */
 
-static const uint32_t bit_delay     = 250;   /* data-bit delay loops (10x slower) */
-static const uint32_t ack_delay_val = 1250;  /* ACK delay loops (5x, 10x slower) */
+static uint32_t bit_delay     = BS300_I2C_DELAY_NORMAL;  /* data-bit delay loops */
+static uint32_t ack_delay_val = BS300_I2C_DELAY_NORMAL * 5;  /* ACK = 5x data-bit */
 
 /* ============================================================
  * GPIO helpers — same as verified driver
@@ -90,6 +90,12 @@ static uint8_t i2c_rx_byte(void)
 /* ============================================================
  * Public API
  * ============================================================ */
+
+void bs300_i2c_set_speed(uint32_t delay)
+{
+    bit_delay = delay;
+    ack_delay_val = delay * 5;
+}
 
 bool bs300_hal_init(void)
 {

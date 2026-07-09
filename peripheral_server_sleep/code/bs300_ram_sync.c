@@ -1032,11 +1032,15 @@ int bs300_audiometry_exit(void)
  * ================================================================ */
 int bs300_mute(void)
 {
-    return bs300_send_simple_cmd(BS300_CMD_MUTE) ? 0 : -1;
+    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);  /* slow before critical cmd */
+    bool ok = bs300_send_simple_cmd(BS300_CMD_MUTE);
+    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_FAST);  /* DSP stopped, go fast */
+    return ok ? 0 : -1;
 }
 
 int bs300_active(void)
 {
+    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);  /* slow before critical cmd */
     return bs300_send_simple_cmd(BS300_CMD_ACTIVE) ? 0 : -1;
 }
 
