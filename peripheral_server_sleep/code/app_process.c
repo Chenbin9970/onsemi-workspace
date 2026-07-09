@@ -25,6 +25,24 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "bs300_ram_sync.h"
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* BS300 async sync timer handler — see bs300_ram_sync.h */
+int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
+                    ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    (void)msg_id;
+    (void)param;
+    (void)dest_id;
+    (void)src_id;
+    PRINTF("[BS300] timer tick\r\n");
+    bs300_sync_timer_handler();
+    return (KE_MSG_CONSUMED);
+}
 
 /* Parameters for RC Oscillator period measurements */
 volatile uint32_t loop_cnt = 0;

@@ -1,6 +1,6 @@
 # BS300 RSL10 实现文档
 
-> 2026-07-08 | 基于 `peripheral_server_sleep` 项目
+> 2026-07-09 | 基于 `peripheral_server_sleep` 项目
 
 ## 1. 文件结构
 
@@ -30,30 +30,20 @@ peripheral_server_sleep/
 
 ```
 bs300_driver_init()
-  ├─ bs300_hal_init() + delay(800ms)          ← I2C 初始 + DSP 供电稳定
+  ├─ bs300_hal_init() + delay(2000ms)         ← I2C 初始 + DSP 供电稳定
+  ├─ bs300_startup()                          ← MUTE → KEY_LOCK → VERIFY_COMM
   ├─ bs300_storage_is_valid() ?
-  │   YES → 直接返回 (零 I2C, NVR3 memory-mapped)
+  │   YES → 跳过 Flash 读取 (NVR3 缓存命中)
   │   NO  ↓
   └─ read_and_save_all():
-       bs300_startup()                         ← MUTE → KEY_LOCK → VERIFY_COMM
        bs300_storage_erase()                   ← 擦除 NVR3 扇区 (2KB)
        for prog 0..3:
          bs300_program_read(i)                 ← I2C 读 480B
          bs300_storage_write_program(i, data)  ← 写入 NVR3
        bs300_storage_finalize()                ← 写 CRC16 + magic header
        bs300_read_calibration()                ← I2C 读校准 (144B)
-
-bs300_driver_sync_ram(prog_idx)
-  ├─ bs300_driver_get_program(idx)             ← 从 NVR3 加载 + 解析 480B
-  ├─ bs300_startup()                           ← MUTE → KEY_LOCK → VERIFY_COMM
-  ├─ 校准数据:
-  │   ├─ bs300_driver_get_calibration()        ← 缓存命中直接用
-  │   └─ (miss) bs300_read_calibration()       ← 从芯片重读 144B
-  ├─ bs300_calib_parse()                       ← 解析校准结构体
-  ├─ 逐条编码 + 发送 31 条 Param I2C:
-  │   DDM2 → MM+ → DFBC → ENR×8 → TC/DAI → ISS →
-  │   WNR×4 → AGCO → Vol/Beep → WDRC×11
-  └─ bs300_send_simple_cmd(0x800010)           ← ACTIVE 启动 DSP
+  ├─ bs300_cache_prog_inputs()                ← 缓存 4 个 Program 的 inputs/modules/enr
+  └─ MUTE → bs300_sync_program(prog0)         ← 编码 + 发送 31 条 Param I2C → ACTIVE
 ```
 
 **首次启动**: ~40 条 I2C 指令 (~2-3s) + 刷 RAM 31 条 (~3-4s) ≈ 5-7s  
@@ -138,13 +128,37 @@ RSL10 结构体存储 flash 原始值，编码时需转换：
 
 ```c
 /* 初始化 */
-bool bs300_driver_init(void);                               // I2C + NVR 缓存
-bool bs300_driver_sync_ram(uint8_t prog_idx);               // 刷 RAM（31 条 Param I2C）
-bool bs300_driver_refresh(void);                            // 强制从 BS300 重读
+bool bs300_driver_init(void);                               // I2C + NVR 缓存 + 同步 Program 0
+bool bs300_driver_refresh(void);                            // 强制从 BS300 重读全部
 
 /* 数据读取 */
 const bs300_program_data_t *bs300_driver_get_program(uint8_t idx);  // 按需读 NVR → 解析
-const uint8_t *bs300_driver_get_calibration(void);                  // 校准数据（首次/refresh 后有效）
+const bs300_prog_struct_t   *bs300_driver_get_struct(uint8_t idx);  // 按需读 NVR → 结构化
+const uint8_t               *bs300_driver_get_calibration(void);    // 校准数据（deprecated）
+const bs300_calib_t         *bs300_driver_get_calib(void);          // 结构化校准数据
+bool bs300_driver_is_cached(void);                                  // NVR3 缓存是否有效
+```
+
+### 5.1 运行时 API（`bs300_ram_sync.h`）
+
+```c
+/* 同步 — 阻塞 */
+int bs300_sync_program(bs300_prog_struct_t *prog);          // 全量 31 条 I2C
+int bs300_switch_program(uint8_t new_prog_idx);             // 增量 diff 切换
+
+/* 同步 — 非阻塞 (ke_timer 驱动) */
+int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void));
+int bs300_sync_is_busy(void);                               // 查询是否正在切换中
+void bs300_sync_timer_handler(void);                        // 定时器回调入口
+
+/* 快速控制 */
+int bs300_mute(void);                                       // MUTE (0x800000)
+int bs300_active(void);                                     // ACTIVE (0x800010)
+int bs300_set_volume(uint8_t level);                        // 音量 (0-9)
+int bs300_set_eq(int8_t low, int8_t mid, int8_t high);     // EQ
+
+/* 存储 */
+void bs300_storage_invalidate(void);                        // 清除 NVR3 缓存
 ```
 
 ## 6. 内存占用
@@ -210,12 +224,69 @@ const uint8_t *bs300_driver_get_calibration(void);                  // 校准数
 | 刷 RAM 同步器 | ✓ | bs300_ram_sync.c |
 | 驱动初始化 + 缓存 | ✓ | bs300_driver.c |
 | 集成测试 | ✓ | bs300_test.c |
-| Flash Write (Program Burn) | ✗ | 待实现 |
+| BLE 异步切模式 (diff) | ✓ | bs300_ram_sync.c + app.c |
+| 非阻塞状态机 (ke_timer) | ✓ | bs300_ram_sync.c + app_process.c |
 | DDM2/MM+ enable 模式 | ✗ | 当前仅 disabled |
-| 增量切换 (switch_diff_*) | ✗ | 待实现 |
-| 非阻塞状态机 | ✗ | 待实现 |
+| Flash Write (Program Burn) | ✗ | 待实现 |
 
-## 9. 已知差异（不阻塞）
+## 9. BLE 异步切模式
+
+### 9.1 架构
+
+```
+app.c Main_Loop
+  │
+  ├─ cs_env.rx_value_changed ?
+  │   └─ cmd=0x01 → bs300_mute()         ← 停 DSP (同步，~100ms)
+  │                → bs300_switch_program_async(prog, on_done)
+  │                    │
+  │                    ├─ bs300_switch_program_start()   ← 构建 diff 命令队列
+  │                    ├─ ke_timer_set(BS300_SYNC_TIMER) ← 启动非阻塞状态机
+  │                    └─ 立即返回 0 (不阻塞主循环)
+  │
+  └─ Kernel_Schedule()
+       └─ ke_timer 触发 → BS300_SyncTimer()
+            └─ bs300_sync_timer_handler()
+                 ├─ bs300_sync_tick(): SEND → raw_write_packet() → POLL → 下一条
+                 ├─ 还有命令 → ke_timer_set 重新 arm (20ms SEND / 60ms POLL)
+                 └─ 全部完成 → on_bs300_switch_done()
+                                 ├─ bs300_active()   ← 重启 DSP
+                                 └─ BLE 通知手机
+```
+
+### 9.2 定时器注册
+
+```c
+// app.h — BS300_SYNC_TIMER 常量定义
+#define BS300_SYNC_TIMER  0x10
+
+// app.h — 消息处理器注册
+#define APP_MESSAGE_HANDLER_LIST \
+    DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer), ...
+```
+
+`BS300_SyncTimer()` 在 `app_process.c` 中实现，是 kernel 消息分发和 `bs300_sync_timer_handler` 之间的薄适配层。
+
+### 9.3 BLE 指令协议
+
+手机写入 Custom Service 的 **RX Value** characteristic (UUID `6e0edc24-4003-9eca-e5a9-a300b5f393e0`)：
+
+| RX 数据 | 动作 |
+|---------|------|
+| `[01, prog]` | MUTE → 异步 diff 切换到 Program `prog` (0-3) → ACTIVE → 通知手机 |
+| `[FE, 00]` | 清除 NVR3 缓存（下次开机从 BS300 重读） |
+
+### 9.4 低功耗行为
+
+关 `DEBUG_UART_ENABLE` 后，`Main_Loop` 进入 `POWER_MODE_SLEEP` + `SYS_WAIT_FOR_INTERRUPT`。`ke_timer` 使用硬件定时器，能唤醒 CPU 执行 I2C 命令，完成后回到睡眠。BLE 协议栈的定时器与 BS300 定时器互不冲突。
+
+### 9.5 打印管理
+
+- 所有 BS300 源文件含 `#ifndef PRINTF` → `#define PRINTF(...) ((void)0)` fallback
+- `bs300_test.c` 的 11 个打印函数整体被 `#ifdef DEBUG_UART_ENABLE` 包裹，关打印时不编译
+- BS300 头文件不放入 `app.h`（避免 `bs300_encode_tables.h` 静态表注入所有编译单元），各 `.c` 文件独立引用
+
+## 10. 已知差异（不阻塞）
 
 | 模块 | 差异 | 根因 |
 |------|------|------|
@@ -224,13 +295,17 @@ const uint8_t *bs300_driver_get_calibration(void);                  // 校准数
 | WDRC KP Th (P1) | byte-level ±1 | rounding tolerance |
 | DDM2/MM+ | 仅支持 disabled (全零) | enable 模式编码待补 |
 
-## 10. 关键设计决策
+## 11. 关键设计决策
 
 - **RAW 存储**: 存 480B raw 而非 decoded struct，格式稳定
 - **校准不存 NVR**: 144B 每次从 BS300 重读 (3 包 ~200ms)，避免 NVR4 冲突
 - **按需加载**: `get_program()` 每次从 NVR3 memory-mapped 读 480B 并解析，省 ~3.7KB RAM
 - **逐条编码**: 每次栈上 48B buffer，不缓存全部 31 条 payload，省 ~1.5KB RAM
 - **PRINTF fallback**: 所有文件 `#ifndef PRINTF` → `#define PRINTF(...) ((void)0)`，关 `DEBUG_UART_ENABLE` 不崩
+- **测试打印编译隔离**: `bs300_test.c` 打印函数全在 `#ifdef DEBUG_UART_ENABLE` 内，关打印时完全不编译
+- **BS300 头文件不入 app.h**: 避免 `bs300_encode_tables.h` (1.6KB+ 静态表) 注入所有编译单元
 - **CRC16**: XMODEM 多项式 0x1021，防止半写入/flash 损坏
 - **不依赖 malloc**: 全部静态分配
+- **异步切模式 = MUTE → diff timer → ACTIVE**: 停 DSP 后异步发 I2C 指令，完成后重启，主循环不阻塞
+- **增量 diff 切换**: 只发送新旧 Program 间变化的模块，大幅减少 I2C 指令数
 - **C 编码函数 = Python 逐行翻译**: 遵循 Rule 16，不"理解后重写"

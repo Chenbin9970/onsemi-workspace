@@ -27,13 +27,6 @@ const uint8_t *bs300_driver_get_calibration(void);
  * Returns true on success. */
 bool bs300_driver_refresh(void);
 
-/* Sync one program's parameters from NVR3 cache to BS300 RAM.
- * Encodes all 31 Param I2C commands and writes to BS300 via I2C.
- * Blocks during I2C communication (~3-4s).
- * Prerequisite: bs300_driver_init() must have succeeded.
- * Calibration must be loaded (first-boot or after refresh). */
-bool bs300_driver_sync_ram(uint8_t prog_idx);
-
 #ifdef __cplusplus
 }
 #endif

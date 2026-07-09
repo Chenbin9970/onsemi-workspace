@@ -19,6 +19,10 @@
 
 #include "app.h"
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* Global variable definition */
 struct cs_env_tag cs_env;
 
@@ -343,6 +347,10 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             {
                 valptr = (uint8_t *)&cs_env.rx_value;
                 cs_env.rx_value_changed = 1;
+                PRINTF("[BS300] BLE RX: len=%u data=[%02X %02X]\r\n",
+                       param->length,
+                       param->length > 0 ? param->value[0] : 0,
+                       param->length > 1 ? param->value[1] : 0);
             }
             break;
 

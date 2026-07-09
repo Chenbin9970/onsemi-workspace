@@ -116,6 +116,10 @@ static int raw_write_packet(uint32_t cmd, const uint8_t *data)
     for (i = 0; i < 48; i++) frame[4 + i] = data[i];
     frame[52] = calc_checksum(frame, 52);
 
+    PRINTF("[BS300] ASYNC CMD=0x%06lX:", (unsigned long)cmd);
+    for (i = 0; i < 53; i++) PRINTF(" %02X", frame[i]);
+    PRINTF("\r\n");
+
     return bs300_i2c_write(BS300_I2C_ADDR, frame, 53) ? 0 : -1;
 }
 
@@ -1166,20 +1170,19 @@ void bs300_sync_timer_handler(void)
 
 static int start_async_session(void (*on_done)(void))
 {
-    if (bs300_sync_is_busy()) return -1;
     g_bs300_sync_on_done = on_done;
     g_bs300_sync.state = BS300_SYNC_SEND;
     ke_timer_set(BS300_SYNC_TIMER, TASK_APP, 2);
     return 0;
 }
 
-int bs300_switch_program_async(uint8_t new_prog_idx)
+int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 {
     if (bs300_sync_is_busy()) return -1;
     bs300_sync_session_init(&g_bs300_sync);
     if (bs300_switch_program_start(&g_bs300_sync, new_prog_idx) < 0)
         return -1;
-    return start_async_session(NULL);
+    return start_async_session(on_done);
 }
 
 int bs300_resync_diff_async(bs300_prog_struct_t *_new, void (*on_done)(void))
@@ -1311,7 +1314,7 @@ int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
                      &old_prog.modules, &new_prog.modules,
                      &calib, new_it, igd_changed, s, &sent, &fail, data);
 
-    /* Force DDM2/MM+/VolBeep/ENR */
+    /* Force DDM2/MM+ if new prog input type requires them */
     if (new_prog.modules.input_selection == 5) {
         memset(data, 0, 48);
         bs300_encode_ddm2(&new_prog.modules, &calib, data);
@@ -1322,12 +1325,6 @@ int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
         bs300_encode_mm_plus(&new_prog.modules, &calib, new_it, data);
         bs300_session_append(s, 0x800062, data);
     }
-    memset(data, 0, 48);
-    if (bs300_encode_volume_beep(&new_prog.modules, &calib, data) == 0)
-        bs300_session_append(s, 0x800081, data);
-    memset(data, 0, 48);
-    bs300_encode_enr_general(&new_prog.enr, data);
-    bs300_session_append(s, 0x8000C2, data);
 
     s->state = BS300_SYNC_SEND;
     return 0;

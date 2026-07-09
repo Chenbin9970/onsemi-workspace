@@ -97,7 +97,7 @@ void bs300_sync_timer_handler(void);
  *  Async API (non-blocking via ke_timer)
  * ================================================================ */
 int  bs300_sync_is_busy(void);
-int  bs300_switch_program_async(uint8_t new_prog_idx);
+int  bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void));
 int  bs300_resync_diff_async(bs300_prog_struct_t *_new, void (*on_done)(void));
 int  bs300_param_modify_async(uint8_t prog_idx, uint16_t offset,
                                const uint8_t *val, uint8_t len);

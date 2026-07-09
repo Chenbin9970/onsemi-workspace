@@ -207,14 +207,7 @@ void bs300_test_run(void)
             PRINTF("[BS300] Program %u: NULL\r\n", i);
         }
     }
-
-    PRINTF("\r\n[BS300] === Syncing Program 0 to RAM ===\r\n");
 #endif
-
-    /* Sync program 0 to BS300 RAM */
-    if (!bs300_driver_sync_ram(0)) {
-        PRINTF("[BS300] RAM sync FAIL\r\n");
-    }
 
 #ifdef DEBUG_UART_ENABLE
     PRINTF("\r\n[BS300] === Driver Test DONE ===\r\n");

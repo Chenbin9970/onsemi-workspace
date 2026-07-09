@@ -394,12 +394,19 @@ typedef void (*appm_add_svc_func_t)(void);
 #define DEFINE_MESSAGE_HANDLER(message, handler) { message, \
                                                    (ke_msg_func_t)handler }
 
+/* BS300 async sync timer message ID — must match bs300_ram_sync.h */
+#ifndef BS300_SYNC_TIMER
+#define BS300_SYNC_TIMER  0x10
+#endif
+
 /* List of message handlers that are used by the different profiles/services */
 #ifdef APP_RM_ENABLE
 #define APP_MESSAGE_HANDLER_LIST \
-    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer)
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
+    DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer)
 #else
-#define APP_MESSAGE_HANDLER_LIST
+#define APP_MESSAGE_HANDLER_LIST \
+    DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer)
 #endif
 
 /* List of functions used to create the database */

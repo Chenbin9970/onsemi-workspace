@@ -15,6 +15,19 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "bs300_ram_sync.h"
+#include "bs300_storage.h"
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* Called when async BS300 program switch completes — re-activate DSP + notify */
+static void on_bs300_switch_done(void)
+{
+    bs300_active();
+    cs_env.tx_value_changed = 1;
+}
 
 int main()
 {
@@ -137,6 +150,27 @@ void Main_Loop(void)
                 app_env.send_batt_ntf = 0;
 
                 Batt_LevelUpdateSend(0, app_env.batt_lvl, 0);
+            }
+
+            /* Handle BS300 commands from BLE RX characteristic */
+            if (cs_env.rx_value_changed)
+            {
+                cs_env.rx_value_changed = 0;
+                uint8_t cmd = cs_env.rx_value[0];
+                uint8_t arg = cs_env.rx_value[1];
+                PRINTF("[BS300] RX cmd=%02X arg=%02X\r\n", cmd, arg);
+                if (cmd == 0x01 && arg < 4)
+                {
+                    bs300_mute();
+                    int ret = bs300_switch_program_async(arg,
+                                                    on_bs300_switch_done);
+                    PRINTF("[BS300] switch_async ret=%d\r\n", ret);
+                }
+                else if (cmd == 0xFE)
+                {
+                    bs300_storage_invalidate();
+                    PRINTF("[BS300] NVR3 cache cleared, reset to reload\r\n");
+                }
             }
 
             /* Update custom service characteristics, send notifications if
