@@ -25,7 +25,12 @@
 /* Called when async BS300 program switch completes — re-activate DSP + notify */
 static void on_bs300_switch_done(void)
 {
-    bs300_active();
+    cs_env.tx_value_changed = 1;
+}
+
+static void on_bs300_volume_done(void)
+{
+    bs300_play_prompt_tone(bs300_get_active_prog(), app_env.volume);
     cs_env.tx_value_changed = 1;
 }
 
@@ -161,15 +166,22 @@ void Main_Loop(void)
                 PRINTF("[BS300] RX cmd=%02X arg=%02X\r\n", cmd, arg);
                 if (cmd == 0x01 && arg < 4)
                 {
-                    bs300_mute();
                     int ret = bs300_switch_program_async(arg,
                                                     on_bs300_switch_done);
                     PRINTF("[BS300] switch_async ret=%d\r\n", ret);
                 }
+                else if (cmd == 0x02)
+                {
+                    app_env.volume = arg;
+                    bs300_set_volume_async(arg, on_bs300_volume_done);
+                    PRINTF("[BS300] volume=%d\r\n", arg);
+                }
                 else if (cmd == 0xFE)
                 {
-                    bs300_storage_invalidate();
-                    PRINTF("[BS300] NVR3 cache cleared, reset to reload\r\n");
+                    uint8_t i;
+                    for (i = 0; i < 4; i++) bs300_storage_invalidate(i);
+                    bs300_settings_invalidate();
+                    PRINTF("[BS300] cache cleared, reset to reload\r\n");
                 }
             }
 

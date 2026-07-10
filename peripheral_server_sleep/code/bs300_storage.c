@@ -1,16 +1,15 @@
 /**
- * BS300 NVR3 Storage Layer
+ * BS300 Main Flash Storage Layer
  *
- * Stores 4 programs' raw 480B flash data in RSL10 NVR3 (0x00081000, 2KB).
- * Incremental write: erase → write_program × 4 → finalize.
- * Per-program read: load_program(idx) does a single 480B memcpy from NVR3.
+ * Each program gets its own 2KB Main Flash sector, fully independent.
+ * Settings (active_prog + volume[4]) stored in a separate sector.
  *
- * NVR3 layout (2KB):
- *   Offset 0:     Program 0 raw data (480B)
- *   Offset 480:   Program 1 raw data (480B)
- *   Offset 960:   Program 2 raw data (480B)
- *   Offset 1440:  Program 3 raw data (480B)
- *   Offset 1920:  Magic "BS30" (4B) + Version (2B) + CRC16 (2B)
+ * Layout (Main Flash, after application code):
+ *   0x0015C800  Settings   2KB
+ *   0x0015D000  Program 0  2KB
+ *   0x0015D800  Program 1  2KB
+ *   0x0015E000  Program 2  2KB
+ *   0x0015E800  Program 3  2KB
  */
 
 #include "bs300_storage.h"
@@ -23,25 +22,51 @@
 #define PRINTF(...) ((void)0)
 #endif
 
-#define HEADER_OFFSET           1920
-#define HEADER_SIZE             8
-#define PROG_OFFSET(idx)        ((idx) * BS300_TOTAL_DATA)
+/* ---- Sector base addresses ---- */
+#define SETTINGS_BASE    0x0015C800
+#define PROG0_BASE       0x0015D000
+#define PROG1_BASE       0x0015D800
+#define PROG2_BASE       0x0015E000
+#define PROG3_BASE       0x0015E800
 
-static const uint8_t STORAGE_MAGIC[4] = { 'B', 'S', '3', '0' };
-#define STORAGE_VERSION  1
+static const uint32_t PROG_BASE[4] = {
+    PROG0_BASE, PROG1_BASE, PROG2_BASE, PROG3_BASE
+};
 
-static uint8_t s_written_mask;  /* bitmask: bit i set = program i written */
+/* ---- Magic & header ---- */
+#define PROG_MAGIC_OFFSET    480   /* trailer: magic(4) + version(2) + CRC(2) after 480B payload */
+static const uint8_t PROG_MAGIC[4] = { 'B', 'S', 'P', 'G' };
+#define PROG_VERSION  1
 
-/* ============================================================
- * CRC16 (XMODEM, polynomial 0x1021)
- * ============================================================ */
+/* ---- Settings layout (16 bytes in 2KB sector) ---- */
+#define SETTINGS_ACTIVE_PROG   0
+#define SETTINGS_VOLUME        1   /* volume[0..3] at offset 1..4 */
+#define SETTINGS_RESERVED      5
+#define SETTINGS_MAGIC         8
+#define SETTINGS_CRC           12
+#define SETTINGS_VERSION       14
 
+static const uint8_t SETTINGS_MAGIC_VAL[4] = { 'B', 'S', 'S', 'T' };
+#define SETTINGS_VER  1
+
+/* ---- Main Flash unlock (HIGH region: 0x00150000+) ---- */
+static void main_flash_unlock(void)
+{
+    FLASH->MAIN_CTRL = (MAIN_HIGH_W_ENABLE
+                      | MAIN_MIDDLE_W_DISABLE
+                      | MAIN_LOW_W_DISABLE);
+    FLASH->MAIN_WRITE_UNLOCK = FLASH_MAIN_KEY;
+}
+
+/* ---- CRC16 (XMODEM, polynomial 0x1021) ---- */
 static uint16_t crc16_xmodem(const uint8_t *data, uint16_t len)
 {
     uint16_t crc = 0;
-    for (uint16_t i = 0; i < len; i++) {
+    uint16_t i;
+    uint8_t b;
+    for (i = 0; i < len; i++) {
         crc ^= (uint16_t)data[i] << 8;
-        for (uint8_t b = 0; b < 8; b++) {
+        for (b = 0; b < 8; b++) {
             if (crc & 0x8000)
                 crc = (crc << 1) ^ 0x1021;
             else
@@ -52,97 +77,188 @@ static uint16_t crc16_xmodem(const uint8_t *data, uint16_t len)
 }
 
 /* ============================================================
- * NVR3 unlock
+ *  Program storage — per-sector
  * ============================================================ */
-
-static void nvr3_unlock(void)
-{
-    FLASH->NVR_CTRL = (NVR1_WRITE_DISABLE | NVR2_WRITE_DISABLE | NVR3_WRITE_ENABLE);
-    FLASH->NVR_WRITE_UNLOCK = FLASH_NVR_KEY;
-}
-
-/* ============================================================
- * Public API
- * ============================================================ */
-
-bool bs300_storage_erase(void)
-{
-    nvr3_unlock();
-    s_written_mask = 0;
-    return Flash_EraseSector(FLASH_NVR3_BASE) == FLASH_ERR_NONE;
-}
 
 bool bs300_storage_write_program(uint8_t idx, const uint8_t *data)
 {
-    if (idx > 3) return false;
+    uint32_t base;
+    uint32_t buf[BS300_TOTAL_DATA / 4];
+    uint8_t hdr[8];
 
-    /* 480 bytes = 120 words (even), must be uint32_t-aligned */
-    static uint32_t buf[BS300_TOTAL_DATA / 4];
+    if (idx > 3 || data == NULL) return false;
+    main_flash_unlock();
+    base = PROG_BASE[idx];
+
+    /* Build 480B payload + trailer magic/version/crc */
     memcpy(buf, data, BS300_TOTAL_DATA);
 
-    if (Flash_WriteBuffer(FLASH_NVR3_BASE + PROG_OFFSET(idx),
-                          BS300_TOTAL_DATA / 4, buf) != FLASH_ERR_NONE)
+    /* Write magic + version + CRC at the tail of the sector (after 480B) */
+    memcpy(hdr, PROG_MAGIC, 4);
+    hdr[4] = PROG_VERSION;
+    hdr[5] = 0;
+    {
+        uint16_t crc = crc16_xmodem(data, BS300_TOTAL_DATA);
+        hdr[6] = (uint8_t)(crc & 0xFF);
+        hdr[7] = (uint8_t)(crc >> 8);
+    }
+
+    if (Flash_EraseSector(base) != FLASH_ERR_NONE) {
+        PRINTF("[BS300] program %u erase FAIL\r\n", idx);
         return false;
+    }
 
-    s_written_mask |= (1 << idx);
-    return true;
-}
-
-bool bs300_storage_finalize(void)
-{
-    if (s_written_mask != 0x0F) return false;  /* all 4 programs required */
-
-    /* Compute CRC16 over all 4 programs in NVR3 */
-    const uint8_t *nvr = (const uint8_t *)FLASH_NVR3_BASE;
-    uint16_t crc = 0;
-    for (uint8_t i = 0; i < 4; i++)
-        crc = crc16_xmodem(nvr + PROG_OFFSET(i), BS300_TOTAL_DATA);
-
-    /* Write header: magic[4] + version[2] + crc16[2] */
-    uint8_t header[HEADER_SIZE];
-    memcpy(header, STORAGE_MAGIC, 4);
-    header[4] = STORAGE_VERSION;
-    header[5] = 0;
-    header[6] = (uint8_t)(crc & 0xFF);
-    header[7] = (uint8_t)(crc >> 8);
-
-    static uint32_t hdr_buf[2];
-    memcpy(hdr_buf, header, HEADER_SIZE);
-
-    if (Flash_WriteBuffer(FLASH_NVR3_BASE + HEADER_OFFSET, 2, hdr_buf)
-        != FLASH_ERR_NONE)
+    if (Flash_WriteBuffer(base, BS300_TOTAL_DATA / 4, buf) != FLASH_ERR_NONE) {
+        PRINTF("[BS300] program %u write FAIL\r\n", idx);
         return false;
+    }
 
-    PRINTF("[BS300] NVR3 finalized (CRC=%04X)\r\n", crc);
+    /* Write trailer at 480B offset */
+    {
+        uint32_t thdr[2];
+        memcpy(thdr, hdr, 8);
+        if (Flash_WriteBuffer(base + BS300_TOTAL_DATA, 2, thdr) != FLASH_ERR_NONE) {
+            PRINTF("[BS300] program %u hdr write FAIL\r\n", idx);
+            return false;
+        }
+    }
+
+    PRINTF("[BS300] program %u saved\r\n", idx);
     return true;
 }
 
 void bs300_storage_load_program(uint8_t idx, uint8_t *data_out)
 {
-    if (idx > 3) return;
-    const uint8_t *nvr = (const uint8_t *)FLASH_NVR3_BASE;
-    memcpy(data_out, nvr + PROG_OFFSET(idx), BS300_TOTAL_DATA);
+    if (idx > 3 || data_out == NULL) return;
+    memcpy(data_out, (const uint8_t *)PROG_BASE[idx], BS300_TOTAL_DATA);
 }
 
-bool bs300_storage_is_valid(void)
+bool bs300_storage_is_valid(uint8_t idx)
 {
-    const uint8_t *nvr = (const uint8_t *)FLASH_NVR3_BASE;
+    const uint8_t *base;
+    uint8_t magic_buf[4];
+    uint16_t stored_crc, calc_crc;
 
-    if (memcmp(nvr + HEADER_OFFSET, STORAGE_MAGIC, 4) != 0)
+    if (idx > 3) return false;
+    base = (const uint8_t *)PROG_BASE[idx];
+
+    /* Check magic at offset 476 */
+    memcpy(magic_buf, base + PROG_MAGIC_OFFSET, 4);
+    if (memcmp(magic_buf, PROG_MAGIC, 4) != 0)
         return false;
 
-    uint16_t stored_crc = (uint16_t)nvr[HEADER_OFFSET + 6]
-                        | ((uint16_t)nvr[HEADER_OFFSET + 7] << 8);
-    uint16_t calc_crc = 0;
-    for (uint8_t i = 0; i < 4; i++)
-        calc_crc = crc16_xmodem(nvr + PROG_OFFSET(i), BS300_TOTAL_DATA);
+    /* Check CRC */
+    stored_crc = (uint16_t)base[PROG_MAGIC_OFFSET + 6]
+               | ((uint16_t)base[PROG_MAGIC_OFFSET + 7] << 8);
+    calc_crc = crc16_xmodem(base, BS300_TOTAL_DATA);
 
     return stored_crc == calc_crc;
 }
 
-void bs300_storage_invalidate(void)
+void bs300_storage_invalidate(uint8_t idx)
 {
-    nvr3_unlock();
-    uint32_t zero[2] = { 0, 0 };
-    Flash_WriteBuffer(FLASH_NVR3_BASE + HEADER_OFFSET, 2, zero);
+    uint32_t base;
+    if (idx > 3) return;
+    main_flash_unlock();
+    base = PROG_BASE[idx];
+    Flash_EraseSector(base);
+    PRINTF("[BS300] program %u invalidated\r\n", idx);
+}
+
+/* ============================================================
+ *  Settings storage
+ * ============================================================ */
+
+static void settings_build_payload(uint8_t active_prog,
+                                   const uint8_t *volume,
+                                   uint8_t *out)
+{
+    uint16_t crc;
+    memset(out, 0xFF, BS300_TOTAL_DATA);
+
+    out[SETTINGS_ACTIVE_PROG] = active_prog;
+    if (volume != NULL) {
+        out[SETTINGS_VOLUME + 0] = volume[0];
+        out[SETTINGS_VOLUME + 1] = volume[1];
+        out[SETTINGS_VOLUME + 2] = volume[2];
+        out[SETTINGS_VOLUME + 3] = volume[3];
+    }
+
+    memcpy(out + SETTINGS_MAGIC, SETTINGS_MAGIC_VAL, 4);
+    out[SETTINGS_VERSION]     = SETTINGS_VER;
+    out[SETTINGS_VERSION + 1] = 0;
+
+    crc = crc16_xmodem(out, SETTINGS_CRC);
+    out[SETTINGS_CRC]     = (uint8_t)(crc & 0xFF);
+    out[SETTINGS_CRC + 1] = (uint8_t)(crc >> 8);
+}
+
+bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume)
+{
+    uint8_t buf[BS300_TOTAL_DATA];
+    uint32_t wbuf[BS300_TOTAL_DATA / 4];
+
+    main_flash_unlock();
+    settings_build_payload(active_prog, volume, buf);
+
+    if (Flash_EraseSector(SETTINGS_BASE) != FLASH_ERR_NONE) {
+        PRINTF("[BS300] settings erase FAIL\r\n");
+        return false;
+    }
+
+    memcpy(wbuf, buf, BS300_TOTAL_DATA);
+    if (Flash_WriteBuffer(SETTINGS_BASE, BS300_TOTAL_DATA / 4, wbuf) != FLASH_ERR_NONE) {
+        PRINTF("[BS300] settings write FAIL\r\n");
+        return false;
+    }
+
+    PRINTF("[BS300] settings saved prog=%u vol=[%u,%u,%u,%u]\r\n",
+           active_prog,
+           volume ? volume[0] : 0, volume ? volume[1] : 0,
+           volume ? volume[2] : 0, volume ? volume[3] : 0);
+    return true;
+}
+
+bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume)
+{
+    const uint8_t *base = (const uint8_t *)SETTINGS_BASE;
+    uint8_t magic[4];
+    uint16_t stored_crc, calc_crc;
+
+    memcpy(magic, base + SETTINGS_MAGIC, 4);
+    if (memcmp(magic, SETTINGS_MAGIC_VAL, 4) != 0) {
+        PRINTF("[BS300] settings not found\r\n");
+        return false;
+    }
+
+    stored_crc = (uint16_t)base[SETTINGS_CRC]
+               | ((uint16_t)base[SETTINGS_CRC + 1] << 8);
+    calc_crc = crc16_xmodem(base, SETTINGS_CRC);
+    if (stored_crc != calc_crc) {
+        PRINTF("[BS300] settings CRC fail\r\n");
+        return false;
+    }
+
+    if (active_prog != NULL)
+        *active_prog = base[SETTINGS_ACTIVE_PROG];
+
+    if (volume != NULL) {
+        volume[0] = base[SETTINGS_VOLUME + 0];
+        volume[1] = base[SETTINGS_VOLUME + 1];
+        volume[2] = base[SETTINGS_VOLUME + 2];
+        volume[3] = base[SETTINGS_VOLUME + 3];
+    }
+
+    PRINTF("[BS300] settings loaded prog=%u vol=[%u,%u,%u,%u]\r\n",
+           active_prog ? *active_prog : 0xFF,
+           volume ? volume[0] : 0, volume ? volume[1] : 0,
+           volume ? volume[2] : 0, volume ? volume[3] : 0);
+    return true;
+}
+
+void bs300_settings_invalidate(void)
+{
+    main_flash_unlock();
+    Flash_EraseSector(SETTINGS_BASE);
+    PRINTF("[BS300] settings invalidated\r\n");
 }

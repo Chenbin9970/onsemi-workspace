@@ -11,12 +11,12 @@
 extern "C" {
 #endif
 
-/* One-shot init: I2C init + load programs from NVR or read from BS300.
+/* One-shot init: I2C init + load programs from Main Flash or read from BS300.
  * Blocks during I2C communication (~2-3s first boot, ~0 on cached boot).
  * Returns true on success. */
 bool bs300_driver_init(void);
 
-/* Get parsed program struct (loaded from NVR3 on each call).
+/* Get parsed program struct (loaded from Main Flash on each call).
  * Returns NULL if prog_idx > 3 or driver not initialized.
  * The returned pointer is valid only until the next call to this function. */
 const bs300_program_data_t *bs300_driver_get_program(uint8_t prog_idx);
@@ -25,11 +25,11 @@ const bs300_program_data_t *bs300_driver_get_program(uint8_t prog_idx);
  * Only valid after init + chip read. Returns NULL on NVR-cached boot. */
 const uint8_t *bs300_driver_get_calibration(void);
 
-/* Force re-read all 4 programs from BS300 + update NVR cache.
+/* Force re-read all 4 programs from BS300 + update Main Flash cache.
  * Returns true on success. */
 bool bs300_driver_refresh(void);
 
-/* Get structured program data from cache (NVR3-backed).
+/* Get structured program data from cache (Main Flash-backed).
  * Returns NULL if not cached or prog_idx > 3. */
 const bs300_prog_struct_t *bs300_driver_get_struct(uint8_t prog_idx);
 

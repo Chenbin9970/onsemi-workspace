@@ -140,12 +140,20 @@ int bs300_active(void);
 int bs300_is_connected(void);
 
 /* ================================================================
+ *  Prompt Tone — played on mode switch and volume change
+ * ================================================================ */
+void bs300_play_prompt_tone(uint8_t program, uint8_t volume);
+
+/* ================================================================
  *  Boot-time cache (populate after init)
  * ================================================================ */
 void bs300_cache_prog_inputs(void);
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume);
 void bs300_on_active_prog_changed(uint8_t new_prog_idx);
 uint8_t bs300_get_prog_input(uint8_t prog_idx);
 bool bs300_is_boot_cached(void);
+uint8_t bs300_get_active_prog(void);
+uint8_t bs300_get_module_volume(uint8_t prog_idx);
 const bs300_calib_t *bs300_get_cached_calib(void);
 
 #ifdef __cplusplus

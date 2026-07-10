@@ -2,10 +2,10 @@
  * BS300 Driver — full init flow matching AD697N startup sequence.
  *
  * bs300_driver_init():
- *   1. I2C init + 800ms DSP power stabilization
+ *   1. I2C init + 2s DSP power stabilization
  *   2. Unlock chip (MUTE → KEY_LOCK → VERIFY_COMM)
- *   3. First boot: read 4 programs from BS300 Flash → save to NVR3
- *      Cached boot: skip flash read, load structs from NVR3
+ *   3. First boot: read 4 programs from BS300 Flash → save to Main Flash
+ *      Cached boot: skip flash read, load structs from Main Flash
  *   4. MUTE → sync active program to BS300 RAM (31 I2C commands)
  *   5. ACTIVE → start DSP audio processing
  *   6. Cache all 4 programs' inputs/modules for runtime switch
@@ -27,28 +27,24 @@ static bool s_initialized;
 static uint8_t s_raw[BS300_TOTAL_DATA];  /* 480B — shared work buffer */
 
 /* ============================================================
- *  Internal: read programs from BS300 Flash, save to NVR3
+ *  Internal: read programs from BS300 Flash, save to Main Flash
  * ============================================================ */
 static bool read_and_save_all(void)
 {
-    for (uint8_t i = 0; i < 4; i++) {
+    uint8_t i;
+    for (i = 0; i < 4; i++) {
         if (!bs300_program_read(i, s_raw)) {
             PRINTF("[BS300] program %u read FAIL\r\n", i);
             return false;
         }
         if (!bs300_storage_write_program(i, s_raw)) {
-            PRINTF("[BS300] program %u NVR write FAIL\r\n", i);
+            PRINTF("[BS300] program %u save FAIL\r\n", i);
             return false;
         }
         bs300_delay_ms(5);
         Sys_Watchdog_Refresh();
     }
-    PRINTF("[BS300] 4 programs read + saved to NVR3\r\n");
-
-    if (!bs300_storage_finalize()) {
-        PRINTF("[BS300] NVR3 finalize FAIL\r\n");
-        return false;
-    }
+    PRINTF("[BS300] 4 programs read + saved\r\n");
     return true;
 }
 
@@ -74,29 +70,35 @@ bool bs300_driver_init(void)
     }
     PRINTF("[BS300] startup OK\r\n");
 
-    /* Step 3: Load programs from NVR3 cache or read from BS300 Flash */
-    if (bs300_storage_is_valid()) {
-        PRINTF("[BS300] NVR cache valid, skip flash read\r\n");
+    /* Step 3: Load programs from Main Flash cache or read from BS300 Flash */
+    if (bs300_storage_is_valid(0)) {
+        PRINTF("[BS300] cache valid, skip flash read\r\n");
     } else {
-        PRINTF("[BS300] NVR empty, reading from chip...\r\n");
-        if (!bs300_storage_erase()) {
-            PRINTF("[BS300] NVR3 erase FAIL\r\n");
-            return false;
-        }
+        PRINTF("[BS300] cache empty, reading from chip...\r\n");
         if (!read_and_save_all()) return false;
     }
 
     /* Step 4: Cache programs + calibration (single read, shared by all) */
     bs300_cache_prog_inputs();
 
-    /* Step 5: MUTE → sync active program → ACTIVE */
+    /* Step 5: Restore settings (active program + volume) if available */
+    {
+        uint8_t saved_prog = 0;
+        uint8_t saved_vol[4];
+        if (bs300_settings_load(&saved_prog, saved_vol)) {
+            bs300_restore_settings(saved_prog, saved_vol);
+        }
+    }
+
+    /* Step 6: MUTE → sync active program → ACTIVE */
     PRINTF("[BS300] syncing active program to RAM...\r\n");
     bs300_mute();
 
     {
         bs300_prog_struct_t prog;
-        bs300_storage_load_program(0, s_raw);
+        bs300_storage_load_program(bs300_get_active_prog(), s_raw);
         if (bs300_flash_to_struct(s_raw, &prog) == 0) {
+            prog.modules.volume_level = bs300_get_module_volume(bs300_get_active_prog());
             bs300_sync_program(&prog);
         }
     }
@@ -133,14 +135,22 @@ bool bs300_driver_refresh(void)
     s_initialized = false;
     /* Full re-read from chip */
     if (!bs300_startup()) return false;
-    if (!bs300_storage_erase()) return false;
     if (!read_and_save_all()) return false;
     bs300_cache_prog_inputs();
 
+    {
+        uint8_t saved_prog = 0;
+        uint8_t saved_vol[4];
+        if (bs300_settings_load(&saved_prog, saved_vol)) {
+            bs300_restore_settings(saved_prog, saved_vol);
+        }
+    }
+
     bs300_mute();
     bs300_prog_struct_t prog;
-    bs300_storage_load_program(0, s_raw);
+    bs300_storage_load_program(bs300_get_active_prog(), s_raw);
     if (bs300_flash_to_struct(s_raw, &prog) == 0) {
+        prog.modules.volume_level = bs300_get_module_volume(bs300_get_active_prog());
         bs300_sync_program(&prog);
     }
     bs300_active();

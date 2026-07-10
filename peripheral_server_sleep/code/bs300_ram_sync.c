@@ -29,6 +29,37 @@ uint8_t bs300_get_prog_input(uint8_t prog_idx)
 }
 
 bool bs300_is_boot_cached(void) { return s_boot_cached; }
+uint8_t bs300_get_active_prog(void) { return s_active_prog; }
+uint8_t bs300_get_module_volume(uint8_t prog_idx)
+{
+    if (prog_idx > 3) return 9;
+    return s_prog_modules[prog_idx].volume_level;
+}
+
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume)
+{
+    uint8_t i;
+
+    s_active_prog = active_prog;
+
+    if (volume == NULL) return;
+
+    /* Update in-memory volume cache — settings sector is the authoritative source */
+    for (i = 0; i < 4; i++) {
+        s_prog_modules[i].volume_level = volume[i];
+    }
+
+    PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
+}
+
+/* Save current active program and all volume levels to settings sector */
+static void save_settings(void)
+{
+    uint8_t vols[4];
+    uint8_t i;
+    for (i = 0; i < 4; i++) vols[i] = s_prog_modules[i].volume_level;
+    bs300_settings_save(s_active_prog, vols);
+}
 
 void bs300_cache_prog_inputs(void)
 {
@@ -63,7 +94,7 @@ void bs300_on_active_prog_changed(uint8_t new_prog_idx)
 }
 
 /* ================================================================
- *  Struct load/save (NVR3-backed: raw 480B → flash_to_struct)
+ *  Struct load/save (Main Flash-backed: raw 480B → flash_to_struct)
  * ================================================================ */
 static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
 {
@@ -746,6 +777,7 @@ int bs300_switch_program(uint8_t new_prog_idx)
 
     s_active_prog = new_prog_idx;
     bs300_on_active_prog_changed(new_prog_idx);
+    save_settings();
 
     PRINTF("[BS300] switch RAM %d->%d\r\n", active_prog, new_prog_idx);
 
@@ -1236,6 +1268,8 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
     if (bs300_sync_is_busy()) return -1;
     if (load_struct(s_active_prog, &prog) < 0) return -1;
     prog.modules.volume_level = level;
+    s_prog_modules[s_active_prog].volume_level = level;
+    save_settings();
     return reencode_bin_gain_async_core(&prog, on_done);
 }
 
@@ -1274,9 +1308,13 @@ int bs300_vol_commit(uint8_t level)
     if (level > 9) return -1;
     if (load_struct(s_active_prog, &prog) < 0) return -1;
     prog.modules.volume_level = level;
+    s_prog_modules[s_active_prog].volume_level = level;
+    save_settings();
     bs300_sync_dirty();
     return 0;
 }
+
+static uint32_t bs300_tone_for_program(uint8_t program);
 
 /* ================================================================
  *  Async fill-mode functions
@@ -1297,8 +1335,13 @@ int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
 
     s_active_prog = new_prog_idx;
     bs300_on_active_prog_changed(new_prog_idx);
+    save_settings();
 
     PRINTF("[BS300] switch RAM async %d->%d\r\n", active_prog, new_prog_idx);
+
+    /* Prompt tone FIRST — before all diff commands */
+    memset(data, 0, 48);
+    bs300_session_append(s, bs300_tone_for_program(new_prog_idx), data);
 
     if (load_calib(&calib) < 0) return -1;
 
@@ -1406,4 +1449,59 @@ int bs300_param_modify_start(bs300_sync_session_t *s, uint8_t prog_idx,
 
     s->state = BS300_SYNC_SEND;
     return 0;
+}
+
+/* ================================================================
+ *  Prompt Tone — played on mode switch and volume change
+ * ================================================================ */
+
+#define BS300_TONE_MODE_0    0xFD52F2
+#define BS300_TONE_MODE_1    0xFD72F2
+#define BS300_TONE_MODE_2    0xFD92F2
+#define BS300_TONE_MODE_3    0xFDB2F2
+#define BS300_TONE_VOL_0     0xFD12F2
+#define BS300_TONE_VOL_OTHER 0xFCD2F2
+#define BS300_TONE_DATA_BYTES 48
+
+static uint32_t bs300_tone_for_program(uint8_t program)
+{
+    switch (program) {
+    case 0: return BS300_TONE_MODE_0;
+    case 1: return BS300_TONE_MODE_1;
+    case 2: return BS300_TONE_MODE_2;
+    case 3: return BS300_TONE_MODE_3;
+    default: return 0;
+    }
+}
+
+void bs300_play_prompt_tone(uint8_t program, uint8_t volume)
+{
+    static uint8_t last_program = 0xFF;
+    static uint8_t last_volume  = 0xFF;
+    static uint8_t inited       = 0;
+    uint32_t cmd = 0;
+    uint8_t data[BS300_TONE_DATA_BYTES];
+
+    if (inited && last_program == program && last_volume == volume)
+        return;
+
+    memset(data, 0, sizeof(data));
+
+    if (!inited || last_program != program) {
+        switch (program) {
+        case 0: cmd = BS300_TONE_MODE_0; break;
+        case 1: cmd = BS300_TONE_MODE_1; break;
+        case 2: cmd = BS300_TONE_MODE_2; break;
+        case 3: cmd = BS300_TONE_MODE_3; break;
+        default: return;
+        }
+    } else if (last_volume != volume) {
+        cmd = (volume == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER;
+    }
+
+    last_program = program;
+    last_volume  = volume;
+    inited       = 1;
+
+    raw_write_packet(cmd, data);
 }
