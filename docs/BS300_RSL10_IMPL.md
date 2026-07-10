@@ -250,10 +250,11 @@ GPIO 模拟 I2C 速率由 `bit_delay` 循环次数控制，`bs300_mute()` / `bs3
 
 | 宏 | 值 | 对应速率 | 用途 |
 |---|:---:|:---:|------|
-| `BS300_I2C_DELAY_NORMAL` | 500 | ~2 kHz | 关键指令 + DSP 运行时 |
-| `BS300_I2C_DELAY_FAST` | 10 | ~50 kHz | DSP 停止时 (mute 成功后) |
+| `BS300_I2C_DELAY_NORMAL` | 500 | ~2 kHz | 关键指令发送前 |
+| `BS300_I2C_DELAY_ACTIVE` | 250 | ~4 kHz | DSP 运行时（ACTIVE 后） |
+| `BS300_I2C_DELAY_FAST` | 10 | ~50 kHz | DSP 停止时（mute 成功后） |
 
-**切换时机**（2026-07-09）：
+**切换时机**（2026-07-09，更新 2026-07-10）：
 
 | 时机 | bit_delay | 说明 |
 |------|:---:|------|
@@ -261,7 +262,7 @@ GPIO 模拟 I2C 速率由 `bit_delay` 循环次数控制，`bs300_mute()` / `bs3
 | MUTE 命令发送前 | 500 | 关键指令，慢速确保可靠 |
 | MUTE 发送成功 | 10 | DSP 已停，后续 Param 命令全速发送 |
 | ACTIVE 命令发送前 | 500 | 关键指令，慢速确保可靠 |
-| ACTIVE 发送后 | 500 | DSP 运行中，保持慢速 |
+| ACTIVE 发送后 | 250 | DSP 运行中，中等速度 |
 
 `bs300_i2c_set_speed(delay)` 可运行时修改，ack_delay 自动 = 5×bit_delay。
 
