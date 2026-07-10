@@ -393,6 +393,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             {
                 case REMPRO_IDX_ROLE_VALUE_VAL:
                     valptr = (uint8_t *)&rempro_env.role_value;
+                    rempro_env.role_value_len = param->length;
                     rempro_env.role_value_changed = 1;
                     break;
                 case REMPRO_IDX_ROLE_VALU_CCC:

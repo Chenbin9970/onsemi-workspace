@@ -136,31 +136,96 @@ cmd = 0xFE → 清缓存重载
 
 ### 6.1 帧格式
 
-**请求** (App → 设备，写入 ROLE):
+**逻辑帧** (解填充后):
 ```
-[7E] [SYS_ID=00] [CMD_ID_L] [CMD_ID_H] [Data...] [FCS] [7E]
- 1B      1B          1B          1B      可变     1B    1B
-```
+请求: [7E] [SYS_ID=00] [CMD_ID_L] [CMD_ID_H] [Data...] [FCS] [7E]
+       1B      1B          1B          1B      可变     1B    1B
 
-**响应** (设备 → App，通知 ONOFF):
-```
-[7E] [SYS_ID=00] [CMD_ID_L] [CMD_ID_H] [Flag] [Data...] [FCS] [7E]
- 1B      1B          1B          1B       1B     可变     1B    1B
+响应: [7E] [SYS_ID=00] [CMD_ID_L] [CMD_ID_H] [Flag] [Data...] [FCS] [7E]
+       1B      1B          1B          1B       1B     可变     1B    1B
 ```
 
-**FCS**: `(SYS_ID + CMD_ID_L + CMD_ID_H + Data bytes) & 0xFF`
+**FCS**: `(SYS_ID + CMD_ID_L + CMD_ID_H + [Flag] + Data bytes) & 0xFF`，对**解填充后**的数据计算
 
-### 6.2 已实现指令
+### 6.2 字节填充 (Byte Stuffing)
 
-| ID | 名称 | 方向 | 请求数据 | 响应数据 | 实现 |
-|----|------|------|---------|---------|------|
-| 2 | SetVolume | W→R | `[DevType][Vol][Vol2]` | `[Flag=0][status=1]` | `bs300_set_volume_async` |
-| 3 | SetDeviceOnOff | W→R | `[DevType][OnOff]` | `[Flag=0][status=1]` | 已实现框架 |
-| 4 | GetBatteryInfo | W→R | (空) | `[Flag=0][L_Batt][R_Batt]` | 返回 `app_env.batt_lvl` |
-| 16 | SetCurrentScene | W→R | `[DevType][SceneID]` | `[Flag=0][status=1]` | `bs300_switch_program_async` |
-| 26 | GetDeviceConfig | W→R | (空) | `[Flag=0][10B config]` | 返回基本设备信息 |
+Data 中可能出现 0x7E（与分隔符冲突）或 0x7D（与转义符冲突），发送前做填充：
 
-### 6.3 新增指令模板
+| 原始字节 | 填充后 |
+|---------|--------|
+| `0x7E` | `0x7D 0x5E` |
+| `0x7D` | `0x7D 0x5D` |
+
+> **注意**: 0x7E 分隔符本身不参与填充，只有帧体（两个 7E 之间的内容）做填充。
+> **FCS** 在填充前计算，FCS 字节本身也参与填充。
+
+**发送流程**: 组帧 → 算 FCS → 填充帧体 → 加 7E 头尾 → 拆 20B 分包 → 发 BLE Notify
+**接收流程**: 收 BLE Write → 拼包缓冲 → 找 7E 头尾 → 解填充帧体 → 验 FCS → 消费
+
+### 6.3 分包/拼包
+
+App 每个 BLE Write 最多发 20 字节，设备每个 BLE Notify 最多发 20 字节。
+帧超过 20 字节时自动拆分/拼接。
+
+**接收端拼包** (`ble_rempro_cmd.c`):
+```
+reasm_buf[100]: 拼包缓冲区
+reasm_len:      当前缓冲长度
+
+每次收到 BLE Write:
+  1. 追加 reasm_buf[reasm_len..reasm_len+len-1]
+  2. reasm_len += len
+  3. while reasm_len >= 7:
+     a. 跳过头部的非 7E 垃圾字节
+     b. 找 7E ... 7E 完整帧
+     c. 找不到结尾 7E → return (等下一包)
+     d. 找到 → 解填充 → 验 FCS → 分发指令
+     e. 从缓冲移除已消费字节，继续循环
+```
+
+**发送端分包** (`hdlc_response`):
+```
+tx_buf[100]: 发送缓冲区
+
+每次发响应:
+  1. 组帧体: [SYS][CMD_L][CMD_H][Flag][Data...]
+  2. 算 FCS 追加到帧体末尾
+  3. 填充帧体 (0x7E→7D5E, 0x7D→7D5D)
+  4. 加 7E 头尾
+  5. 按 20 字节拆分，逐个发 BLE Notify
+```
+
+**缓冲区**: 收发各 100 字节 (`REASM_BUF_SIZE` / `TX_BUF_SIZE`)
+
+### 6.4 已实现指令
+
+| ID | 名称 | 请求 | 响应 | 说明 |
+|----|------|------|------|------|
+| 2 | SetVolume | `[DevType][Vol][Vol2]` | `[Flag=0][status=1]` | `bs300_set_volume_async`，I2C 忙时排队 |
+| 3 | SetDeviceOnOff | `[DevType][OnOff]` | `[Flag=0][status=1]` | 框架就绪，待实现实际开关机 |
+| 4 | GetBatteryInfo | (空) | `[Flag=0][L=100][R=0]` | 暂时写死 100%，单设备右耳填 0 |
+| 16 | SetCurrentScene | `[DevType][SceneID]` | `[Flag=0][status=1]` | `bs300_switch_program_async`，I2C 忙时排队 |
+| 26 | GetDeviceConfig | (空) | 28B 设备信息 | 详见表后 |
+
+**ID:26 响应字段** (不含 Device_OnOff/Feedback_OnOff，非 Echo402BT):
+
+| 偏移 | 长度 | 字段 | 值 |
+|------|------|------|-----|
+| 0 | 4 | Device_Version | 1.0.0.0 |
+| 4 | 1 | Program_Num | 3 |
+| 5 | 6 | Address_Left | `bdaddr` (运行时 MAC) |
+| 11 | 2 | Product_Type | 101 |
+| 13 | 1 | Chip_Type | 1 (BS300) |
+| 14 | 1 | Turn_Number | 2 |
+| 15 | 1 | Channel_Number | 16 |
+| 16 | 6 | Address_Right | 同左 |
+| 22 | 2 | Product_Type | 101 |
+| 24 | 1 | Chip_Type | 1 |
+| 25 | 1 | Turn_Number | 2 |
+| 26 | 1 | Channel_Number | 16 |
+| 27 | 1 | Volume_Number | 9 |
+
+### 6.5 新增指令模板
 
 ```c
 // 1. 在 ble_rempro_cmd.h 添加 CMD ID
@@ -179,6 +244,15 @@ case CMD_XXX:
     else hdlc_response(CMD_XXX, 1, NULL, 0);
     break;
 ```
+
+### 6.6 I2C 同步保护
+
+切换程序和设置音量都走 `bs300_ram_sync.c` 的异步状态机。当 BS300 I2C 同步忙时：
+- `bs300_switch_program_async` → 排队到 `s_pending_program`（1 个槽位）
+- `bs300_set_volume_async` → 排队到 `s_pending_volume`（1 个槽位）
+- 当前同步完成后自动执行排队的操作
+
+> 注意：排队槽位只有 1 个，连续发送多个切换指令会覆盖。
 
 ## 7. 文件清单
 

@@ -7,11 +7,23 @@
 #define PRINTF(...) ((void)0)
 #endif
 
-/* HDLC response buffer (max 20 bytes for ONOFF notify) */
-static uint8_t resp_buf[20];
-static uint8_t resp_len;
+/* Reassembly + response buffers */
+#define REASM_BUF_SIZE  100
+static uint8_t reasm_buf[REASM_BUF_SIZE];
+static uint8_t reasm_len;
 
-/* FCS: bytewise sum of payload */
+#define TX_BUF_SIZE     100
+static uint8_t tx_buf[TX_BUF_SIZE];
+
+/* -------- helpers -------- */
+
+static void print_hex(const char *tag, const uint8_t *buf, uint8_t len)
+{
+    PRINTF("[REMPRO] %s (%uB):", tag, len);
+    for (uint8_t i = 0; i < len; i++) PRINTF(" %02X", buf[i]);
+    PRINTF("\r\n");
+}
+
 static uint8_t hdlc_fcs(const uint8_t *data, uint8_t len)
 {
     uint8_t sum = 0;
@@ -19,62 +31,129 @@ static uint8_t hdlc_fcs(const uint8_t *data, uint8_t len)
     return sum;
 }
 
-/* Build and send HDLC response frame */
-static void hdlc_response(uint16_t cmd_id, uint8_t flag, const uint8_t *data, uint8_t data_len)
+/* HDLC byte-stuffing: 7E → 7D 5E,  7D → 7D 5D.
+ * Writes to dst, returns stuffed length. */
+static uint8_t hdlc_stuff(uint8_t *dst, const uint8_t *src, uint8_t len)
 {
-    uint8_t *p = resp_buf;
-    *p++ = HDLC_SEPARATOR;
-    *p++ = HDLC_SYS_ID;
-    *p++ = (uint8_t)(cmd_id & 0xFF);
-    *p++ = (uint8_t)((cmd_id >> 8) & 0xFF);
-    *p++ = flag;
-    if (data_len > 0) {
-        memcpy(p, data, data_len);
-        p += data_len;
+    uint8_t w = 0;
+    for (uint8_t r = 0; r < len; r++) {
+        uint8_t b = src[r];
+        if (b == 0x7E)      { dst[w++] = 0x7D; dst[w++] = 0x5E; }
+        else if (b == 0x7D) { dst[w++] = 0x7D; dst[w++] = 0x5D; }
+        else                { dst[w++] = b; }
     }
-    /* FCS covers SYS_ID..data */
-    *p = hdlc_fcs(resp_buf + 1, (uint8_t)(p - resp_buf - 1));
-    p++;
-    *p++ = HDLC_SEPARATOR;
-    resp_len = (uint8_t)(p - resp_buf);
-
-    RemproService_SendNotification(ble_env.conidx, REMPRO_IDX_ONOFF_VALUE_VAL,
-                                   resp_buf, resp_len);
+    return w;
 }
 
-/* Parse HDLC frame from role_value, return data pointer and length, or NULL */
-static const uint8_t *hdlc_parse(uint16_t *cmd_id, uint8_t *data_len)
+/* Build, stuff, and send an HDLC response in ≤20B chunks. */
+static void hdlc_response(uint16_t cmd_id, uint8_t flag,
+                          const uint8_t *data, uint8_t data_len)
 {
-    uint8_t *rx = rempro_env.role_value;
-    uint8_t len = REMPRO_ROLE_VALUE_MAX_LENGTH;
+    /* Step 1: build unstuffed frame body */
+    uint8_t raw[TX_BUF_SIZE];
+    raw[0] = HDLC_SYS_ID;
+    raw[1] = (uint8_t)(cmd_id & 0xFF);
+    raw[2] = (uint8_t)((cmd_id >> 8) & 0xFF);
+    raw[3] = flag;
+    uint8_t raw_len = 4;
+    if (data_len) {
+        memcpy(raw + raw_len, data, data_len);
+        raw_len += data_len;
+    }
+    raw[raw_len] = hdlc_fcs(raw, raw_len);
+    raw_len++;
 
-    if (len < 7) return NULL;                       /* min: 7E SY CMDL CMDH FCS 7E */
-    if (rx[0] != HDLC_SEPARATOR) return NULL;
+    /* Step 2: stuff body + FCS, wrap with 7E delimiters */
+    uint8_t *p = tx_buf;
+    *p++ = HDLC_SEPARATOR;
+    p += hdlc_stuff(p, raw, raw_len);
+    *p++ = HDLC_SEPARATOR;
+    uint8_t frame_len = (uint8_t)(p - tx_buf);
 
-    uint8_t sys_id = rx[1];
-    if (sys_id != HDLC_SYS_ID) return NULL;
+    /* Step 3: split into ≤20B chunks and send */
+    print_hex("TX frame", tx_buf, frame_len);
+    uint8_t offset = 0;
+    uint8_t idx = 0;
+    while (offset < frame_len) {
+        uint8_t chunk = frame_len - offset;
+        if (chunk > 20) chunk = 20;
+        print_hex("TX chunk", tx_buf + offset, chunk);
+        RemproService_SendNotification(ble_env.conidx,
+                                       REMPRO_IDX_ONOFF_VALUE_VAL,
+                                       tx_buf + offset, chunk);
+        offset += chunk;
+        idx++;
+    }
+}
 
-    *cmd_id = rx[2] | ((uint16_t)rx[3] << 8);
+/* HDLC byte-unstuffing: 7D 5E → 7E,  7D 5D → 7D.
+ * Processes buf[start .. end-1] in-place, returns new length. */
+static uint8_t hdlc_unstuff(uint8_t *buf, uint8_t start, uint8_t end)
+{
+    uint8_t w = start;
+    for (uint8_t r = start; r < end; r++) {
+        if (buf[r] == 0x7D && (r + 1) < end) {
+            uint8_t next = buf[r + 1];
+            if (next == 0x5E)      { buf[w++] = 0x7E; r++; }
+            else if (next == 0x5D) { buf[w++] = 0x7D; r++; }
+            else                   { buf[w++] = buf[r]; }
+        } else {
+            buf[w++] = buf[r];
+        }
+    }
+    return w;
+}
 
-    /* Find closing 0x7E */
-    uint8_t fcs_pos = 0;
-    for (uint8_t i = 4; i < len; i++) {
-        if (rx[i] == HDLC_SEPARATOR) {
-            fcs_pos = i - 1;
+/* Parse a complete HDLC frame from buf[0..len-1].
+ * Returns pointer to data payload, or NULL on failure.
+ * On success, sets *cmd_id and *data_len, and *consumed = raw frame length
+ * (before unstuffing). */
+static const uint8_t *hdlc_parse_frame(const uint8_t *buf, uint8_t len,
+                                       uint16_t *cmd_id, uint8_t *data_len,
+                                       uint8_t *consumed)
+{
+    if (len < 7) return NULL;
+    if (buf[0] != HDLC_SEPARATOR) return NULL;
+
+    uint8_t fcs_pos_raw = 0;
+    for (uint8_t i = 1; i < len; i++) {
+        if (buf[i] == HDLC_SEPARATOR) {
+            fcs_pos_raw = i - 1;
+            *consumed = i + 1;
             break;
         }
     }
-    if (fcs_pos == 0 || fcs_pos < 4) return NULL;
+    if (fcs_pos_raw < 4) return NULL;
 
-    /* Validate FCS */
-    uint8_t expected_fcs = hdlc_fcs(rx + 1, fcs_pos - 1);
-    if (rx[fcs_pos] != expected_fcs) {
-        PRINTF("[REMPRO] FCS mismatch: got=%02X exp=%02X\r\n", rx[fcs_pos], expected_fcs);
+    /* Unstuff frame body (SYS..FCS, between delimiters).
+     * Must copy because the raw data is const (in reasm_buf). */
+    uint8_t unstuffed[REASM_BUF_SIZE];
+    uint8_t body_len = fcs_pos_raw;
+    memcpy(unstuffed, buf + 1, body_len);
+    body_len = hdlc_unstuff(unstuffed, 0, body_len);
+
+    if (body_len < 4) return NULL;   /* need at least SY + CMDL + CMDH + FCS */
+    if (unstuffed[0] != HDLC_SYS_ID) return NULL;
+
+    *cmd_id = unstuffed[1] | ((uint16_t)unstuffed[2] << 8);
+
+    /* FCS is the last byte of unstuffed body */
+    uint8_t fcs_pos = body_len - 1;
+    if (fcs_pos < 3) return NULL;
+
+    uint8_t exp = hdlc_fcs(unstuffed, fcs_pos);
+    if (unstuffed[fcs_pos] != exp) {
+        PRINTF("[REMPRO] FCS err got=%02X exp=%02X\r\n", unstuffed[fcs_pos], exp);
         return NULL;
     }
 
-    *data_len = fcs_pos - 4; /* bytes between CMD_ID and FCS */
-    return (fcs_pos > 4) ? &rx[4] : NULL;
+    *data_len = fcs_pos - 3;
+    if (*data_len > 0) {
+        /* Copy unstuffed data into reasm_buf (safe: reasm_buf is not const) */
+        memcpy((uint8_t *)buf, unstuffed + 3, *data_len);
+        return buf;  /* data now sits at start of buf */
+    }
+    return NULL;
 }
 
 /* ================================================================
@@ -124,14 +203,11 @@ static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
 /* ID:4  GetBatteryInfo */
 static void cmd_getbatteryinfo(void)
 {
-    uint8_t batt_lvl = app_env.batt_lvl;
-    if (batt_lvl > 100) batt_lvl = 100;
-
     uint8_t resp_data[2];
-    resp_data[0] = batt_lvl;  /* Left_Battery */
-    resp_data[1] = batt_lvl;  /* Right_Battery (same for single device) */
+    resp_data[0] = 100;  /* Left_Battery: hardcoded 100% */
+    resp_data[1] = 0;    /* Right_Battery: 0 (single device) */
 
-    PRINTF("[REMPRO] GetBatteryInfo: %u%%\r\n", batt_lvl);
+    PRINTF("[REMPRO] GetBatteryInfo: L=100 R=0\r\n");
     hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
 }
 
@@ -156,18 +232,32 @@ static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
 /* ID:26  GetDeviceConfig */
 static void cmd_getdeviceconfig(void)
 {
-    /* Build minimal response: product=1 (K24BE), chip=1 (BS300) */
-    uint8_t resp_data[10];
-    resp_data[0] = 0;              /* Device_OnOff (placeholder) */
-    resp_data[1] = 0;              /* Feedback_OnOff (placeholder) */
-    resp_data[2] = 1; resp_data[3] = 0; resp_data[4] = 0; resp_data[5] = 0; /* Version 1.0.0.0 */
-    resp_data[6] = 4;              /* Program_Num */
-    /* MAC (6B, skipped for brevity) */
-    resp_data[7] = 1; resp_data[8] = 0; /* Product_Type = 1 (K24BE) */
-    resp_data[9] = 1;              /* Chip_Type = 1 (BS300) */
+    uint8_t d[32];
+    uint8_t pos = 0;
+
+    /* Device_OnOff / Feedback_OnOff: only for Echo402BT, removed */
+
+    d[pos++] = 1; d[pos++] = 0; d[pos++] = 0; d[pos++] = 0; /* Version 1.0.0.0 */
+    d[pos++] = 3;  /* Program_Num */
+
+    /* Left side */
+    memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
+    d[pos++] = 101; d[pos++] = 0;                        /* Product_Type = 101 */
+    d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
+    d[pos++] = 2;                                        /* Turn_Number */
+    d[pos++] = 16;                                       /* Channel_Number */
+
+    /* Right side (same as left) */
+    memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
+    d[pos++] = 101; d[pos++] = 0;                        /* Product_Type = 101 */
+    d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
+    d[pos++] = 2;                                        /* Turn_Number */
+    d[pos++] = 16;                                       /* Channel_Number */
+
+    d[pos++] = 9;  /* Volume_Number */
 
     PRINTF("[REMPRO] GetDeviceConfig\r\n");
-    hdlc_response(CMD_GETDEVICECONFIG, 0, resp_data, 10);
+    hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);
 }
 
 /* ================================================================
@@ -178,34 +268,72 @@ void rempro_cmd_process(void)
     if (!rempro_env.role_value_changed) return;
     rempro_env.role_value_changed = 0;
 
-    uint16_t cmd_id;
-    uint8_t data_len;
-    const uint8_t *data = hdlc_parse(&cmd_id, &data_len);
-    if (data == NULL && cmd_id == 0) return; /* bad frame, silently drop */
+    /* Append incoming chunk to reassembly buffer */
+    uint8_t chunk_len = rempro_env.role_value_len;
+    print_hex("RX chunk", rempro_env.role_value, chunk_len);
+    if (reasm_len + chunk_len > REASM_BUF_SIZE) {
+        PRINTF("[REMPRO] reasm overflow: %u + %u > %u\r\n",
+               reasm_len, chunk_len, REASM_BUF_SIZE);
+        reasm_len = 0;   /* reset, drop bad data */
+        return;
+    }
+    memcpy(reasm_buf + reasm_len, rempro_env.role_value, chunk_len);
+    reasm_len += chunk_len;
 
-    PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
+    /* Process as many complete frames as we can */
+    while (reasm_len >= 7) {   /* minimum frame: 7E SY CMDL CMDH FCS 7E */
 
-    switch (cmd_id) {
-    case CMD_SETVOLUME:
-        if (data) cmd_setvolume(data, data_len);
-        else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
-        break;
-    case CMD_SETDEVICEONOFF:
-        if (data) cmd_setdeviceonoff(data, data_len);
-        else hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0);
-        break;
-    case CMD_GETBATTERYINFO:
-        cmd_getbatteryinfo();
-        break;
-    case CMD_SETCURRENTSCENE:
-        if (data) cmd_setcurrentscene(data, data_len);
-        else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
-        break;
-    case CMD_GETDEVICECONFIG:
-        cmd_getdeviceconfig();
-        break;
-    default:
-        PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);
-        break;
+        /* Skip leading garbage until we find 0x7E */
+        if (reasm_buf[0] != HDLC_SEPARATOR) {
+            uint8_t skip = 1;
+            while (skip < reasm_len && reasm_buf[skip] != HDLC_SEPARATOR)
+                skip++;
+            PRINTF("[REMPRO] skipping %u leading bytes before 7E\r\n", skip);
+            reasm_len -= skip;
+            memmove(reasm_buf, reasm_buf + skip, reasm_len);
+            if (reasm_len < 7) return;
+        }
+
+        uint16_t cmd_id;
+        uint8_t data_len, consumed;
+        const uint8_t *data = hdlc_parse_frame(reasm_buf, reasm_len,
+                                               &cmd_id, &data_len, &consumed);
+        if (consumed == 0) {
+            /* No closing 7E found — wait for more chunks */
+            PRINTF("[REMPRO] waiting: have %u bytes, no end 7E\r\n", reasm_len);
+            return;
+        }
+        /* consumed > 0: frame parsed, data may be NULL if no payload */
+
+        print_hex("RX frame", reasm_buf, consumed);
+        PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
+
+        switch (cmd_id) {
+        case CMD_SETVOLUME:
+            if (data) cmd_setvolume(data, data_len);
+            else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
+            break;
+        case CMD_SETDEVICEONOFF:
+            if (data) cmd_setdeviceonoff(data, data_len);
+            else hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0);
+            break;
+        case CMD_GETBATTERYINFO:
+            cmd_getbatteryinfo();
+            break;
+        case CMD_SETCURRENTSCENE:
+            if (data) cmd_setcurrentscene(data, data_len);
+            else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+            break;
+        case CMD_GETDEVICECONFIG:
+            cmd_getdeviceconfig();
+            break;
+        default:
+            PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);
+            break;
+        }
+
+        /* Remove processed frame from buffer */
+        reasm_len -= consumed;
+        if (reasm_len > 0) memmove(reasm_buf, reasm_buf + consumed, reasm_len);
     }
 }

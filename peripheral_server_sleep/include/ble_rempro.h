@@ -41,6 +41,7 @@ struct rempro_env_tag
     uint8_t  role_value[REMPRO_ROLE_VALUE_MAX_LENGTH];
     uint16_t role_cccd_value;
     bool     role_value_changed;
+    uint8_t  role_value_len;
 
     uint8_t  onoff_value[REMPRO_ONOFF_VALUE_MAX_LENGTH];
     uint16_t onoff_cccd_value;
