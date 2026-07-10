@@ -21,6 +21,8 @@ static bs300_modules_t  s_prog_modules[4];
 static bs300_enr_t      s_prog_enr[4];
 static bool             s_boot_cached;
 static uint8_t          s_work[480];        /* shared raw buffer */
+static int8_t            s_pending_program = -1;  /* deferred mode switch */
+static int8_t            s_pending_volume  = -1;  /* deferred volume change */
 
 uint8_t bs300_get_prog_input(uint8_t prog_idx)
 {
@@ -1265,8 +1267,6 @@ static int reencode_bin_gain_async_core(bs300_prog_struct_t *prog,
     return start_async_session(on_done);
 }
 
-static int8_t s_pending_program = -1;  /* -1 = none, 0-3 = pending */
-static int8_t s_pending_volume  = -1;  /* -1 = none, 0-9 = pending */
 
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
