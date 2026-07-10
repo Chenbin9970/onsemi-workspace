@@ -1214,7 +1214,11 @@ static int start_async_session(void (*on_done)(void))
 
 int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 {
-    if (bs300_sync_is_busy()) return -1;
+    if (bs300_sync_is_busy()) {
+        s_pending_program = (int8_t)new_prog_idx;
+        PRINTF("[BS300] switch prog=%d queued (sync busy)\r\n", new_prog_idx);
+        return 0;
+    }
     bs300_sync_session_init(&g_bs300_sync);
     if (bs300_switch_program_start(&g_bs300_sync, new_prog_idx) < 0)
         return -1;
@@ -1261,7 +1265,8 @@ static int reencode_bin_gain_async_core(bs300_prog_struct_t *prog,
     return start_async_session(on_done);
 }
 
-static int8_t s_pending_volume = -1;  /* -1 = none, 0-9 = pending */
+static int8_t s_pending_program = -1;  /* -1 = none, 0-3 = pending */
+static int8_t s_pending_volume  = -1;  /* -1 = none, 0-9 = pending */
 
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
@@ -1281,6 +1286,13 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 
 void bs300_async_done_callback(void)
 {
+    if (s_pending_program >= 0) {
+        int8_t prog = s_pending_program;
+        s_pending_program = -1;
+        bs300_switch_program_async((uint8_t)prog, bs300_async_done_callback);
+        PRINTF("[BS300] pending switch prog=%d applied\r\n", prog);
+        return;
+    }
     if (s_pending_volume < 0) return;
     {
         int8_t vol = s_pending_volume;
