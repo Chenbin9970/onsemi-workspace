@@ -1074,8 +1074,11 @@ int bs300_mute(void)
 
 int bs300_active(void)
 {
+    bool ok;
     bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);  /* slow before critical cmd */
-    return bs300_send_simple_cmd(BS300_CMD_ACTIVE) ? 0 : -1;
+    ok = bs300_send_simple_cmd(BS300_CMD_ACTIVE);
+    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_ACTIVE);  /* DSP running, medium */
+    return ok ? 0 : -1;
 }
 
 int bs300_is_connected(void)
