@@ -14,6 +14,7 @@ C_SRCS += \
 ../code/bs300_driver.c \
 ../code/bs300_hal.c \
 ../code/bs300_param_encode.c \
+../code/bs300_param_tables.c \
 ../code/bs300_program_read.c \
 ../code/bs300_ram_sync.c \
 ../code/bs300_startup.c \
@@ -38,6 +39,7 @@ OBJS += \
 ./code/bs300_driver.o \
 ./code/bs300_hal.o \
 ./code/bs300_param_encode.o \
+./code/bs300_param_tables.o \
 ./code/bs300_program_read.o \
 ./code/bs300_ram_sync.o \
 ./code/bs300_startup.o \
@@ -63,6 +65,7 @@ C_DEPS += \
 ./code/bs300_driver.d \
 ./code/bs300_hal.d \
 ./code/bs300_param_encode.d \
+./code/bs300_param_tables.d \
 ./code/bs300_program_read.d \
 ./code/bs300_ram_sync.d \
 ./code/bs300_startup.d \

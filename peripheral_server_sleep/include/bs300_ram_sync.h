@@ -108,6 +108,7 @@ int  bs300_param_modify_async(uint8_t prog_idx, uint16_t offset,
 int bs300_set_volume(uint8_t level);
 int bs300_set_eq(int8_t low, int8_t mid, int8_t high);
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void));
+void bs300_async_done_callback(void);
 int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
                         void (*on_done)(void));
 int bs300_vol_commit(uint8_t level);

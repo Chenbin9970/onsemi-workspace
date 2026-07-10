@@ -1265,12 +1265,29 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
     bs300_prog_struct_t prog;
     if (level > 9) return -1;
-    if (bs300_sync_is_busy()) return -1;
+    if (bs300_sync_is_busy()) {
+        s_pending_volume = (int8_t)level;
+        PRINTF("[BS300] volume=%d queued (sync busy)\r\n", level);
+        return 0;
+    }
     if (load_struct(s_active_prog, &prog) < 0) return -1;
     prog.modules.volume_level = level;
     s_prog_modules[s_active_prog].volume_level = level;
     save_settings();
     return reencode_bin_gain_async_core(&prog, on_done);
+}
+
+static int8_t s_pending_volume = -1;  /* -1 = none, 0-9 = pending */
+
+void bs300_async_done_callback(void)
+{
+    if (s_pending_volume < 0) return;
+    {
+        int8_t vol = s_pending_volume;
+        s_pending_volume = -1;
+        bs300_set_volume_async((uint8_t)vol, bs300_async_done_callback);
+        PRINTF("[BS300] pending volume=%d applied\r\n", vol);
+    }
 }
 
 int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,

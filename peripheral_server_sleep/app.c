@@ -26,12 +26,14 @@
 static void on_bs300_switch_done(void)
 {
     cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
 }
 
 static void on_bs300_volume_done(void)
 {
     bs300_play_prompt_tone(bs300_get_active_prog(), app_env.volume);
     cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
 }
 
 int main()
