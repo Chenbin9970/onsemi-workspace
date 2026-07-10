@@ -1261,6 +1261,8 @@ static int reencode_bin_gain_async_core(bs300_prog_struct_t *prog,
     return start_async_session(on_done);
 }
 
+static int8_t s_pending_volume = -1;  /* -1 = none, 0-9 = pending */
+
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
     bs300_prog_struct_t prog;
@@ -1276,8 +1278,6 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
     save_settings();
     return reencode_bin_gain_async_core(&prog, on_done);
 }
-
-static int8_t s_pending_volume = -1;  /* -1 = none, 0-9 = pending */
 
 void bs300_async_done_callback(void)
 {
