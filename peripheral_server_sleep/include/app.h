@@ -54,6 +54,7 @@ extern "C"
 #include "ble_std.h"
 #include "ble_custom.h"
 #include "ble_bass.h"
+#include "ble_rempro.h"
 #include "calibration.h"
 #include "RTE_Device.h"
 #include "bs300_program_read.h"
@@ -412,7 +413,8 @@ typedef void (*appm_add_svc_func_t)(void);
 /* List of functions used to create the database */
 #define SERVICE_ADD_FUNCTION_LIST                        \
     DEFINE_SERVICE_ADD_FUNCTION(Batt_ServiceAdd_Server), \
-    DEFINE_SERVICE_ADD_FUNCTION(CustomService_ServiceAdd)
+    DEFINE_SERVICE_ADD_FUNCTION(CustomService_ServiceAdd), \
+    DEFINE_SERVICE_ADD_FUNCTION(RemproService_ServiceAdd)
 
 typedef void (*appm_enable_svc_func_t)(uint8_t);
 #define DEFINE_SERVICE_ENABLE_FUNCTION(func) (appm_enable_svc_func_t)func

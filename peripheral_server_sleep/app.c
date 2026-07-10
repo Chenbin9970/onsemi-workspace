@@ -17,6 +17,7 @@
 #include "app.h"
 #include "bs300_ram_sync.h"
 #include "bs300_storage.h"
+#include "ble_rempro_cmd.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -186,6 +187,9 @@ void Main_Loop(void)
                     PRINTF("[BS300] cache cleared, reset to reload\r\n");
                 }
             }
+
+            /* Handle REMPRO (RT App) commands from ROLE characteristic */
+            rempro_cmd_process();
 
             /* Update custom service characteristics, send notifications if
              * notification is enabled */

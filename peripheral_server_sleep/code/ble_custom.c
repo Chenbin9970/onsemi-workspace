@@ -18,6 +18,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "ble_rempro.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -140,7 +141,14 @@ int GATTM_AddSvcRsp(ke_msg_id_t const msg_id,
                     ke_task_id_t const dest_id,
                     ke_task_id_t const src_id)
 {
-    cs_env.start_hdl = param->start_hdl;
+    if (cs_env.start_hdl == 0)
+    {
+        cs_env.start_hdl = param->start_hdl;
+    }
+    else
+    {
+        rempro_env.start_hdl = param->start_hdl;
+    }
 
     /* Add the next requested service  */
     if (!Service_Add())
@@ -186,9 +194,12 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
 
     struct gattc_read_cfm *cfm;
 
-    /* Set the attribute handle using the attribute index
-     * in the custom service */
-    if (param->handle > cs_env.start_hdl)
+    /* Route handle to the correct service */
+    if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+    }
+    else if (param->handle > cs_env.start_hdl)
     {
         attnum = (param->handle - cs_env.start_hdl - 1);
     }
@@ -200,7 +211,38 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
     /* If there is no error, send back the requested attribute value */
     if (status == GAP_ERR_NO_ERROR)
     {
-        switch (attnum)
+        if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+        {
+            switch (attnum)
+            {
+                case REMPRO_IDX_ROLE_VALUE_VAL:
+                    length = REMPRO_ROLE_VALUE_MAX_LENGTH;
+                    valptr = (uint8_t *)&rempro_env.role_value;
+                    break;
+                case REMPRO_IDX_ROLE_VALU_CCC:
+                    length = 2;
+                    valptr = (uint8_t *)&rempro_env.role_cccd_value;
+                    break;
+                case REMPRO_IDX_ROLE_VALUE_USR_DSCP:
+                    length = strlen("ROLE_VALUE");
+                    valptr = (uint8_t *)"ROLE_VALUE";
+                    break;
+                case REMPRO_IDX_ONOFF_VALUE_VAL:
+                    length = REMPRO_ONOFF_VALUE_MAX_LENGTH;
+                    valptr = (uint8_t *)&rempro_env.onoff_value;
+                    break;
+                case REMPRO_IDX_ONOFF_VALU_CCC:
+                    length = 2;
+                    valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+                    break;
+                default:
+                    status = ATT_ERR_READ_NOT_PERMITTED;
+                    break;
+            }
+        }
+        else
+        {
+            switch (attnum)
         {
             case CS_IDX_RX_VALUE_VAL:
             {
@@ -263,6 +305,7 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
                 status = ATT_ERR_READ_NOT_PERMITTED;
             }
             break;
+        }
         }
     }
 
@@ -327,9 +370,12 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
         status = ATT_ERR_INVALID_OFFSET;
     }
 
-    /* Set the attribute handle using the attribute index
-     * in the custom service */
-    if (param->handle > cs_env.start_hdl)
+    /* Route handle to the correct service */
+    if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+    }
+    else if (param->handle > cs_env.start_hdl)
     {
         attnum = (param->handle - cs_env.start_hdl - 1);
     }
@@ -341,7 +387,28 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
     /* If there is no error, save the requested attribute value */
     if (status == GAP_ERR_NO_ERROR)
     {
-        switch (attnum)
+        if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+        {
+            switch (attnum)
+            {
+                case REMPRO_IDX_ROLE_VALUE_VAL:
+                    valptr = (uint8_t *)&rempro_env.role_value;
+                    rempro_env.role_value_changed = 1;
+                    break;
+                case REMPRO_IDX_ROLE_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.role_cccd_value;
+                    break;
+                case REMPRO_IDX_ONOFF_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+                    break;
+                default:
+                    status = ATT_ERR_WRITE_NOT_PERMITTED;
+                    break;
+            }
+        }
+        else
+        {
+            switch (attnum)
         {
             case CS_IDX_RX_VALUE_VAL:
             {
@@ -388,6 +455,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
                 status = ATT_ERR_WRITE_NOT_PERMITTED;
             }
             break;
+        }
         }
     }
 
@@ -462,14 +530,10 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id,
 {
     if (param->operation == GATTC_NOTIFY)
     {
-        if (param->status == GAP_ERR_NO_ERROR)
+        if (param->status == GAP_ERR_NO_ERROR || param->status == GAP_ERR_DISCONNECTED)
         {
             cs_env.sentSuccess = 1;
-        }
-
-        if (param->status == GAP_ERR_DISCONNECTED)
-        {
-            cs_env.sentSuccess = 1;
+            rempro_env.sentSuccess = 1;
         }
     }
 

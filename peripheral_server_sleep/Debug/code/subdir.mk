@@ -9,6 +9,7 @@ C_SRCS += \
 ../code/app_process.c \
 ../code/ble_bass.c \
 ../code/ble_custom.c \
+../code/ble_rempro.c \
 ../code/ble_std.c \
 ../code/bs300_calib.c \
 ../code/bs300_driver.c \
@@ -34,6 +35,7 @@ OBJS += \
 ./code/app_process.o \
 ./code/ble_bass.o \
 ./code/ble_custom.o \
+./code/ble_rempro.o \
 ./code/ble_std.o \
 ./code/bs300_calib.o \
 ./code/bs300_driver.o \
@@ -60,6 +62,7 @@ C_DEPS += \
 ./code/app_process.d \
 ./code/ble_bass.d \
 ./code/ble_custom.d \
+./code/ble_rempro.d \
 ./code/ble_std.d \
 ./code/bs300_calib.d \
 ./code/bs300_driver.d \

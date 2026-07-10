@@ -609,6 +609,7 @@ void App_Env_Initialize(void)
 
     /* Initialize the custom service environment */
     CustomService_Env_Initialize();
+    RemproService_Env_Initialize();
 
     /* Initialize the battery service server environment */
     Bass_Env_Initialize();
