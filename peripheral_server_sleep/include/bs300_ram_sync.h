@@ -10,10 +10,9 @@
 extern "C" {
 #endif
 
-/* Timer message ID — must be added to app.h message enum.
- * Define here as a fallback; override in app.h if needed. */
+/* Timer message ID — must be added to app.h message enum. */
 #ifndef BS300_SYNC_TIMER
-#define BS300_SYNC_TIMER  0x10  /* APP timer message ID */
+#define BS300_SYNC_TIMER  0x10
 #endif
 
 /* ================================================================
@@ -62,7 +61,9 @@ typedef struct {
     bs300_sync_state_t state;
     uint8_t  retry_count;
     uint8_t  fail_count;
-    uint32_t last_action_ms;
+    bool     abort_requested;           /* external abort signal */
+    bs300_prog_struct_t *dsp_state;     /* → s_dsp_state, updated per-command */
+    bs300_prog_struct_t *target;        /* → s_target, source for apply */
 } bs300_sync_session_t;
 
 /* ================================================================
@@ -115,7 +116,7 @@ int bs300_vol_commit(uint8_t level);
 void bs300_sync_dirty(void);
 
 /* ================================================================
- *  Voice prompt input switch (no VM change, uses boot cache)
+ *  Voice prompt input switch (uses s_dsp_state directly)
  * ================================================================ */
 uint8_t bs300_voice_prompt_input_switch(uint8_t target_input);
 int  bs300_voice_prompt_input_restore(uint8_t original_input);
@@ -141,21 +142,31 @@ int bs300_active(void);
 int bs300_is_connected(void);
 
 /* ================================================================
- *  Prompt Tone — played on mode switch and volume change
+ *  Prompt Tone
  * ================================================================ */
 void bs300_play_prompt_tone(uint8_t program, uint8_t volume);
 
 /* ================================================================
- *  Boot-time cache (populate after init)
+ *  DSP state query (single source of truth)
  * ================================================================ */
-void bs300_cache_prog_inputs(void);
-void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume);
-void bs300_on_active_prog_changed(uint8_t new_prog_idx);
-uint8_t bs300_get_prog_input(uint8_t prog_idx);
-bool bs300_is_boot_cached(void);
 uint8_t bs300_get_active_prog(void);
 uint8_t bs300_get_module_volume(uint8_t prog_idx);
+bool    bs300_is_boot_cached(void);
 const bs300_calib_t *bs300_get_cached_calib(void);
+
+/* ================================================================
+ *  Boot-time init — load active program into s_dsp_state
+ * ================================================================ */
+void bs300_cache_boot_state(void);
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume);
+
+/* Direct access to current DSP state (490B .bss) */
+bs300_prog_struct_t *bs300_get_dsp_state(void);
+
+/* ================================================================
+ *  Shared work buffer (480B, used by driver and sync for Flash I/O)
+ * ================================================================ */
+extern uint8_t bs300_work_buf[480];
 
 #ifdef __cplusplus
 }

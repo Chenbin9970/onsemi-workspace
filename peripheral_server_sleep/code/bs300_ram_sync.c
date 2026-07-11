@@ -12,96 +12,238 @@
 #endif
 
 /* ================================================================
- *  Boot-time cache + shared work buffer
+ *  Single source of truth for current DSP state
  * ================================================================ */
-static uint8_t          s_active_prog;
-static bs300_calib_t    s_calib_cache;
-static uint8_t          s_prog_input[4];
-static bs300_modules_t  s_prog_modules[4];
-static bs300_enr_t      s_prog_enr[4];
-static bool             s_boot_cached;
-static uint8_t          s_work[480];        /* shared raw buffer */
-static int8_t            s_pending_program = -1;  /* deferred mode switch */
-static int8_t            s_pending_volume  = -1;  /* deferred volume change */
+static bs300_prog_struct_t  s_dsp_state;      /* 490B — always == DSP register state */
+static bs300_prog_struct_t  s_target;         /* 490B — target program loaded during switch */
+static bs300_calib_t        s_calib_cache;    /* ~80B — calibration, shared by all programs */
+static uint8_t              s_volumes[4];     /* 4B — per-program volume, persists across switches */
+static uint8_t              s_cur_prog;       /* 1B — current active program index */
+static bool                 s_boot_cached;    /* 1B — calibration loaded flag */
 
-uint8_t bs300_get_prog_input(uint8_t prog_idx)
+/* Shared raw Flash work buffer — also used by driver.c */
+uint8_t bs300_work_buf[480];
+
+/* ================================================================
+ *  Per-command DSP state update: copy fields from target → dsp_state
+ *  based on which I2C command just succeeded.
+ * ================================================================ */
+static void dsp_state_apply(uint32_t cmd, const bs300_prog_struct_t *src,
+                            bs300_prog_struct_t *dst)
 {
-    if (prog_idx < 4) return s_prog_input[prog_idx];
-    return 0;
-}
+    switch (cmd & 0xFFFFFF) {
 
-bool bs300_is_boot_cached(void) { return s_boot_cached; }
-uint8_t bs300_get_active_prog(void) { return s_active_prog; }
-uint8_t bs300_get_module_volume(uint8_t prog_idx)
-{
-    if (prog_idx > 3) return 9;
-    return s_prog_modules[prog_idx].volume_level;
-}
+    /* ---- DDM2 (0x800022) ---- */
+    case 0x800022:
+        dst->modules.ddm2_enable    = src->modules.ddm2_enable;
+        dst->modules.open_ear       = src->modules.open_ear;
+        dst->modules.polar_pattern  = src->modules.polar_pattern;
+        dst->modules.adm_fdm        = src->modules.adm_fdm;
+        dst->modules.omni_threshold = src->modules.omni_threshold;
+        break;
 
-void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume)
-{
-    uint8_t i;
+    /* ---- MM Plus (0x800062) ---- */
+    case 0x800062:
+        dst->modules.mm_plus_enable = src->modules.mm_plus_enable;
+        dst->modules.mix_ratio      = src->modules.mix_ratio;
+        break;
 
-    s_active_prog = active_prog;
+    /* ---- DFBC (0x800052) ---- */
+    case 0x800052:
+        dst->modules.dfbc_enable_mode = src->modules.dfbc_enable_mode;
+        break;
 
-    if (volume == NULL) return;
+    /* ---- ENR General (0x8000C2) ---- */
+    case 0x8000C2:
+        dst->enr.enable_num_ch = src->enr.enable_num_ch;
+        break;
 
-    /* Update in-memory volume cache — settings sector is the authoritative source */
-    for (i = 0; i < 4; i++) {
-        s_prog_modules[i].volume_level = volume[i];
-    }
+    /* ---- ENR Freq Spacing (0x8010C2) ---- */
+    case 0x8010C2:
+        memcpy(dst->enr.freq_idx, src->enr.freq_idx, 16);
+        break;
 
-    PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
-}
+    /* ---- ENR SNR Threshold (0x8020C2) ---- */
+    case 0x8020C2:
+        memcpy(dst->enr.snr_th_db, src->enr.snr_th_db, 16);
+        break;
 
-/* Save current active program and all volume levels to settings sector */
-static void save_settings(void)
-{
-    uint8_t vols[4];
-    uint8_t i;
-    for (i = 0; i < 4; i++) vols[i] = s_prog_modules[i].volume_level;
-    bs300_settings_save(s_active_prog, vols);
-}
+    /* ---- ENR Max Att (0x8030C2) ---- */
+    case 0x8030C2:
+        memcpy(dst->enr.max_att_db, src->enr.max_att_db, 16);
+        break;
 
-void bs300_cache_prog_inputs(void)
-{
-    bs300_prog_struct_t prog;
-    uint8_t i;
+    /* ---- ENR Noise Threshold (0x8040C2) ---- */
+    case 0x8040C2:
+        memcpy(dst->enr.noise_th_db, src->enr.noise_th_db, 16);
+        break;
 
-    for (i = 0; i < 4; i++) {
-        bs300_storage_load_program(i, s_work);
-        if (bs300_flash_to_struct(s_work, &prog) == 0) {
-            s_prog_input[i]   = prog.modules.input_selection;
-            s_prog_modules[i] = prog.modules;
-            s_prog_enr[i]     = prog.enr;
-        }
-    }
-    if (bs300_read_calibration(s_work)) {
-        bs300_parse_calibration(s_work, &s_calib_cache);
-        s_boot_cached = true;
-    }
-}
+    /* ---- ENR Upper Noise Threshold (0x8050C2) ---- */
+    case 0x8050C2:
+        memcpy(dst->enr.upper_noise_th_db, src->enr.upper_noise_th_db, 16);
+        break;
 
-void bs300_on_active_prog_changed(uint8_t new_prog_idx)
-{
-    bs300_prog_struct_t prog;
+    /* ---- ENR Smoothing (0x8060C2) ---- */
+    case 0x8060C2:
+        dst->enr.nfsf  = src->enr.nfsf;
+        dst->enr.nhsf  = src->enr.nhsf;
+        dst->enr.nnsf  = src->enr.nnsf;
+        dst->enr.snasf = src->enr.snasf;
+        break;
 
-    s_active_prog = new_prog_idx;
-    bs300_storage_load_program(new_prog_idx, s_work);
-    if (bs300_flash_to_struct(s_work, &prog) == 0) {
-        s_prog_input[new_prog_idx]   = prog.modules.input_selection;
-        s_prog_modules[new_prog_idx] = prog.modules;
-        s_prog_enr[new_prog_idx]     = prog.enr;
+    /* ---- ENR ETR (0x8070C2) ---- */
+    case 0x8070C2:
+        memcpy(dst->enr.etr_x100, src->enr.etr_x100, 16);
+        break;
+
+    /* ---- ENR NRR (0x8080C2) ---- */
+    case 0x8080C2:
+        memcpy(dst->enr.nrr_x10, src->enr.nrr_x10, 16);
+        break;
+
+    /* ---- TC/DAI — no struct fields, skip ---- */
+
+    /* ---- ISS (0x8001B2) ---- */
+    case 0x8001B2:
+        dst->modules.iss_enable    = src->modules.iss_enable;
+        dst->modules.iss_threshold = src->modules.iss_threshold;
+        break;
+
+    /* ---- WNR Setup (0x8001C2) ---- */
+    case 0x8001C2:
+        dst->modules.wnr_enable_dual = src->modules.wnr_enable_dual;
+        dst->modules.wnr_preset      = src->modules.wnr_preset;
+        break;
+
+    /* WNR Band/Single-Mic commands have no struct fields — skip 0x8011C2, 0x8411C2, 0x8021C2 */
+
+    /* ---- AGCO (0x800382) ---- */
+    case 0x800382:
+        dst->modules.agco_enable        = src->modules.agco_enable;
+        dst->modules.agco_threshold_db  = src->modules.agco_threshold_db;
+        dst->modules.agco_attack_01ms   = src->modules.agco_attack_01ms;
+        dst->modules.agco_release_01ms  = src->modules.agco_release_01ms;
+        break;
+
+    /* ---- Vol/Beep (0x800081) ---- */
+    case 0x800081:
+        dst->modules.vol_enable       = src->modules.vol_enable;
+        dst->modules.beep_level       = src->modules.beep_level;
+        dst->modules.beep_freq_idx    = src->modules.beep_freq_idx;
+        dst->modules.min_vol          = src->modules.min_vol;
+        dst->modules.max_vol          = src->modules.max_vol;
+        dst->modules.input_selection  = src->modules.input_selection;
+        dst->modules.batt_beep_level  = src->modules.batt_beep_level;
+        dst->modules.batt_beep_freq_idx = src->modules.batt_beep_freq_idx;
+        break;
+
+    /* ---- WDRC General (0x8000B2) ---- */
+    case 0x8000B2:
+        dst->wdrc.total_channels = src->wdrc.total_channels;
+        dst->wdrc.nsbc           = src->wdrc.nsbc;
+        dst->wdrc.kp_mode        = src->wdrc.kp_mode;
+        dst->wdrc.limiter        = src->wdrc.limiter;
+        break;
+
+    /* ---- WDRC Freq Spacing (0x8010B2) ---- */
+    case 0x8010B2:
+        memcpy(dst->wdrc.freq_idx, src->wdrc.freq_idx, 16);
+        break;
+
+    /* ---- WDRC KP Threshold (0x8020B2) ---- */
+    case 0x8020B2:
+        memcpy(dst->wdrc.kp1_th_db, src->wdrc.kp1_th_db, 16);
+        memcpy(dst->wdrc.kp2_th_db, src->wdrc.kp2_th_db, 16);
+        break;
+
+    /* ---- WDRC Attack (0x8030B2) ---- */
+    case 0x8030B2:
+        memcpy(dst->wdrc.epd_at_idx, src->wdrc.epd_at_idx, 16);
+        memcpy(dst->wdrc.kp1_at_idx, src->wdrc.kp1_at_idx, 16);
+        memcpy(dst->wdrc.kp2_at_idx, src->wdrc.kp2_at_idx, 16);
+        break;
+
+    /* ---- WDRC Release (0x8040B2) ---- */
+    case 0x8040B2:
+        memcpy(dst->wdrc.epd_rt_idx, src->wdrc.epd_rt_idx, 16);
+        memcpy(dst->wdrc.kp1_rt_idx, src->wdrc.kp1_rt_idx, 16);
+        memcpy(dst->wdrc.kp2_rt_idx, src->wdrc.kp2_rt_idx, 16);
+        break;
+
+    /* ---- WDRC Ratio (0x8050B2) ---- */
+    case 0x8050B2:
+        memcpy(dst->wdrc.epd_r_idx,  src->wdrc.epd_r_idx,  16);
+        memcpy(dst->wdrc.kp1_r_idx,  src->wdrc.kp1_r_idx,  16);
+        memcpy(dst->wdrc.kp2_r_idx,  src->wdrc.kp2_r_idx,  16);
+        break;
+
+    /* ---- WDRC Bin Gain (0x8060B2) — also covers volume/EQ ---- */
+    case 0x8060B2:
+        memcpy(dst->wdrc.bin_gain, src->wdrc.bin_gain, 32);
+        dst->modules.volume_level = src->modules.volume_level;
+        dst->modules.eq_low       = src->modules.eq_low;
+        dst->modules.eq_mid       = src->modules.eq_mid;
+        dst->modules.eq_high      = src->modules.eq_high;
+        break;
+
+    /* ---- WDRC Lmt Threshold (0x8070B2) ---- */
+    case 0x8070B2:
+        memcpy(dst->wdrc.lmt_th_db, src->wdrc.lmt_th_db, 16);
+        break;
+
+    /* ---- WDRC Lmt Attack (0x8080B2) ---- */
+    case 0x8080B2:
+        memcpy(dst->wdrc.lmt_at_idx, src->wdrc.lmt_at_idx, 16);
+        break;
+
+    /* ---- WDRC Lmt Release (0x8090B2) ---- */
+    case 0x8090B2:
+        memcpy(dst->wdrc.lmt_rt_idx, src->wdrc.lmt_rt_idx, 16);
+        break;
+
+    /* ---- WDRC Lmt Ratio (0x80A0B2) ---- */
+    case 0x80A0B2:
+        memcpy(dst->wdrc.lmt_r_idx, src->wdrc.lmt_r_idx, 16);
+        break;
+
+    default:
+        break;
     }
 }
 
 /* ================================================================
- *  Struct load/save (Main Flash-backed: raw 480B → flash_to_struct)
+ *  Prompt Tone command words + helper
  * ================================================================ */
-static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
+
+#define BS300_TONE_MODE_0    0xFD52F2
+#define BS300_TONE_MODE_1    0xFD72F2
+#define BS300_TONE_MODE_2    0xFD92F2
+#define BS300_TONE_MODE_3    0xFDB2F2
+#define BS300_TONE_VOL_0     0xFD12F2
+#define BS300_TONE_VOL_OTHER 0xFCD2F2
+
+static uint32_t bs300_tone_for_program(uint8_t program)
 {
-    bs300_storage_load_program(prog_idx, s_work);
-    return bs300_flash_to_struct(s_work, out);
+    switch (program) {
+    case 0: return BS300_TONE_MODE_0;
+    case 1: return BS300_TONE_MODE_1;
+    case 2: return BS300_TONE_MODE_2;
+    case 3: return BS300_TONE_MODE_3;
+    default: return 0;
+    }
+}
+
+/* ================================================================
+ *  Public query API
+ * ================================================================ */
+uint8_t bs300_get_active_prog(void) { return s_cur_prog; }
+bool bs300_is_boot_cached(void) { return s_boot_cached; }
+bs300_prog_struct_t *bs300_get_dsp_state(void) { return &s_dsp_state; }
+
+uint8_t bs300_get_module_volume(uint8_t prog_idx)
+{
+    if (prog_idx > 3) return 9;
+    return s_volumes[prog_idx];
 }
 
 const bs300_calib_t *bs300_get_cached_calib(void)
@@ -109,21 +251,64 @@ const bs300_calib_t *bs300_get_cached_calib(void)
     return s_boot_cached ? &s_calib_cache : NULL;
 }
 
-static int load_calib(bs300_calib_t *calib)
+/* ================================================================
+ *  Settings restore (power-loss recovery)
+ * ================================================================ */
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume)
 {
-    if (s_boot_cached) {
-        *calib = s_calib_cache;  /* use cached copy, skip I2C */
-        return 0;
+    s_cur_prog = active_prog;
+    if (volume != NULL) {
+        uint8_t i;
+        for (i = 0; i < 4; i++) s_volumes[i] = volume[i];
     }
-    if (!bs300_read_calibration(s_work)) return -1;
-    return bs300_parse_calibration(s_work, calib);
+    PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
+}
+
+static void save_settings(void)
+{
+    bs300_settings_save(s_cur_prog, s_volumes);
 }
 
 /* ================================================================
- *  Sync session
+ *  Boot-time cache: load active program into s_dsp_state + calib
  * ================================================================ */
+void bs300_cache_boot_state(void)
+{
+    if (bs300_read_calibration(bs300_work_buf)) {
+        bs300_parse_calibration(bs300_work_buf, &s_calib_cache);
+        s_boot_cached = true;
+    }
+
+    bs300_storage_load_program(s_cur_prog, bs300_work_buf);
+    bs300_flash_to_struct(bs300_work_buf, &s_dsp_state);
+    s_dsp_state.modules.volume_level = s_volumes[s_cur_prog];
+
+    PRINTF("[BS300] boot cache: prog=%d vol=%d input=%d\r\n",
+           s_cur_prog, s_dsp_state.modules.volume_level,
+           s_dsp_state.modules.input_selection);
+}
+
 /* ================================================================
- *  Frame checksum helper (matches protocol: 0xFF - sum_of_bytes)
+ *  Struct loading (Main Flash-backed)
+ * ================================================================ */
+static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
+{
+    bs300_storage_load_program(prog_idx, bs300_work_buf);
+    return bs300_flash_to_struct(bs300_work_buf, out);
+}
+
+static int load_calib(bs300_calib_t *calib)
+{
+    if (s_boot_cached) {
+        *calib = s_calib_cache;
+        return 0;
+    }
+    if (!bs300_read_calibration(bs300_work_buf)) return -1;
+    return bs300_parse_calibration(bs300_work_buf, calib);
+}
+
+/* ================================================================
+ *  Frame checksum
  * ================================================================ */
 static uint8_t calc_checksum(const uint8_t *buf, int len)
 {
@@ -134,22 +319,21 @@ static uint8_t calc_checksum(const uint8_t *buf, int len)
 }
 
 /* ================================================================
- *  Raw I2C frame send (no poll) — matches bs300_send_advanced_write
- *  but returns immediately after I2C bus transaction.
+ *  Raw I2C frame send (no poll)
  * ================================================================ */
 static int raw_write_packet(uint32_t cmd, const uint8_t *data)
 {
     uint8_t frame[53];
     int i;
 
-    frame[0] = 0x10;  /* Len: has data */
+    frame[0] = 0x10;
     frame[1] = (uint8_t)(cmd & 0xFF);
     frame[2] = (uint8_t)((cmd >> 8) & 0xFF);
     frame[3] = (uint8_t)((cmd >> 16) & 0xFF);
     for (i = 0; i < 48; i++) frame[4 + i] = data[i];
     frame[52] = calc_checksum(frame, 52);
 
-    PRINTF("[BS300] ASYNC CMD=0x%06lX:", (unsigned long)cmd);
+    PRINTF("[BS300] I2C TX CMD=0x%06lX:", (unsigned long)cmd);
     for (i = 0; i < 53; i++) PRINTF(" %02X", frame[i]);
     PRINTF("\r\n");
 
@@ -157,14 +341,14 @@ static int raw_write_packet(uint32_t cmd, const uint8_t *data)
 }
 
 /* ================================================================
- *  Poll FURPROC — matches bs300_poll_ready pattern
+ *  Poll FURPROC
  * ================================================================ */
 static int poll_furproc(void)
 {
     uint8_t req[2], resp[4];
     uint8_t chk;
 
-    req[0] = 0x80;  /* Read Request, no data */
+    req[0] = 0x80;
     req[1] = (uint8_t)(0xFF - req[0]);
     if (!bs300_i2c_write(BS300_I2C_ADDR, req, 2)) return -1;
 
@@ -173,10 +357,13 @@ static int poll_furproc(void)
     chk = (uint8_t)(0xFF - ((resp[0] + resp[1] + resp[2]) & 0xFF));
     if (chk != resp[3]) return -1;
 
-    if (resp[2] & 0x80) return 1;  /* busy */
-    return 0;  /* ready */
+    if (resp[2] & 0x80) return 1;
+    return 0;
 }
 
+/* ================================================================
+ *  Session management
+ * ================================================================ */
 void bs300_sync_session_init(bs300_sync_session_t *s)
 {
     if (s == NULL) return;
@@ -201,6 +388,13 @@ int bs300_sync_tick(bs300_sync_session_t *s)
 
     if (s == NULL) return 0;
 
+    /* Abort check — stop immediately, don't send more I2C */
+    if (s->abort_requested) {
+        s->state = BS300_SYNC_IDLE;
+        PRINTF("[BS300] sync ABORTED at cmd=%d/%d\r\n", s->cmd_index, s->cmd_count);
+        return 0;
+    }
+
     switch (s->state) {
     case BS300_SYNC_IDLE:
     case BS300_SYNC_DONE:
@@ -212,6 +406,10 @@ int bs300_sync_tick(bs300_sync_session_t *s)
             s->state = BS300_SYNC_DONE;
             return 0;
         }
+
+        PRINTF("[BS300] sync[%d/%d] SEND 0x%06lX\r\n",
+               s->cmd_index + 1, s->cmd_count,
+               (unsigned long)s->cmds[s->cmd_index]);
 
         ret = raw_write_packet(s->cmds[s->cmd_index],
                                s->datas[s->cmd_index]);
@@ -240,14 +438,18 @@ int bs300_sync_tick(bs300_sync_session_t *s)
             if (s->retry_count >= 30) {
                 s->fail_count++;
                 s->state = BS300_SYNC_ERROR;
-                PRINTF("[BS300] sync poll err cmd=0x%06lX\r\n",
-                       (unsigned long)s->cmds[s->cmd_index]);
                 return 0;
             }
             s->state = BS300_SYNC_SEND;
             return 1;
         }
         if (ret == 0) {
+            PRINTF("[BS300] sync[%d/%d] POLL OK\r\n",
+                   s->cmd_index + 1, s->cmd_count);
+            /* Success — update DSP state incrementally */
+            if (s->dsp_state != NULL && s->target != NULL) {
+                dsp_state_apply(s->cmds[s->cmd_index], s->target, s->dsp_state);
+            }
             s->cmd_index++;
             s->retry_count = 0;
 
@@ -263,8 +465,6 @@ int bs300_sync_tick(bs300_sync_session_t *s)
         if (s->retry_count >= 30) {
             s->fail_count++;
             s->state = BS300_SYNC_ERROR;
-            PRINTF("[BS300] sync poll timeout cmd=0x%06lX\r\n",
-                   (unsigned long)s->cmds[s->cmd_index]);
             return 0;
         }
         s->state = BS300_SYNC_SEND;
@@ -275,8 +475,17 @@ int bs300_sync_tick(bs300_sync_session_t *s)
 }
 
 /* ================================================================
- *  Dynamic encode sync (sends all 31 modules via I2C)
+ *  Dynamic encode sync — builds 31 commands into session or sends directly
  * ================================================================ */
+static uint8_t get_input_type(uint8_t input_selection)
+{
+    switch (input_selection) {
+    case 2: return 1;  /* Telecoil */
+    case 3: return 2;  /* DAI */
+    default: return 0; /* Mic */
+    }
+}
+
 static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
                                        const bs300_calib_t *calib,
                                        uint8_t input_type,
@@ -289,8 +498,6 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
     memset(data, 0, 48); \
     ret = fn; \
     if (ret == 0) { \
-        { uint8_t _j; PRINTF("[BS300] CMD 0x%06lX:", (unsigned long)(cmd)); \
-          for (_j=0;_j<48;_j++) PRINTF(" %02X", data[_j]); PRINTF("\r\n"); } \
         if (session) { \
             bs300_session_append(session, cmd, data); \
         } else { \
@@ -304,12 +511,10 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
 
     prog->modules.wnr_enable_dual |= 0x01;
 
-    /* Input source */
     SEND_CMD(0x800022, bs300_encode_ddm2(&prog->modules, calib, data));
     SEND_CMD(0x800062, bs300_encode_mm_plus(&prog->modules, calib, input_type, data));
     SEND_CMD(0x800052, bs300_encode_dfbc(&prog->modules, calib, data));
 
-    /* ENR */
     if (prog->enr.enable_num_ch & 0x80) {
         SEND_CMD(0x8000C2, bs300_encode_enr_general(&prog->enr, data));
         SEND_CMD(0x8010C2, bs300_encode_enr_freq_spacing(&prog->enr, data));
@@ -326,14 +531,12 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
         else { if (bs300_advanced_write(0x8000C2, data)) sent++; else fail++; }
     }
 
-    /* NoiseGen2, TC/DAI, ISS */
     memset(data, 0, 48);
     if (session) bs300_session_append(session, 0x800172, data);
     else { if (bs300_advanced_write(0x800172, data)) sent++; else fail++; }
     SEND_CMD(0x804272, bs300_encode_tc_dai(calib, input_type, data));
     SEND_CMD(0x8001B2, bs300_encode_iss(&prog->modules, calib, input_type, data));
 
-    /* WNR */
     SEND_CMD(0x8001C2, bs300_encode_wnr_setup(&prog->modules, calib, data));
     SEND_CMD(0x8011C2, bs300_encode_wnr_band_0_15(&prog->modules, calib, input_type, data));
     SEND_CMD(0x8411C2, bs300_encode_wnr_band_16_31(&prog->modules, calib, input_type, data));
@@ -342,7 +545,6 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
     SEND_CMD(0x800382, bs300_encode_agco(&prog->modules, data));
     SEND_CMD(0x800081, bs300_encode_volume_beep(&prog->modules, calib, data));
 
-    /* WDRC */
     SEND_CMD(0x8000B2, bs300_encode_wdrc_general(&prog->wdrc, data));
     SEND_CMD(0x8010B2, bs300_encode_wdrc_freq_spacing(&prog->wdrc, data));
     SEND_CMD(0x8020B2, bs300_encode_wdrc_kp_threshold(&prog->wdrc, calib, input_type, data));
@@ -361,18 +563,6 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
     return (fail > 0) ? -1 : 0;
 }
 
-static uint8_t get_input_type(uint8_t input_selection)
-{
-    switch (input_selection) {
-    case 2: return 1;  /* Telecoil */
-    case 3: return 2;  /* DAI */
-    default: return 0; /* Mic */
-    }
-}
-
-/* ================================================================
- *  Inner sync dispatcher
- * ================================================================ */
 static int sync_program_inner(bs300_prog_struct_t *prog,
                                bs300_sync_session_t *session)
 {
@@ -387,15 +577,6 @@ static int sync_program_inner(bs300_prog_struct_t *prog,
     }
 
     input_type = get_input_type(prog->modules.input_selection);
-
-    PRINTF("[BS300] sync_program ch=%d kp=%d lim=%d enr=0x%02x input=%d\r\n",
-           prog->wdrc.total_channels, prog->wdrc.kp_mode,
-           prog->wdrc.limiter, prog->enr.enable_num_ch,
-           prog->modules.input_selection);
-    PRINTF("[BS300] CALIB mic2_gd=%d mic_delay=%d tc_gd=%d dai_gd=%d fbc_bd=%d\r\n",
-           calib.mic2_gain_diff, calib.mic_delay,
-           calib.telecoil_gain_diff, calib.dai_gain_diff,
-           calib.fbc_bulk_delay);
 
     return bs300_sync_program_dynamic(prog, &calib, input_type, session);
 }
@@ -413,27 +594,27 @@ int bs300_sync_program_start(bs300_sync_session_t *s, bs300_prog_struct_t *prog)
 
 /* ================================================================
  *  Per-module incremental diff helpers
+ *  Compare s_dsp_state (old) vs s_target (new), using s_target as source.
  * ================================================================ */
 
 #define SEND_IF_DIRTY(session, cmd, fn_call) do { \
     memset(data, 0, 48); \
     ret = (fn_call); \
     if (ret == 0) { \
-        if (session) { \
-            bs300_session_append(session, cmd, data); \
-        } else { \
-            if (bs300_advanced_write(cmd, data)) (*sent)++; else (*fail)++; \
-        } \
+        if (session) bs300_session_append(session, cmd, data); \
+        else { if (bs300_advanced_write(cmd, data)) (*sent)++; else (*fail)++; } \
     } \
 } while(0)
 
-static void switch_diff_wdrc(const bs300_wdrc_t *ow, const bs300_wdrc_t *nw,
-                              const bs300_modules_t *om, const bs300_modules_t *nm,
+static void switch_diff_wdrc(const bs300_wdrc_t *nw,
+                              const bs300_modules_t *nm,
                               const bs300_calib_t *calib,
                               uint8_t new_it, int igd_changed,
                               bs300_sync_session_t *session,
                               int *sent, int *fail, uint8_t *data)
 {
+    const bs300_wdrc_t *ow = &s_dsp_state.wdrc;
+    const bs300_modules_t *om = &s_dsp_state.modules;
     int ret;
     int hdr_changed = (ow->total_channels != nw->total_channels)
                    || (ow->nsbc != nw->nsbc)
@@ -477,7 +658,6 @@ static void switch_diff_wdrc(const bs300_wdrc_t *ow, const bs300_wdrc_t *nw,
         SEND_IF_DIRTY(session, 0x8060B2, bs300_encode_wdrc_bin_gain(nw, calib, nm, new_it, data));
 
     if (ow->limiter == 0 && nw->limiter == 0) {
-        /* both disabled, skip */
     } else if (ow->limiter == 0 && nw->limiter == 1) {
         SEND_IF_DIRTY(session, 0x8070B2, bs300_encode_wdrc_lmt_threshold(nw, calib, data));
         SEND_IF_DIRTY(session, 0x8080B2, bs300_encode_wdrc_lmt_attack(nw, data));
@@ -508,13 +688,13 @@ static void switch_diff_wdrc(const bs300_wdrc_t *ow, const bs300_wdrc_t *nw,
     }
 }
 
-static void switch_diff_vol_beep(const bs300_modules_t *om,
-                                  const bs300_modules_t *nm,
+static void switch_diff_vol_beep(const bs300_modules_t *nm,
                                   const bs300_calib_t *calib,
                                   int igd_changed,
                                   bs300_sync_session_t *session,
                                   int *sent, int *fail, uint8_t *data)
 {
+    const bs300_modules_t *om = &s_dsp_state.modules;
     int ret;
     if (om->vol_enable == 0 && nm->vol_enable == 0) {
     } else if (om->vol_enable == 0 && nm->vol_enable == 1) {
@@ -534,12 +714,13 @@ static void switch_diff_vol_beep(const bs300_modules_t *om,
     }
 }
 
-static void switch_diff_enr(const bs300_enr_t *oe, const bs300_enr_t *ne,
+static void switch_diff_enr(const bs300_enr_t *ne,
                              const bs300_calib_t *calib,
                              uint8_t new_it, int igd_changed,
                              bs300_sync_session_t *session,
                              int *sent, int *fail, uint8_t *data)
 {
+    const bs300_enr_t *oe = &s_dsp_state.enr;
     int ret;
     uint8_t oe_ena = (oe->enable_num_ch & 0x80) ? 1 : 0;
     uint8_t ne_ena = (ne->enable_num_ch & 0x80) ? 1 : 0;
@@ -592,12 +773,13 @@ static void switch_diff_enr(const bs300_enr_t *oe, const bs300_enr_t *ne,
     }
 }
 
-static void switch_diff_pre_enr(const bs300_modules_t *om, bs300_modules_t *nm,
+static void switch_diff_pre_enr(const bs300_modules_t *nm,
                                  const bs300_calib_t *calib,
                                  uint8_t new_it, int igd_changed,
                                  bs300_sync_session_t *session,
                                  int *sent, int *fail, uint8_t *data)
 {
+    const bs300_modules_t *om = &s_dsp_state.modules;
     int ret;
 
     /* DDM2 */
@@ -657,12 +839,13 @@ static void switch_diff_pre_enr(const bs300_modules_t *om, bs300_modules_t *nm,
     }
 }
 
-static void switch_diff_post_enr(const bs300_modules_t *om, bs300_modules_t *nm,
+static void switch_diff_post_enr(bs300_modules_t *nm,
                                   const bs300_calib_t *calib,
                                   uint8_t new_it, int igd_changed,
                                   bs300_sync_session_t *session,
                                   int *sent, int *fail, uint8_t *data)
 {
+    const bs300_modules_t *om = &s_dsp_state.modules;
     int ret;
 
     /* TC/DAI */
@@ -751,79 +934,117 @@ static void switch_diff_post_enr(const bs300_modules_t *om, bs300_modules_t *nm,
 #undef SEND_IF_DIRTY
 
 /* ================================================================
- *  Program switch (blocking)
+ *  Build diff session: s_dsp_state (old) vs s_target (new)
  * ================================================================ */
-int bs300_switch_program(uint8_t new_prog_idx)
+static int build_diff_session(bs300_sync_session_t *s)
 {
     uint8_t data[48];
     bs300_calib_t calib;
-    bs300_prog_struct_t old_prog, new_prog;
-    uint8_t active_prog = s_active_prog;
-    uint8_t old_it, new_it;
-    int igd_changed;
+    uint8_t old_it, new_it, igd_changed;
     int sent = 0, fail = 0;
-    int ret;
-
-    if (new_prog_idx >= 4) return -1;
-    if (active_prog == new_prog_idx) return 0;
-
-    ret = load_struct(active_prog, &old_prog);
-    if (ret < 0) {
-        ret = load_struct(new_prog_idx, &new_prog);
-        if (ret < 0) return -1;
-        s_active_prog = new_prog_idx;
-        return bs300_sync_program(&new_prog);
-    }
-    ret = load_struct(new_prog_idx, &new_prog);
-    if (ret < 0) return -1;
-
-    s_active_prog = new_prog_idx;
-    bs300_on_active_prog_changed(new_prog_idx);
-    save_settings();
-
-    PRINTF("[BS300] switch RAM %d->%d\r\n", active_prog, new_prog_idx);
 
     if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(old_prog.modules.input_selection);
-    new_it = get_input_type(new_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
+    new_it = get_input_type(s_target.modules.input_selection);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&old_prog.modules, &new_prog.modules,
-                        &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &new_prog.enr,
-                    &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &new_prog.modules,
-                         &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &new_prog.modules,
-                         &calib, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &new_prog.wdrc,
-                     &old_prog.modules, &new_prog.modules,
-                     &calib, new_it, igd_changed, NULL, &sent, &fail, data);
+    switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
+                        s, &sent, &fail, data);
+    switch_diff_enr(&s_target.enr, &calib, new_it, igd_changed,
+                    s, &sent, &fail, data);
+    switch_diff_post_enr(&s_target.modules, &calib, new_it, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_vol_beep(&s_target.modules, &calib, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_wdrc(&s_target.wdrc, &s_target.modules,
+                     &calib, new_it, igd_changed,
+                     s, &sent, &fail, data);
 
-    /* Force DDM2/MM+ if new prog uses them */
-    if (new_prog.modules.input_selection == 5) {
+    /* Force DDM2/MM+ if target input requires them (diff may have missed
+     * due to voice_prompt_input_switch side-effects on DSP registers). */
+    if (s_target.modules.input_selection == 5) {
         memset(data, 0, 48);
-        bs300_encode_ddm2(&new_prog.modules, &calib, data);
+        bs300_encode_ddm2(&s_target.modules, &calib, data);
+        bs300_session_append(s, 0x800022, data);
+    }
+    if (s_target.modules.input_selection == 4) {
+        memset(data, 0, 48);
+        bs300_encode_mm_plus(&s_target.modules, &calib, new_it, data);
+        bs300_session_append(s, 0x800062, data);
+    }
+
+    /* Force Vol/Beep — input_selection must be guaranteed */
+    memset(data, 0, 48);
+    bs300_encode_volume_beep(&s_target.modules, &calib, data);
+    bs300_session_append(s, 0x800081, data);
+
+    return 0;
+}
+
+/* ================================================================
+ *  Program switch (blocking, for init)
+ * ================================================================ */
+int bs300_switch_program(uint8_t new_prog_idx)
+{
+    bs300_calib_t calib;
+    uint8_t data[48];
+    uint8_t old_it, new_it, igd_changed;
+    int sent = 0, fail = 0;
+
+    if (new_prog_idx >= 4) return -1;
+    if (s_cur_prog == new_prog_idx) return 0;
+
+    if (load_struct(new_prog_idx, &s_target) < 0) return -1;
+
+    if (load_calib(&calib) < 0) return -1;
+
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
+    new_it = get_input_type(s_target.modules.input_selection);
+    igd_changed = (old_it != new_it);
+
+    PRINTF("[BS300] switch RAM %d->%d\r\n", s_cur_prog, new_prog_idx);
+
+    s_cur_prog = new_prog_idx;
+    s_target.modules.volume_level = s_volumes[new_prog_idx];
+    save_settings();
+
+    switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
+                        NULL, &sent, &fail, data);
+    switch_diff_enr(&s_target.enr, &calib, new_it, igd_changed,
+                    NULL, &sent, &fail, data);
+    switch_diff_post_enr(&s_target.modules, &calib, new_it, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_vol_beep(&s_target.modules, &calib, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_wdrc(&s_target.wdrc, &s_target.modules,
+                     &calib, new_it, igd_changed,
+                     NULL, &sent, &fail, data);
+
+    if (s_target.modules.input_selection == 5) {
+        memset(data, 0, 48);
+        bs300_encode_ddm2(&s_target.modules, &calib, data);
         if (bs300_advanced_write(0x800022, data)) sent++; else fail++;
     }
-    if (new_prog.modules.input_selection == 4) {
+    if (s_target.modules.input_selection == 4) {
         memset(data, 0, 48);
-        bs300_encode_mm_plus(&new_prog.modules, &calib, new_it, data);
+        bs300_encode_mm_plus(&s_target.modules, &calib, new_it, data);
         if (bs300_advanced_write(0x800062, data)) sent++; else fail++;
     }
-    /* Force Vol/Beep */
     memset(data, 0, 48);
-    if (bs300_encode_volume_beep(&new_prog.modules, &calib, data) == 0) {
+    if (bs300_encode_volume_beep(&s_target.modules, &calib, data) == 0) {
         if (bs300_advanced_write(0x800081, data)) sent++; else fail++;
     }
+
+    /* All commands sent — now s_dsp_state == s_target */
+    memcpy(&s_dsp_state, &s_target, sizeof(s_dsp_state));
 
     PRINTF("[BS300] switch_program done, sent=%d fail=%d\r\n", sent, fail);
     return (fail > 0) ? -1 : 0;
 }
 
 /* ================================================================
- *  Voice prompt input switch
+ *  Voice prompt input switch — uses s_dsp_state directly
  * ================================================================ */
 uint8_t bs300_voice_prompt_input_switch(uint8_t target_input)
 {
@@ -835,10 +1056,10 @@ uint8_t bs300_voice_prompt_input_switch(uint8_t target_input)
 
     if (!s_boot_cached) return 0xFF;
 
-    original_input = s_prog_input[s_active_prog];
+    original_input = s_dsp_state.modules.input_selection;
     if (original_input == target_input) return original_input;
 
-    mod_tmp = s_prog_modules[s_active_prog];
+    mod_tmp = s_dsp_state.modules;
     mod_tmp.input_selection = target_input;
     ret = bs300_encode_volume_beep(&mod_tmp, &s_calib_cache, vb_data);
     if (ret < 0) return 0xFF;
@@ -846,7 +1067,6 @@ uint8_t bs300_voice_prompt_input_switch(uint8_t target_input)
     ret = bs300_mute();
     if (ret < 0) return 0xFF;
 
-    /* Disable DDM2/MM+ if original input uses them */
     if (original_input == 5) {
         memset(data, 0, 48);
         bs300_advanced_write(0x800022, data);
@@ -856,7 +1076,6 @@ uint8_t bs300_voice_prompt_input_switch(uint8_t target_input)
         bs300_advanced_write(0x800062, data);
     }
 
-    /* Disable ENR */
     memset(data, 0, 48);
     bs300_advanced_write(0x8000C2, data);
 
@@ -864,7 +1083,6 @@ uint8_t bs300_voice_prompt_input_switch(uint8_t target_input)
     if (ret < 0) return 0xFF;
 
     bs300_active();
-
     return original_input;
 }
 
@@ -877,14 +1095,13 @@ int bs300_voice_prompt_input_restore(uint8_t original_input)
 
     if (!s_boot_cached) return -1;
 
-    mod_tmp = s_prog_modules[s_active_prog];
+    mod_tmp = s_dsp_state.modules;
     mod_tmp.input_selection = original_input;
     ret = bs300_encode_volume_beep(&mod_tmp, &s_calib_cache, vb_data);
     if (ret < 0) return -1;
 
     bs300_mute();
 
-    /* Re-enable DDM2/MM+ if original input uses them */
     if (original_input == 5) {
         bs300_encode_ddm2(&mod_tmp, &s_calib_cache, data);
         bs300_advanced_write(0x800022, data);
@@ -894,8 +1111,7 @@ int bs300_voice_prompt_input_restore(uint8_t original_input)
         bs300_advanced_write(0x800062, data);
     }
 
-    /* Re-enable ENR */
-    bs300_encode_enr_general(&s_prog_enr[s_active_prog], data);
+    bs300_encode_enr_general(&s_dsp_state.enr, data);
     bs300_advanced_write(0x8000C2, data);
 
     bs300_advanced_write(0x800081, vb_data);
@@ -911,15 +1127,17 @@ int bs300_set_volume(uint8_t level)
 {
     uint8_t data[48];
     bs300_calib_t calib;
-    bs300_prog_struct_t prog;
 
     if (level > 9) return -1;
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
     if (load_calib(&calib) < 0) return -1;
 
-    prog.modules.volume_level = level;
-    return bs300_encode_wdrc_bin_gain(&prog.wdrc, &calib, &prog.modules,
-                                       get_input_type(prog.modules.input_selection),
+    s_dsp_state.modules.volume_level = level;
+    s_volumes[s_cur_prog] = level;
+    save_settings();
+
+    return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
+                                       &s_dsp_state.modules,
+                                       get_input_type(s_dsp_state.modules.input_selection),
                                        data) == 0
            && bs300_advanced_write(0x8060B2, data);
 }
@@ -928,16 +1146,16 @@ int bs300_set_eq(int8_t low, int8_t mid, int8_t high)
 {
     uint8_t data[48];
     bs300_calib_t calib;
-    bs300_prog_struct_t prog;
 
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
     if (load_calib(&calib) < 0) return -1;
 
-    prog.modules.eq_low  = low;
-    prog.modules.eq_mid  = mid;
-    prog.modules.eq_high = high;
-    return bs300_encode_wdrc_bin_gain(&prog.wdrc, &calib, &prog.modules,
-                                       get_input_type(prog.modules.input_selection),
+    s_dsp_state.modules.eq_low  = low;
+    s_dsp_state.modules.eq_mid  = mid;
+    s_dsp_state.modules.eq_high = high;
+
+    return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
+                                       &s_dsp_state.modules,
+                                       get_input_type(s_dsp_state.modules.input_selection),
                                        data) == 0
            && bs300_advanced_write(0x8060B2, data);
 }
@@ -956,10 +1174,7 @@ int bs300_itg_write(uint8_t level_db, uint16_t freq_hz,
     ret = bs300_encode_itg(level_db, freq_hz, 1, calib, data);
     if (ret < 0) return ret;
 
-    if (!bs300_advanced_write(0x8001E2, data)) {
-        PRINTF("[BS300] itg_write fail\r\n");
-        return -1;
-    }
+    if (!bs300_advanced_write(0x8001E2, data)) return -1;
     return 0;
 }
 
@@ -982,18 +1197,16 @@ int bs300_audiometry_enter(void)
     ret = bs300_mute();
     if (ret < 0) return ret;
 
-    /* Disable all non-WDRC modules */
     memset(data, 0, 48);
-    bs300_advanced_write(0x8000C2, data);  /* ENR */
-    bs300_advanced_write(0x800022, data);  /* DDM2 */
-    bs300_advanced_write(0x800062, data);  /* MM+ */
-    bs300_advanced_write(0x800052, data);  /* DFBC */
-    bs300_advanced_write(0x800172, data);  /* NoiseGen2 */
-    bs300_advanced_write(0x8001B2, data);  /* ISS */
-    bs300_advanced_write(0x8001C2, data);  /* WNR */
-    bs300_advanced_write(0x800382, data);  /* AGCO */
+    bs300_advanced_write(0x8000C2, data);
+    bs300_advanced_write(0x800022, data);
+    bs300_advanced_write(0x800062, data);
+    bs300_advanced_write(0x800052, data);
+    bs300_advanced_write(0x800172, data);
+    bs300_advanced_write(0x8001B2, data);
+    bs300_advanced_write(0x8001C2, data);
+    bs300_advanced_write(0x800382, data);
 
-    /* WDRC General */
     memset(data, 0, 48);
     data[0]  = 0x01;
     data[3]  = 0x10;
@@ -1001,7 +1214,6 @@ int bs300_audiometry_enter(void)
     data[12] = 0x03;
     bs300_advanced_write(0x8000B2, data);
 
-    /* WDRC Freq Spacing */
     memset(data, 0, 48);
     for (i = 0; i < 16; i++) {
         data[i * 3 + 0] = 0x41;
@@ -1010,8 +1222,6 @@ int bs300_audiometry_enter(void)
     }
     bs300_advanced_write(0x8010B2, data);
 
-    /* WDRC KP Threshold */
-    memset(data, 0, 48);
     {
         static const uint8_t kp_th[32] = {
             0xA5,0xA5,0xA6,0xA6,0xA6,0xA6,0xA5,0xA5,
@@ -1019,17 +1229,15 @@ int bs300_audiometry_enter(void)
             0xA4,0xA4,0xA6,0xA6,0xA4,0xA4,0xA4,0xA4,
             0xA5,0xA5,0xA3,0xA3,0xA3,0xA3,0xA3,0xA3,
         };
+        memset(data, 0, 48);
         for (i = 0; i < 32; i++) data[i] = kp_th[i];
+        bs300_advanced_write(0x8020B2, data);
     }
-    bs300_advanced_write(0x8020B2, data);
 
-    /* WDRC Ratio */
     memset(data, 0x20, 47);
     data[47] = 20;
     bs300_advanced_write(0x8050B2, data);
 
-    /* WDRC Bin Gain */
-    memset(data, 0, 48);
     {
         static const uint8_t bin_gain[32] = {
             0xFB,0x09,0x09,0x09,0x09,0x0D,0xFF,0x0A,
@@ -1037,16 +1245,16 @@ int bs300_audiometry_enter(void)
             0x0E,0x0D,0x04,0x09,0x0B,0x0A,0x0A,0x15,
             0x0F,0x15,0x0F,0x0F,0x0F,0x0F,0x0F,0x0F,
         };
+        memset(data, 0, 48);
         for (i = 0; i < 32; i++) data[i] = bin_gain[i];
+        bs300_advanced_write(0x8060B2, data);
     }
-    bs300_advanced_write(0x8060B2, data);
 
     return bs300_active();
 }
 
 int bs300_audiometry_exit(void)
 {
-    bs300_prog_struct_t prog;
     int ret;
 
     ret = bs300_mute();
@@ -1054,8 +1262,8 @@ int bs300_audiometry_exit(void)
 
     bs300_itg_clear();
 
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
-    ret = bs300_sync_program(&prog);
+    /* Full re-sync from s_dsp_state — restore original config */
+    ret = bs300_sync_program(&s_dsp_state);
     if (ret < 0) return ret;
 
     return bs300_active();
@@ -1066,18 +1274,18 @@ int bs300_audiometry_exit(void)
  * ================================================================ */
 int bs300_mute(void)
 {
-    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);  /* slow before critical cmd */
+    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);
     bool ok = bs300_send_simple_cmd(BS300_CMD_MUTE);
-    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_FAST);  /* DSP stopped, go fast */
+    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_FAST);
     return ok ? 0 : -1;
 }
 
 int bs300_active(void)
 {
     bool ok;
-    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);  /* slow before critical cmd */
+    bs300_i2c_set_speed(BS300_I2C_DELAY_NORMAL);
     ok = bs300_send_simple_cmd(BS300_CMD_ACTIVE);
-    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_ACTIVE);  /* DSP running, medium */
+    if (ok) bs300_i2c_set_speed(BS300_I2C_DELAY_ACTIVE);
     return ok ? 0 : -1;
 }
 
@@ -1087,7 +1295,7 @@ int bs300_is_connected(void)
 }
 
 /* ================================================================
- *  Resync diff (blocking)
+ *  Resync diff (blocking) — compare s_dsp_state vs target struct
  * ================================================================ */
 #define DIFF_SEND(sess, cmd, fn_call) do { \
     memset(data, 0, 48); \
@@ -1100,33 +1308,33 @@ int bs300_is_connected(void)
 
 int bs300_resync_diff(bs300_prog_struct_t *_new)
 {
-    bs300_prog_struct_t old_prog;
     bs300_calib_t calib;
     uint8_t old_it, new_it, igd_changed;
     uint8_t data[48];
     int sent = 0, fail = 0;
 
     if (_new == NULL) return -1;
-    if (load_struct(s_active_prog, &old_prog) < 0) return -1;
     if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(old_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
     new_it = get_input_type(_new->modules.input_selection);
     igd_changed = (old_it != new_it);
 
-    PRINTF("[BS300] resync diff prog=%d\r\n", s_active_prog);
+    PRINTF("[BS300] resync diff prog=%d\r\n", s_cur_prog);
 
-    switch_diff_pre_enr(&old_prog.modules, &_new->modules,
-                        &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &_new->enr,
-                    &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &_new->modules,
-                         &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &_new->modules,
-                         &calib, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &_new->wdrc,
-                     &old_prog.modules, &_new->modules,
-                     &calib, new_it, igd_changed, NULL, &sent, &fail, data);
+    switch_diff_pre_enr(&_new->modules, &calib, new_it, igd_changed,
+                        NULL, &sent, &fail, data);
+    switch_diff_enr(&_new->enr, &calib, new_it, igd_changed,
+                    NULL, &sent, &fail, data);
+    switch_diff_post_enr(&_new->modules, &calib, new_it, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_vol_beep(&_new->modules, &calib, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_wdrc(&_new->wdrc, &_new->modules,
+                     &calib, new_it, igd_changed,
+                     NULL, &sent, &fail, data);
+
+    memcpy(&s_dsp_state, _new, sizeof(s_dsp_state));
 
     PRINTF("[BS300] resync_diff done, sent=%d fail=%d\r\n", sent, fail);
     return (fail > 0) ? -1 : 0;
@@ -1135,8 +1343,8 @@ int bs300_resync_diff(bs300_prog_struct_t *_new)
 int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
                        const uint8_t *val, uint8_t len)
 {
-    bs300_prog_struct_t old_prog, new_prog;
     bs300_calib_t calib;
+    bs300_prog_struct_t new_prog;
     uint8_t data[48];
     uint8_t old_it, new_it, igd_changed;
     uint8_t *raw;
@@ -1145,28 +1353,36 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
 
     if (val == NULL || prog_idx >= 4) return -1;
     if (offset + len > sizeof(bs300_prog_struct_t)) return -1;
-    if (load_struct(prog_idx, &old_prog) < 0) return -1;
 
-    new_prog = old_prog;
+    if (prog_idx == s_cur_prog) {
+        new_prog = s_dsp_state;
+    } else {
+        if (load_struct(prog_idx, &new_prog) < 0) return -1;
+    }
+
     raw = (uint8_t *)&new_prog;
     for (i = 0; i < len; i++) raw[offset + i] = val[i];
 
     if (load_calib(&calib) < 0) return -1;
-    old_it = get_input_type(old_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
     new_it = get_input_type(new_prog.modules.input_selection);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&old_prog.modules, &new_prog.modules,
-                        &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &new_prog.enr,
-                    &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &new_prog.modules,
-                         &calib, new_it, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &new_prog.modules,
-                         &calib, igd_changed, NULL, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &new_prog.wdrc,
-                     &old_prog.modules, &new_prog.modules,
-                     &calib, new_it, igd_changed, NULL, &sent, &fail, data);
+    switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
+                        NULL, &sent, &fail, data);
+    switch_diff_enr(&new_prog.enr, &calib, new_it, igd_changed,
+                    NULL, &sent, &fail, data);
+    switch_diff_post_enr(&new_prog.modules, &calib, new_it, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_vol_beep(&new_prog.modules, &calib, igd_changed,
+                         NULL, &sent, &fail, data);
+    switch_diff_wdrc(&new_prog.wdrc, &new_prog.modules,
+                     &calib, new_it, igd_changed,
+                     NULL, &sent, &fail, data);
+
+    if (prog_idx == s_cur_prog) {
+        memcpy(&s_dsp_state, &new_prog, sizeof(s_dsp_state));
+    }
 
     return (fail > 0) ? -1 : 0;
 }
@@ -1174,7 +1390,7 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
 #undef DIFF_SEND
 
 /* ================================================================
- *  Async session (matches AD697N: single static session + timer-driven)
+ *  Async session (single static session, timer-driven)
  * ================================================================ */
 static bs300_sync_session_t g_bs300_sync;
 static void (*g_bs300_sync_on_done)(void) = NULL;
@@ -1186,25 +1402,31 @@ int bs300_sync_is_busy(void)
             && g_bs300_sync.state != BS300_SYNC_ERROR);
 }
 
-/* Called from ke_timer callback. Integrate in app.c APP_Timer handler:
- *   if (msg_id == BS300_SYNC_TIMER) bs300_sync_timer_handler(); */
 void bs300_sync_timer_handler(void)
 {
     uint16_t delay;
 
     if (!bs300_sync_tick(&g_bs300_sync)) {
-        if (g_bs300_sync.state == BS300_SYNC_DONE
-            || g_bs300_sync.state == BS300_SYNC_ERROR) {
-            if (g_bs300_sync_on_done) {
-                void (*cb)(void) = g_bs300_sync_on_done;
-                g_bs300_sync_on_done = NULL;
-                cb();
+        void (*cb)(void) = g_bs300_sync_on_done;
+        g_bs300_sync_on_done = NULL;
+
+        if (g_bs300_sync.state == BS300_SYNC_DONE) {
+            /* Session complete — s_dsp_state has been updated per-command.
+             * Copy final state = s_target (full sync guarantee). */
+            if (g_bs300_sync.target != NULL && g_bs300_sync.dsp_state != NULL) {
+                memcpy(g_bs300_sync.dsp_state, g_bs300_sync.target,
+                       sizeof(bs300_prog_struct_t));
             }
+        }
+
+        if (g_bs300_sync.state == BS300_SYNC_DONE
+            || g_bs300_sync.state == BS300_SYNC_ERROR
+            || g_bs300_sync.state == BS300_SYNC_IDLE /* aborted */) {
+            if (cb) cb();
         }
         return;
     }
 
-    /* Match AD697N: POLL waits 60ms, SEND fires ASAP */
     delay = (g_bs300_sync.state == BS300_SYNC_POLL) ? 6 : 2;
     ke_timer_set(BS300_SYNC_TIMER, TASK_APP, delay);
 }
@@ -1219,23 +1441,53 @@ static int start_async_session(void (*on_done)(void))
 
 int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 {
+    if (new_prog_idx >= 4) return -1;
+    if (s_cur_prog == new_prog_idx) return 0;
+
+    /* Abort in-progress session — dsp_state reflects partial changes */
     if (bs300_sync_is_busy()) {
-        s_pending_program = (int8_t)new_prog_idx;
-        PRINTF("[BS300] switch prog=%d queued (sync busy)\r\n", new_prog_idx);
-        return 0;
+        g_bs300_sync.abort_requested = true;
     }
+
+    /* Load target into static s_target for diff + per-command apply */
+    if (load_struct(new_prog_idx, &s_target) < 0) return -1;
+    s_target.modules.volume_level = s_volumes[new_prog_idx];
+
+    s_cur_prog = new_prog_idx;
+    save_settings();
+
+    PRINTF("[BS300] switch RAM async %d->%d\r\n",
+           s_dsp_state.modules.input_selection, new_prog_idx);
+
     bs300_sync_session_init(&g_bs300_sync);
-    if (bs300_switch_program_start(&g_bs300_sync, new_prog_idx) < 0)
-        return -1;
+    g_bs300_sync.dsp_state = &s_dsp_state;
+    g_bs300_sync.target = &s_target;
+
+    /* Prompt tone FIRST */
+    {
+        uint8_t tone_data[48];
+        memset(tone_data, 0, 48);
+        bs300_session_append(&g_bs300_sync, bs300_tone_for_program(new_prog_idx),
+                             tone_data);
+    }
+
+    if (build_diff_session(&g_bs300_sync) < 0) return -1;
+
     return start_async_session(on_done);
 }
 
 int bs300_resync_diff_async(bs300_prog_struct_t *_new, void (*on_done)(void))
 {
     if (bs300_sync_is_busy()) return -1;
+
+    memcpy(&s_target, _new, sizeof(s_target));
+
     bs300_sync_session_init(&g_bs300_sync);
-    if (bs300_resync_diff_start(&g_bs300_sync, _new) < 0)
-        return -1;
+    g_bs300_sync.dsp_state = &s_dsp_state;
+    g_bs300_sync.target = &s_target;
+
+    if (bs300_resync_diff_start(&g_bs300_sync, _new) < 0) return -1;
+
     return start_async_session(on_done);
 }
 
@@ -1243,14 +1495,18 @@ int bs300_param_modify_async(uint8_t prog_idx, uint16_t offset,
                               const uint8_t *val, uint8_t len)
 {
     if (bs300_sync_is_busy()) return -1;
+
     bs300_sync_session_init(&g_bs300_sync);
+    g_bs300_sync.dsp_state = &s_dsp_state;
+    g_bs300_sync.target = &s_target;
+
     if (bs300_param_modify_start(&g_bs300_sync, prog_idx, offset, val, len) < 0)
         return -1;
+
     return start_async_session(NULL);
 }
 
-static int reencode_bin_gain_async_core(bs300_prog_struct_t *prog,
-                                         void (*on_done)(void))
+static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd)
 {
     uint8_t data[48];
     bs300_calib_t calib;
@@ -1258,67 +1514,69 @@ static int reencode_bin_gain_async_core(bs300_prog_struct_t *prog,
     int ret;
 
     if (load_calib(&calib) < 0) return -1;
-    input_type = get_input_type(prog->modules.input_selection);
-
-    ret = bs300_encode_wdrc_bin_gain(&prog->wdrc, &calib, &prog->modules,
-                                      input_type, data);
-    if (ret < 0) return -1;
+    input_type = get_input_type(s_dsp_state.modules.input_selection);
 
     bs300_sync_session_init(&g_bs300_sync);
     g_bs300_sync_on_done = on_done;
+    g_bs300_sync.dsp_state = &s_dsp_state;
+    g_bs300_sync.target = &s_dsp_state;  /* apply is no-op for self */
+
+    /* Prompt tone FIRST (if requested) */
+    if (tone_cmd != 0) {
+        memset(data, 0, 48);
+        bs300_session_append(&g_bs300_sync, tone_cmd, data);
+    }
+
+    /* Bin Gain */
+    memset(data, 0, 48);
+    ret = bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
+                                      &s_dsp_state.modules,
+                                      input_type, data);
+    if (ret < 0) return -1;
+
     bs300_session_append(&g_bs300_sync, 0x8060B2, data);
     return start_async_session(on_done);
 }
 
-
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
-    bs300_prog_struct_t prog;
     if (level > 9) return -1;
+
+    /* Always update state + persist immediately */
+    s_dsp_state.modules.volume_level = level;
+    s_volumes[s_cur_prog] = level;
+    save_settings();
+
     if (bs300_sync_is_busy()) {
-        s_pending_volume = (int8_t)level;
-        PRINTF("[BS300] volume=%d queued (sync busy)\r\n", level);
+        /* I2C deferred — bin_gain will be re-sent on next switch or
+         * when caller retries after current session completes. */
+        PRINTF("[BS300] volume=%d state saved, I2C deferred\r\n", level);
+        if (on_done) on_done();
         return 0;
     }
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
-    prog.modules.volume_level = level;
-    s_prog_modules[s_active_prog].volume_level = level;
-    save_settings();
-    return reencode_bin_gain_async_core(&prog, on_done);
+
+    return reencode_bin_gain_async_core(on_done,
+               (level == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
 }
 
 void bs300_async_done_callback(void)
 {
-    if (s_pending_program >= 0) {
-        int8_t prog = s_pending_program;
-        s_pending_program = -1;
-        bs300_switch_program_async((uint8_t)prog, bs300_async_done_callback);
-        PRINTF("[BS300] pending switch prog=%d applied\r\n", prog);
-        return;
-    }
-    if (s_pending_volume < 0) return;
-    {
-        int8_t vol = s_pending_volume;
-        s_pending_volume = -1;
-        bs300_set_volume_async((uint8_t)vol, bs300_async_done_callback);
-        PRINTF("[BS300] pending volume=%d applied\r\n", vol);
-    }
+    /* No pending queue — abort mechanism eliminates the need */
 }
 
 int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
                         void (*on_done)(void))
 {
-    bs300_prog_struct_t prog;
     if (bs300_sync_is_busy()) return -1;
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
-    prog.modules.eq_low  = low;
-    prog.modules.eq_mid  = mid;
-    prog.modules.eq_high = high;
-    return reencode_bin_gain_async_core(&prog, on_done);
+
+    s_dsp_state.modules.eq_low  = low;
+    s_dsp_state.modules.eq_mid  = mid;
+    s_dsp_state.modules.eq_high = high;
+    return reencode_bin_gain_async_core(on_done, 0);  /* no tone for EQ */
 }
 
 /* ================================================================
- *  Dirty sync (deferred diff on active program)
+ *  Dirty sync
  * ================================================================ */
 static bool s_need_sync = false;
 
@@ -1326,118 +1584,82 @@ void bs300_sync_dirty(void)
 {
     s_need_sync = true;
     if (!bs300_sync_is_busy()) {
-        bs300_prog_struct_t prog;
         s_need_sync = false;
-        if (load_struct(s_active_prog, &prog) == 0) {
-            reencode_bin_gain_async_core(&prog, NULL);
-        }
+        reencode_bin_gain_async_core(NULL, 0);
     }
 }
 
 int bs300_vol_commit(uint8_t level)
 {
-    bs300_prog_struct_t prog;
     if (level > 9) return -1;
-    if (load_struct(s_active_prog, &prog) < 0) return -1;
-    prog.modules.volume_level = level;
-    s_prog_modules[s_active_prog].volume_level = level;
+    s_dsp_state.modules.volume_level = level;
+    s_volumes[s_cur_prog] = level;
     save_settings();
     bs300_sync_dirty();
     return 0;
 }
-
-static uint32_t bs300_tone_for_program(uint8_t program);
 
 /* ================================================================
  *  Async fill-mode functions
  * ================================================================ */
 int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
 {
-    uint8_t data[48];
-    bs300_prog_struct_t old_prog, new_prog;
-    bs300_calib_t calib;
-    uint8_t active_prog = s_active_prog;
-    uint8_t old_it, new_it, igd_changed;
-    int sent = 0, fail = 0;
-
     if (s == NULL || new_prog_idx >= 4) return -1;
-    if (active_prog == new_prog_idx) return 0;
-    if (load_struct(active_prog, &old_prog) < 0) return -1;
-    if (load_struct(new_prog_idx, &new_prog) < 0) return -1;
+    if (s_cur_prog == new_prog_idx) return 0;
 
-    s_active_prog = new_prog_idx;
-    bs300_on_active_prog_changed(new_prog_idx);
+    if (load_struct(new_prog_idx, &s_target) < 0) return -1;
+    s_target.modules.volume_level = s_volumes[new_prog_idx];
+
+    s_cur_prog = new_prog_idx;
     save_settings();
 
-    PRINTF("[BS300] switch RAM async %d->%d\r\n", active_prog, new_prog_idx);
+    s->dsp_state = &s_dsp_state;
+    s->target = &s_target;
 
-    /* Prompt tone FIRST — before all diff commands */
-    memset(data, 0, 48);
-    bs300_session_append(s, bs300_tone_for_program(new_prog_idx), data);
+    PRINTF("[BS300] switch RAM async %d->%d\r\n", s_cur_prog, new_prog_idx);
 
-    if (load_calib(&calib) < 0) return -1;
-
-    old_it = get_input_type(old_prog.modules.input_selection);
-    new_it = get_input_type(new_prog.modules.input_selection);
-    igd_changed = (old_it != new_it);
-
-    switch_diff_pre_enr(&old_prog.modules, &new_prog.modules,
-                        &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &new_prog.enr,
-                    &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &new_prog.modules,
-                         &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &new_prog.modules,
-                         &calib, igd_changed, s, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &new_prog.wdrc,
-                     &old_prog.modules, &new_prog.modules,
-                     &calib, new_it, igd_changed, s, &sent, &fail, data);
-
-    /* Force DDM2/MM+ if new prog input type requires them */
-    if (new_prog.modules.input_selection == 5) {
-        memset(data, 0, 48);
-        bs300_encode_ddm2(&new_prog.modules, &calib, data);
-        bs300_session_append(s, 0x800022, data);
-    }
-    if (new_prog.modules.input_selection == 4) {
-        memset(data, 0, 48);
-        bs300_encode_mm_plus(&new_prog.modules, &calib, new_it, data);
-        bs300_session_append(s, 0x800062, data);
+    /* Prompt tone FIRST */
+    {
+        uint8_t tone_data[48];
+        memset(tone_data, 0, 48);
+        bs300_session_append(s, bs300_tone_for_program(new_prog_idx), tone_data);
     }
 
     s->state = BS300_SYNC_SEND;
-    return 0;
+    return build_diff_session(s);
 }
 
 int bs300_resync_diff_start(bs300_sync_session_t *s, bs300_prog_struct_t *_new)
 {
-    bs300_prog_struct_t old_prog;
     bs300_calib_t calib;
     uint8_t old_it, new_it, igd_changed;
     uint8_t data[48];
     int sent = 0, fail = 0;
 
     if (s == NULL || _new == NULL) return -1;
-    if (load_struct(s_active_prog, &old_prog) < 0) return -1;
-    if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(old_prog.modules.input_selection);
+    memcpy(&s_target, _new, sizeof(s_target));
+    s->dsp_state = &s_dsp_state;
+    s->target = &s_target;
+
+    if (load_calib(&calib) < 0) return -1;
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
     new_it = get_input_type(_new->modules.input_selection);
     igd_changed = (old_it != new_it);
 
-    PRINTF("[BS300] resync diff async prog=%d\r\n", s_active_prog);
+    PRINTF("[BS300] resync diff async prog=%d\r\n", s_cur_prog);
 
-    switch_diff_pre_enr(&old_prog.modules, &_new->modules,
-                        &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &_new->enr,
-                    &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &_new->modules,
-                         &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &_new->modules,
-                         &calib, igd_changed, s, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &_new->wdrc,
-                     &old_prog.modules, &_new->modules,
-                     &calib, new_it, igd_changed, s, &sent, &fail, data);
+    switch_diff_pre_enr(&_new->modules, &calib, new_it, igd_changed,
+                        s, &sent, &fail, data);
+    switch_diff_enr(&_new->enr, &calib, new_it, igd_changed,
+                    s, &sent, &fail, data);
+    switch_diff_post_enr(&_new->modules, &calib, new_it, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_vol_beep(&_new->modules, &calib, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_wdrc(&_new->wdrc, &_new->modules,
+                     &calib, new_it, igd_changed,
+                     s, &sent, &fail, data);
 
     s->state = BS300_SYNC_SEND;
     return (fail > 0) ? -1 : 0;
@@ -1446,8 +1668,8 @@ int bs300_resync_diff_start(bs300_sync_session_t *s, bs300_prog_struct_t *_new)
 int bs300_param_modify_start(bs300_sync_session_t *s, uint8_t prog_idx,
                               uint16_t offset, const uint8_t *val, uint8_t len)
 {
-    bs300_prog_struct_t old_prog, new_prog;
     bs300_calib_t calib;
+    bs300_prog_struct_t new_prog;
     uint8_t data[48];
     uint8_t old_it, new_it, igd_changed;
     uint8_t *raw;
@@ -1456,54 +1678,39 @@ int bs300_param_modify_start(bs300_sync_session_t *s, uint8_t prog_idx,
 
     if (s == NULL || val == NULL || prog_idx >= 4) return -1;
     if (offset + len > sizeof(bs300_prog_struct_t)) return -1;
-    if (load_struct(prog_idx, &old_prog) < 0) return -1;
 
-    new_prog = old_prog;
+    if (prog_idx == s_cur_prog) {
+        new_prog = s_dsp_state;
+    } else {
+        if (load_struct(prog_idx, &new_prog) < 0) return -1;
+    }
+
     raw = (uint8_t *)&new_prog;
     for (i = 0; i < len; i++) raw[offset + i] = val[i];
 
+    memcpy(&s_target, &new_prog, sizeof(s_target));
+    s->dsp_state = &s_dsp_state;
+    s->target = &s_target;
+
     if (load_calib(&calib) < 0) return -1;
-    old_it = get_input_type(old_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection);
     new_it = get_input_type(new_prog.modules.input_selection);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&old_prog.modules, &new_prog.modules,
-                        &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_enr(&old_prog.enr, &new_prog.enr,
-                    &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_post_enr(&old_prog.modules, &new_prog.modules,
-                         &calib, new_it, igd_changed, s, &sent, &fail, data);
-    switch_diff_vol_beep(&old_prog.modules, &new_prog.modules,
-                         &calib, igd_changed, s, &sent, &fail, data);
-    switch_diff_wdrc(&old_prog.wdrc, &new_prog.wdrc,
-                     &old_prog.modules, &new_prog.modules,
-                     &calib, new_it, igd_changed, s, &sent, &fail, data);
+    switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
+                        s, &sent, &fail, data);
+    switch_diff_enr(&new_prog.enr, &calib, new_it, igd_changed,
+                    s, &sent, &fail, data);
+    switch_diff_post_enr(&new_prog.modules, &calib, new_it, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_vol_beep(&new_prog.modules, &calib, igd_changed,
+                         s, &sent, &fail, data);
+    switch_diff_wdrc(&new_prog.wdrc, &new_prog.modules,
+                     &calib, new_it, igd_changed,
+                     s, &sent, &fail, data);
 
     s->state = BS300_SYNC_SEND;
     return 0;
-}
-
-/* ================================================================
- *  Prompt Tone — played on mode switch and volume change
- * ================================================================ */
-
-#define BS300_TONE_MODE_0    0xFD52F2
-#define BS300_TONE_MODE_1    0xFD72F2
-#define BS300_TONE_MODE_2    0xFD92F2
-#define BS300_TONE_MODE_3    0xFDB2F2
-#define BS300_TONE_VOL_0     0xFD12F2
-#define BS300_TONE_VOL_OTHER 0xFCD2F2
-#define BS300_TONE_DATA_BYTES 48
-
-static uint32_t bs300_tone_for_program(uint8_t program)
-{
-    switch (program) {
-    case 0: return BS300_TONE_MODE_0;
-    case 1: return BS300_TONE_MODE_1;
-    case 2: return BS300_TONE_MODE_2;
-    case 3: return BS300_TONE_MODE_3;
-    default: return 0;
-    }
 }
 
 void bs300_play_prompt_tone(uint8_t program, uint8_t volume)
@@ -1512,7 +1719,7 @@ void bs300_play_prompt_tone(uint8_t program, uint8_t volume)
     static uint8_t last_volume  = 0xFF;
     static uint8_t inited       = 0;
     uint32_t cmd = 0;
-    uint8_t data[BS300_TONE_DATA_BYTES];
+    uint8_t data[48];
 
     if (inited && last_program == program && last_volume == volume)
         return;

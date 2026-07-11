@@ -1,14 +1,13 @@
 /**
- * BS300 Driver — full init flow matching AD697N startup sequence.
+ * BS300 Driver — full init flow with single DSP state.
  *
  * bs300_driver_init():
  *   1. I2C init + 2s DSP power stabilization
  *   2. Unlock chip (MUTE → KEY_LOCK → VERIFY_COMM)
  *   3. First boot: read 4 programs from BS300 Flash → save to Main Flash
- *      Cached boot: skip flash read, load structs from Main Flash
- *   4. MUTE → sync active program to BS300 RAM (31 I2C commands)
- *   5. ACTIVE → start DSP audio processing
- *   6. Cache all 4 programs' inputs/modules for runtime switch
+ *      Cached boot: skip flash read
+ *   4. Restore settings (active program + volume) if available
+ *   5. MUTE → sync active program to BS300 RAM → ACTIVE
  */
 
 #include "bs300_driver.h"
@@ -24,7 +23,6 @@
 #endif
 
 static bool s_initialized;
-static uint8_t s_raw[BS300_TOTAL_DATA];  /* 480B — shared work buffer */
 
 /* ============================================================
  *  Internal: read programs from BS300 Flash, save to Main Flash
@@ -33,11 +31,11 @@ static bool read_and_save_all(void)
 {
     uint8_t i;
     for (i = 0; i < 4; i++) {
-        if (!bs300_program_read(i, s_raw)) {
+        if (!bs300_program_read(i, bs300_work_buf)) {
             PRINTF("[BS300] program %u read FAIL\r\n", i);
             return false;
         }
-        if (!bs300_storage_write_program(i, s_raw)) {
+        if (!bs300_storage_write_program(i, bs300_work_buf)) {
             PRINTF("[BS300] program %u save FAIL\r\n", i);
             return false;
         }
@@ -63,7 +61,7 @@ bool bs300_driver_init(void)
     }
     bs300_delay_ms(2000);
 
-    /* Step 2: Unlock chip (MUTE → KEY_LOCK → VERIFY_COMM) */
+    /* Step 2: Unlock chip */
     if (!bs300_startup()) {
         PRINTF("[BS300] startup FAIL\r\n");
         return false;
@@ -78,31 +76,22 @@ bool bs300_driver_init(void)
         if (!read_and_save_all()) return false;
     }
 
-    /* Step 4: Cache programs + calibration (single read, shared by all) */
-    bs300_cache_prog_inputs();
-
-    /* Step 5: Restore settings (active program + volume) if available */
+    /* Step 4: Restore settings (active program + volume) */
     {
         uint8_t saved_prog = 0;
-        uint8_t saved_vol[4];
+        uint8_t saved_vol[4] = {0};
         if (bs300_settings_load(&saved_prog, saved_vol)) {
             bs300_restore_settings(saved_prog, saved_vol);
         }
     }
 
+    /* Step 5: Boot cache — load active program into s_dsp_state + calibration */
+    bs300_cache_boot_state();
+
     /* Step 6: MUTE → sync active program → ACTIVE */
     PRINTF("[BS300] syncing active program to RAM...\r\n");
     bs300_mute();
-
-    {
-        bs300_prog_struct_t prog;
-        bs300_storage_load_program(bs300_get_active_prog(), s_raw);
-        if (bs300_flash_to_struct(s_raw, &prog) == 0) {
-            prog.modules.volume_level = bs300_get_module_volume(bs300_get_active_prog());
-            bs300_sync_program(&prog);
-        }
-    }
-
+    bs300_sync_program(bs300_get_dsp_state());
     bs300_active();
     PRINTF("[BS300] init complete, DSP active\r\n");
 
@@ -120,8 +109,8 @@ const bs300_program_data_t *bs300_driver_get_program(uint8_t prog_idx)
 
     if (!s_initialized || prog_idx > 3) return NULL;
 
-    bs300_storage_load_program(prog_idx, s_raw);
-    if (!bs300_program_parse(s_raw, &prog)) return NULL;
+    bs300_storage_load_program(prog_idx, bs300_work_buf);
+    if (!bs300_program_parse(bs300_work_buf, &prog)) return NULL;
     return &prog;
 }
 
@@ -133,26 +122,21 @@ const uint8_t *bs300_driver_get_calibration(void)
 bool bs300_driver_refresh(void)
 {
     s_initialized = false;
-    /* Full re-read from chip */
     if (!bs300_startup()) return false;
     if (!read_and_save_all()) return false;
-    bs300_cache_prog_inputs();
 
     {
         uint8_t saved_prog = 0;
-        uint8_t saved_vol[4];
+        uint8_t saved_vol[4] = {0};
         if (bs300_settings_load(&saved_prog, saved_vol)) {
             bs300_restore_settings(saved_prog, saved_vol);
         }
     }
 
+    bs300_cache_boot_state();
+
     bs300_mute();
-    bs300_prog_struct_t prog;
-    bs300_storage_load_program(bs300_get_active_prog(), s_raw);
-    if (bs300_flash_to_struct(s_raw, &prog) == 0) {
-        prog.modules.volume_level = bs300_get_module_volume(bs300_get_active_prog());
-        bs300_sync_program(&prog);
-    }
+    bs300_sync_program(bs300_get_dsp_state());
     bs300_active();
 
     s_initialized = true;
@@ -165,22 +149,14 @@ const bs300_prog_struct_t *bs300_driver_get_struct(uint8_t prog_idx)
 
     if (!s_initialized || prog_idx > 3) return NULL;
 
-    bs300_storage_load_program(prog_idx, s_raw);
-    if (bs300_flash_to_struct(s_raw, &buf) != 0) return NULL;
+    bs300_storage_load_program(prog_idx, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &buf) != 0) return NULL;
     return &buf;
 }
 
 const bs300_calib_t *bs300_driver_get_calib(void)
 {
-    static bs300_calib_t calib;
-    static bool loaded = false;
-
-    if (loaded) return &calib;
-
-    if (!bs300_read_calibration(s_raw)) return NULL;
-    if (bs300_parse_calibration(s_raw, &calib) != 0) return NULL;
-    loaded = true;
-    return &calib;
+    return bs300_get_cached_calib();
 }
 
 bool bs300_driver_is_cached(void)
