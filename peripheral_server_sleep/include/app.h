@@ -62,6 +62,9 @@ extern "C"
 /* Enable BS300 I2C Flash Read test (requires DEBUG_UART_ENABLE for output) */
 #define BS300_TEST_ENABLE
 
+/* Button press duration constants */
+#define BTN_LONG_PRESS_TICKS    8       /* 8 * 200ms = 1600ms, ~1.5s */
+
 /* ----------------------------------------------------------------------------
  * Defines
  * ------------------------------------------------------------------------- */

@@ -18,6 +18,7 @@
 #include "bs300_ram_sync.h"
 #include "bs300_storage.h"
 #include "ble_rempro_cmd.h"
+#include "button.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -34,6 +35,18 @@ static void on_bs300_volume_done(void)
 {
     cs_env.tx_value_changed = 1;
     bs300_async_done_callback();
+}
+
+static void on_btn_volume_done(void)
+{
+    cs_env.tx_value_changed = 1;
+    button_done_callback();
+}
+
+static void on_btn_switch_done(void)
+{
+    cs_env.tx_value_changed = 1;
+    button_done_callback();
 }
 
 int main()
@@ -88,6 +101,8 @@ void Main_Loop(void)
 
     while (true)
     {
+        button_wakeup_check();
+
         Kernel_Schedule();
 
 #ifdef APP_RM_ENABLE
@@ -140,6 +155,29 @@ void Main_Loop(void)
         }
 #endif
 
+        /* ---- button actions (works in all BLE states) ---- */
+        if (!bs300_sync_is_busy()) {
+            btn_action_t btn = button_get_action();
+            if (btn == BTN_ACTION_SWITCH_PROGRAM) {
+                uint8_t prog = bs300_get_active_prog();
+                uint8_t next = (uint8_t)((prog + 1) % 3);  /* 0→1→2→0, skip 3 */
+                button_clear_action();
+                int ret = bs300_switch_program_async(next,
+                                                     on_btn_switch_done);
+                PRINTF("[BTN] switch %u->%u ret=%d\r\n", prog, next, ret);
+                (void)ret;
+            } else if (btn == BTN_ACTION_VOLUME_UP) {
+                uint8_t vol = bs300_get_module_volume(bs300_get_active_prog());
+                uint8_t new_vol = (vol >= 9) ? 0 : (uint8_t)(vol + 1);
+                button_clear_action();
+                app_env.volume = new_vol;
+                int ret = bs300_set_volume_async(new_vol,
+                                                 on_btn_volume_done);
+                PRINTF("[BTN] vol %u->%u ret=%d\r\n", vol, new_vol, ret);
+                (void)ret;
+            }
+        }
+
         if (ble_env.state == APPM_CONNECTED)
         {
 #ifdef DEBUG_UART_ENABLE
@@ -171,6 +209,9 @@ void Main_Loop(void)
                     int ret = bs300_switch_program_async(arg,
                                                     on_bs300_switch_done);
                     PRINTF("[BS300] switch_async ret=%d\r\n", ret);
+                    if (ret < 0) {
+                        cs_env.rx_value_changed = 1; /* retry next tick */
+                    }
                 }
                 else if (cmd == 0x02)
                 {

@@ -1444,9 +1444,15 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     if (new_prog_idx >= 4) return -1;
     if (s_cur_prog == new_prog_idx) return 0;
 
-    /* Abort in-progress session — dsp_state reflects partial changes */
+    /* Busy → abort current session and wait for it to settle before
+     * starting the new one.  Must NOT call bs300_sync_session_init here
+     * because it would clobber abort_requested and leave the I2C hardware
+     * in an unknown state. */
     if (bs300_sync_is_busy()) {
         g_bs300_sync.abort_requested = true;
+        PRINTF("[BS300] switch_async deferred (busy), prog=%d\r\n",
+               new_prog_idx);
+        return -1;
     }
 
     /* Load target into static s_target for diff + per-command apply */
@@ -1457,7 +1463,7 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     save_settings();
 
     PRINTF("[BS300] switch RAM async %d->%d\r\n",
-           s_dsp_state.modules.input_selection, new_prog_idx);
+           s_cur_prog, new_prog_idx);
 
     bs300_sync_session_init(&g_bs300_sync);
     g_bs300_sync.dsp_state = &s_dsp_state;

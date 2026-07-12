@@ -18,6 +18,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "button.h"
 
 /* Application Environment Structure */
 struct app_env_tag app_env;
@@ -581,6 +582,8 @@ void App_Initialize(void)
     SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 
     app_env.init_done = 1;
+
+    button_init();
 
     /* Stop masking interrupts */
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);

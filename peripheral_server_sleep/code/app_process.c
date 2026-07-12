@@ -26,6 +26,7 @@
 
 #include "app.h"
 #include "bs300_ram_sync.h"
+#include "button.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -195,7 +196,8 @@ void Sleep_Mode_Configure(struct sleep_mode_env_tag *sleep_mode_env)
     sleep_mode_init_env.wakeup_cfg = WAKEUP_DELAY_32          |
                                      WAKEUP_WAKEUP_PAD_RISING |
                                      WAKEUP_DIO3_DISABLE      |
-                                     WAKEUP_DIO2_DISABLE      |
+                                     WAKEUP_DIO2_ENABLE       |
+                                     WAKEUP_DIO2_FALLING      |
                                      WAKEUP_DIO1_DISABLE      |
                                      WAKEUP_DIO0_DISABLE;
 
@@ -525,6 +527,8 @@ int APP_Timer(ke_msg_id_t const msg_id, void const *param,
               ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+    button_hold_tick();
 
     if (ble_env.state == APPM_CONNECTED)
         Sys_GPIO_Set_High(LED_DIO);
