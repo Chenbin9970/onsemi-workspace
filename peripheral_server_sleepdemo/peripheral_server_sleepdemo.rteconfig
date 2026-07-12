@@ -3,28 +3,28 @@
   <packages/>
   <device Dclock="48000000" Dcore="Cortex-M3" DcoreVersion="r2p1" Dendian="Little-endian" Dfamily="RSL10 Series" Dfpu="NO_FPU" Dmpu="NO_MPU" Dname="RSL10" Dvendor="ONSemiconductor:141" Pname="">
     <url>http:/www.onsemi.com</url>
-    <package info="ON Semiconductor RSL10 Device Family Pack" name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <package info="ON Semiconductor RSL10 Device Family Pack" name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
   </device>
   <toolchain Tcompiler="GCC" Toutput="exe"/>
   <components>
-    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="BLE Stack" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="BLE Stack" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
       <file category="library" deviceDependent="1" name="lib/ble_core/Release/libblelib.a"/>
     </component>
-    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="Kernel" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="Kernel" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
       <file category="library" deviceDependent="1" name="lib/ble_core/Release/libkelib.a"/>
     </component>
-    <component Cclass="Device" Cgroup="Bluetooth Profiles" Csub="BASS" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Cclass="Device" Cgroup="Bluetooth Profiles" Csub="BASS" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/ceva/RW-BLE-PRF-BAS-IS.pdf"/>
       <file category="header" deviceDependent="1" name="include/ble/profiles/bass.h"/>
       <file category="library" deviceDependent="1" name="lib/ble_profiles/Release/libbass.a"/>
     </component>
-    <component Cclass="Device" Cgroup="Libraries" Csub="Calibrate" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Cclass="Device" Cgroup="Libraries" Csub="Calibrate" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
       <file category="header" deviceDependent="1" name="include/rsl10_calibrate.h"/>
       <file category="header" deviceDependent="1" name="include/rsl10_calibrate_clock.h"/>
@@ -33,8 +33,8 @@
       <file category="source" deviceDependent="1" name="source/firmware/calibratelib/code/rsl10_calibrate_clock.c"/>
       <file category="source" deviceDependent="1" name="source/firmware/calibratelib/code/rsl10_calibrate_power.c"/>
     </component>
-    <component Cclass="Device" Cgroup="Libraries" Csub="System" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Cclass="Device" Cgroup="Libraries" Csub="System" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
       <file category="header" deviceDependent="1" name="include/rsl10_romvect.h"/>
       <file category="header" deviceDependent="1" name="include/rsl10_sys_adc.h"/>
@@ -79,8 +79,8 @@
       <file category="source" deviceDependent="1" name="source/firmware/syslib/code/rsl10_sys_version.c"/>
       <file category="source" deviceDependent="1" name="source/firmware/syslib/code/rsl10_protocol.c"/>
     </component>
-    <component Cclass="Device" Cgroup="Startup" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.7.606" deviceDependent="1">
-      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.7.606"/>
+    <component Cclass="Device" Cgroup="Startup" Cvariant="source" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com" vendor="ONSemiconductor" version="3.9.1182"/>
       <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
       <file category="include" deviceDependent="1" name="include/"/>
       <file category="source" condition="GCC_Condition" deviceDependent="1" name="source/firmware/cmsis/source/sbrk.c"/>
