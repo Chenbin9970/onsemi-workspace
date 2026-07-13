@@ -26,7 +26,6 @@
 
 #include "app.h"
 #include "bs300_ram_sync.h"
-#include "button.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -527,8 +526,6 @@ int APP_Timer(ke_msg_id_t const msg_id, void const *param,
               ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
-
-    button_hold_tick();
 
     if (ble_env.state == APPM_CONNECTED)
         Sys_GPIO_Set_High(LED_DIO);

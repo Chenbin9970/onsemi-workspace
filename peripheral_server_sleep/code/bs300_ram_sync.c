@@ -269,6 +269,12 @@ static void save_settings(void)
     bs300_settings_save(s_cur_prog, s_volumes);
 }
 
+/* Public wrapper — call on BLE disconnect or any safe idle moment. */
+void bs300_settings_persist(void)
+{
+    save_settings();
+}
+
 /* ================================================================
  *  Boot-time cache: load active program into s_dsp_state + calib
  * ================================================================ */
@@ -1394,6 +1400,12 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
  * ================================================================ */
 static bs300_sync_session_t g_bs300_sync;
 static void (*g_bs300_sync_on_done)(void) = NULL;
+static int8_t  s_pending_switch = -1;          /* deferred switch target */
+static void (*s_pending_switch_on_done)(void) = NULL;
+static int8_t  s_pending_volume = -1;          /* deferred volume level */
+static void (*s_pending_volume_cb)(void) = NULL;
+
+static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd);
 
 int bs300_sync_is_busy(void)
 {
@@ -1410,6 +1422,10 @@ void bs300_sync_timer_handler(void)
         void (*cb)(void) = g_bs300_sync_on_done;
         g_bs300_sync_on_done = NULL;
 
+        bool session_ended = (g_bs300_sync.state == BS300_SYNC_DONE
+                              || g_bs300_sync.state == BS300_SYNC_ERROR
+                              || g_bs300_sync.state == BS300_SYNC_IDLE);
+
         if (g_bs300_sync.state == BS300_SYNC_DONE) {
             /* Session complete — s_dsp_state has been updated per-command.
              * Copy final state = s_target (full sync guarantee). */
@@ -1417,18 +1433,51 @@ void bs300_sync_timer_handler(void)
                 memcpy(g_bs300_sync.dsp_state, g_bs300_sync.target,
                        sizeof(bs300_prog_struct_t));
             }
+            /* Restore volume if it was changed during the session */
+            if (s_pending_volume >= 0 && g_bs300_sync.dsp_state != NULL) {
+                g_bs300_sync.dsp_state->modules.volume_level
+                    = (uint8_t)s_pending_volume;
+            }
         }
 
-        if (g_bs300_sync.state == BS300_SYNC_DONE
-            || g_bs300_sync.state == BS300_SYNC_ERROR
-            || g_bs300_sync.state == BS300_SYNC_IDLE /* aborted */) {
+        if (session_ended) {
             if (cb) cb();
+            /* Deferred operations executed from Main_Loop via
+             * bs300_process_deferred() — avoids stack overflow
+             * from flash-erase stack frames inside timer handler. */
         }
         return;
     }
 
     delay = (g_bs300_sync.state == BS300_SYNC_POLL) ? 6 : 2;
     ke_timer_set(BS300_SYNC_TIMER, TASK_APP, delay);
+}
+
+/* Called from Main_Loop — executes deferred switch/volume that were
+ * queued while a session was in progress.  Must NOT be called from
+ * timer handler (save_settings allocates ~960B stack for flash ops). */
+void bs300_process_deferred(void)
+{
+    if (bs300_sync_is_busy()) return;
+
+    if (s_pending_switch >= 0) {
+        int8_t next = s_pending_switch;
+        void (*next_cb)(void) = s_pending_switch_on_done;
+        s_pending_switch = -1;
+        s_pending_switch_on_done = NULL;
+        PRINTF("[BS300] deferred switch: running prog=%d\r\n", next);
+        bs300_switch_program_async((uint8_t)next, next_cb);
+        PRINTF("[BS300] deferred switch: done\r\n");
+        return;
+    }
+    if (s_pending_volume >= 0) {
+        uint8_t vol = (uint8_t)s_pending_volume;
+        void (*vol_cb)(void) = s_pending_volume_cb;
+        s_pending_volume = -1;
+        s_pending_volume_cb = NULL;
+        reencode_bin_gain_async_core(vol_cb,
+            (vol == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
+    }
 }
 
 static int start_async_session(void (*on_done)(void))
@@ -1444,15 +1493,17 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     if (new_prog_idx >= 4) return -1;
     if (s_cur_prog == new_prog_idx) return 0;
 
-    /* Busy → abort current session and wait for it to settle before
-     * starting the new one.  Must NOT call bs300_sync_session_init here
-     * because it would clobber abort_requested and leave the I2C hardware
-     * in an unknown state. */
+    /* Busy → abort current session and queue the new switch.
+     * Must NOT call bs300_sync_session_init here because it would
+     * clobber abort_requested and leave the I2C hardware in an
+     * unknown state. */
     if (bs300_sync_is_busy()) {
         g_bs300_sync.abort_requested = true;
+        s_pending_switch = (int8_t)new_prog_idx;
+        s_pending_switch_on_done = on_done;
         PRINTF("[BS300] switch_async deferred (busy), prog=%d\r\n",
                new_prog_idx);
-        return -1;
+        return 0;
     }
 
     /* Load target into static s_target for diff + per-command apply */
@@ -1460,7 +1511,10 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     s_target.modules.volume_level = s_volumes[new_prog_idx];
 
     s_cur_prog = new_prog_idx;
-    save_settings();
+
+    /* Defer flash write — Flash_EraseSector takes ~40ms and may
+     * stall BLE timing / trigger watchdog during connected state.
+     * Settings are persisted on BLE disconnect instead. */
 
     PRINTF("[BS300] switch RAM async %d->%d\r\n",
            s_cur_prog, new_prog_idx);
@@ -1548,16 +1602,14 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
     if (level > 9) return -1;
 
-    /* Always update state + persist immediately */
+    /* Update in-memory state. Flash persist deferred to BLE disconnect. */
     s_dsp_state.modules.volume_level = level;
     s_volumes[s_cur_prog] = level;
-    save_settings();
 
     if (bs300_sync_is_busy()) {
-        /* I2C deferred — bin_gain will be re-sent on next switch or
-         * when caller retries after current session completes. */
+        s_pending_volume = (int8_t)level;
+        s_pending_volume_cb = on_done;
         PRINTF("[BS300] volume=%d state saved, I2C deferred\r\n", level);
-        if (on_done) on_done();
         return 0;
     }
 

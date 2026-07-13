@@ -94,6 +94,14 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
 /* Timer callback — call from APP_Timer when msg_id == BS300_SYNC_TIMER */
 void bs300_sync_timer_handler(void);
 
+/* Process deferred switch/volume after session completes.
+ * Call from Main_Loop (NOT from timer handler). */
+void bs300_process_deferred(void);
+
+/* Persist current program + volume to flash.
+ * Safe only when BLE is idle or disconnected. */
+void bs300_settings_persist(void);
+
 /* ================================================================
  *  Async API (non-blocking via ke_timer)
  * ================================================================ */

@@ -229,6 +229,41 @@ static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
 }
 
+/* ID:15  GetCurrentScene */
+static void cmd_getcurrentscene(void)
+{
+    uint8_t resp_data[12];
+    bs300_prog_struct_t *dsp = bs300_get_dsp_state();
+    uint8_t prog = bs300_get_active_prog();
+
+    /* Convert EQ from dB [-12,12] to app scale [0,100]:
+     *   50 = 0 dB (flat),  each dB = 4 steps  */
+    int16_t eq_low  = 50 + (int16_t)dsp->modules.eq_low * 4;
+    int16_t eq_mid  = 50 + (int16_t)dsp->modules.eq_mid * 4;
+    int16_t eq_high = 50 + (int16_t)dsp->modules.eq_high * 4;
+    if (eq_low  < 0) eq_low = 0;   if (eq_low  > 100) eq_low = 100;
+    if (eq_mid  < 0) eq_mid = 0;   if (eq_mid  > 100) eq_mid = 100;
+    if (eq_high < 0) eq_high = 0;  if (eq_high > 100) eq_high = 100;
+
+    resp_data[0]  = prog;                          /* Left_Scene_ID */
+    resp_data[1]  = prog;                          /* Right_Scene_ID (same for single device) */
+    resp_data[2]  = dsp->modules.volume_level;     /* Volume_Left */
+    resp_data[3]  = dsp->modules.volume_level;     /* Volume_Right (same) */
+    resp_data[4]  = dsp->modules.wnr_preset;       /* Denoise 0-4 */
+    resp_data[5]  = (uint8_t)eq_low;               /* Left_Equalizer_Low */
+    resp_data[6]  = (uint8_t)eq_mid;               /* Left_Equalizer_Middle */
+    resp_data[7]  = (uint8_t)eq_high;              /* Left_Equalizer_High */
+    resp_data[8]  = (uint8_t)eq_low;               /* Right_Equalizer_Low (same) */
+    resp_data[9]  = (uint8_t)eq_mid;               /* Right_Equalizer_Middle (same) */
+    resp_data[10] = (uint8_t)eq_high;              /* Right_Equalizer_High (same) */
+    resp_data[11] = 0;                              /* reserved/padding */
+
+    PRINTF("[REMPRO] GetCurrentScene: prog=%u vol=%u denoise=%u eq=%d/%d/%d\r\n",
+           prog, dsp->modules.volume_level, dsp->modules.wnr_preset,
+           dsp->modules.eq_low, dsp->modules.eq_mid, dsp->modules.eq_high);
+    hdlc_response(CMD_GETCURRENTSCENE, 0, resp_data, 12);
+}
+
 /* ID:26  GetDeviceConfig */
 static void cmd_getdeviceconfig(void)
 {
@@ -323,6 +358,9 @@ void rempro_cmd_process(void)
         case CMD_SETCURRENTSCENE:
             if (data) cmd_setcurrentscene(data, data_len);
             else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+            break;
+        case CMD_GETCURRENTSCENE:
+            cmd_getcurrentscene();
             break;
         case CMD_GETDEVICECONFIG:
             cmd_getdeviceconfig();

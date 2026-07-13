@@ -195,18 +195,24 @@ static void settings_build_payload(uint8_t active_prog,
 
 bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume)
 {
-    uint8_t buf[BS300_TOTAL_DATA];
-    uint32_t wbuf[BS300_TOTAL_DATA / 4];
+    /* Reuse global work buffer (word-aligned) — avoids 960B stack alloc
+     * that overflows the 1024B main stack during deferred switch. */
+    extern uint8_t bs300_work_buf[BS300_TOTAL_DATA];
+    uint32_t *wbuf = (uint32_t *)(void *)bs300_work_buf;
+    uint8_t *buf = bs300_work_buf;
 
     main_flash_unlock();
     settings_build_payload(active_prog, volume, buf);
+
+    /* Refresh watchdog — ROM flash-erase may not service it */
+    Sys_Watchdog_Refresh();
 
     if (Flash_EraseSector(SETTINGS_BASE) != FLASH_ERR_NONE) {
         PRINTF("[BS300] settings erase FAIL\r\n");
         return false;
     }
 
-    memcpy(wbuf, buf, BS300_TOTAL_DATA);
+    /* buf already at the same address as wbuf — no memcpy needed */
     if (Flash_WriteBuffer(SETTINGS_BASE, BS300_TOTAL_DATA / 4, wbuf) != FLASH_ERR_NONE) {
         PRINTF("[BS300] settings write FAIL\r\n");
         return false;

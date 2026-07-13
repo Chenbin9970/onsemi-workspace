@@ -18,7 +18,6 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
-#include "button.h"
 
 /* Application Environment Structure */
 struct app_env_tag app_env;
@@ -583,8 +582,6 @@ void App_Initialize(void)
 
     app_env.init_done = 1;
 
-    button_init();
-
     /* Stop masking interrupts */
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);
@@ -606,9 +603,8 @@ void App_Env_Initialize(void)
     /* Create the application task handler */
     ke_task_create(TASK_APP, &TASK_DESC_APP);
 
-#ifdef APP_RM_ENABLE
+    /* 200ms periodic timer for RM LED */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
-#endif
 
     /* Initialize the custom service environment */
     CustomService_Env_Initialize();

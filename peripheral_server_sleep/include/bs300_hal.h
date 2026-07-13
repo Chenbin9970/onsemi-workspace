@@ -13,7 +13,7 @@ extern "C" {
 
 /* I2C speed presets (bit_delay loop count) */
 #define BS300_I2C_DELAY_FAST    10   /* DSP stopped, fast I2C */
-#define BS300_I2C_DELAY_ACTIVE  250  /* DSP running, medium speed */
+#define BS300_I2C_DELAY_ACTIVE  500  /* DSP running, slow & reliable */
 #define BS300_I2C_DELAY_NORMAL  500  /* DSP active, slow & reliable */
 
 /* I2C clock multiplier (RSL10 hardware constant) */

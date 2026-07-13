@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define DEBUG_UART_ENABLE
+/* #define DEBUG_UART_ENABLE */
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -61,9 +61,6 @@ extern "C"
 
 /* Enable BS300 I2C Flash Read test (requires DEBUG_UART_ENABLE for output) */
 #define BS300_TEST_ENABLE
-
-/* Button press duration constants */
-#define BTN_LONG_PRESS_TICKS    8       /* 8 * 200ms = 1600ms, ~1.5s */
 
 /* ----------------------------------------------------------------------------
  * Defines
@@ -122,7 +119,6 @@ extern "C"
 #define APP_RM_AUDIO_CHANNEL            RM_LEFT
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
-#define BUTTON_DIO                      2
 #define DIO_SYNC_PULSE                  8
 
 #define SAMPL_CLK                       7

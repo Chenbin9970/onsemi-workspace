@@ -16,6 +16,7 @@ extern "C" {
 #define CMD_SETVOLUME           2
 #define CMD_SETDEVICEONOFF      3
 #define CMD_GETBATTERYINFO      4
+#define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETDEVICECONFIG     26
 
