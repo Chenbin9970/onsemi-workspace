@@ -36,6 +36,21 @@ static void on_bs300_volume_done(void)
     bs300_async_done_callback();
 }
 
+/* Button-path done callbacks: also restore low-power (I2C complete → can sleep) */
+static void on_btn_switch_done(void)
+{
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    low_power_clk_param.low_power_enable = true;
+}
+
+static void on_btn_volume_done(void)
+{
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    low_power_clk_param.low_power_enable = true;
+}
+
 int main()
 {
     App_Initialize();
@@ -49,6 +64,9 @@ int main()
 
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
+
+    /* Button DIO2: must be re-init after each wakeup (see Continue_Application) */
+    Sys_DIO_Config(2, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 
 #ifndef DEBUG_UART_ENABLE
     /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
@@ -217,6 +235,81 @@ void Main_Loop(void)
 
         Sys_Watchdog_Refresh();
 
+
+        /* Button on DIO2 (active low, pull-up).
+         * Short press (< 1.5s):  volume +1, 0→1→...→9→0
+         * Long  press (>= 1.5s): switch program, 0→1→2→0, skip Program 3 */
+        {
+            enum { BTN_NONE, BTN_SHORT, BTN_LONG };
+            static uint8_t btn_prev;
+            static uint32_t hold_ticks;
+            static uint8_t long_fired;
+            static uint8_t pending_action;
+
+            uint8_t i, cnt_low = 0;
+            uint8_t btn_now;
+
+            /* Multi-sample filter: 5x read, majority vote */
+            for (i = 0; i < 5; i++)
+            {
+                if (DIO_DATA->ALIAS[2] == 0) cnt_low++;
+            }
+            btn_now = (cnt_low >= 3) ? 1 : 0;
+
+            if (btn_now && !btn_prev)
+            {
+                /* Press edge — start hold timer */
+                low_power_clk_param.low_power_enable = false;
+                hold_ticks = 0;
+                long_fired = 0;
+                pending_action = BTN_NONE;
+            }
+            else if (btn_now && btn_prev)
+            {
+                /* Held — block sleep, count ~1ms ticks */
+                low_power_clk_param.low_power_enable = false;
+                hold_ticks++;
+                if (!long_fired && hold_ticks >= 1500)
+                {
+                    long_fired = 1;
+                    pending_action = BTN_LONG;
+                }
+                Sys_Delay_ProgramROM(SystemCoreClock / 1000);
+            }
+            else if (!btn_now && btn_prev)
+            {
+                /* Release edge */
+                if (!long_fired)
+                {
+                    pending_action = BTN_SHORT;
+                }
+                else if (!bs300_sync_is_busy())
+                {
+                    /* Long press I2C already done — safe to sleep now */
+                    low_power_clk_param.low_power_enable = true;
+                }
+            }
+            btn_prev = btn_now;
+
+            /* Process pending action when I2C is free */
+            if (pending_action != BTN_NONE && !bs300_sync_is_busy())
+            {
+                if (pending_action == BTN_LONG)
+                {
+                    uint8_t prog = bs300_get_active_prog();
+                    uint8_t next = (prog + 1) % 3;
+                    bs300_switch_program_async(next, on_btn_switch_done);
+                }
+                else
+                {
+                    uint8_t vol = (app_env.volume + 1) % 10;
+                    app_env.volume = vol;
+                    bs300_set_volume_async(vol, on_btn_volume_done);
+                }
+                pending_action = BTN_NONE;
+            }
+        }
+
         /* If not in the middle of a period measurement for RSOSC, allow the
          * application to go to sleep power mode.
          * Skip sleep when RM audio streaming is active. */
@@ -224,6 +317,7 @@ void Main_Loop(void)
         if (!app_env.audio_streaming)
         {
 #endif
+
 #ifndef DEBUG_UART_ENABLE
         if (low_power_clk_param.low_power_enable ||
             (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K))

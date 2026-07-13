@@ -310,7 +310,7 @@ void Continue_Application(void)
 
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
-
+    Sys_DIO_Config(2, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 #ifndef DEBUG_UART_ENABLE
     /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
     Sys_DIO_Config(4, DIO_MODE_DISABLE | DIO_NO_PULL);
