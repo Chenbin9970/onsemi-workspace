@@ -18,6 +18,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "bs300_ram_sync.h"
 
 #ifdef APP_RM_ENABLE
 
@@ -205,6 +206,14 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 NVIC_ClearPendingIRQ(TIMER0_IRQn);
                 NVIC_ClearPendingIRQ(TIMER1_IRQn);
                 RF_SwitchToBLEMode();
+
+                /* Restore program that was active before RM */
+                if (app_env.saved_prog_before_rm != 3) {
+                    bs300_mute();
+                    bs300_switch_program(app_env.saved_prog_before_rm);
+                    bs300_active();
+                }
+
                 low_power_clk_param.low_power_enable = true;
                 app_env.audio_streaming = 0;
             }

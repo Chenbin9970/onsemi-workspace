@@ -452,6 +452,7 @@ struct app_env_tag
     uint8_t rm_started;
     uint8_t rm_start_requested;
     uint8_t rm_stop_requested;
+    uint8_t saved_prog_before_rm;
     uint8_t rm_was_enabled;
     uint8_t init_done;
 #endif

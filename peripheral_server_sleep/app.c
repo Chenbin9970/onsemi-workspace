@@ -114,6 +114,17 @@ void Main_Loop(void)
         if (app_env.rm_start_requested)
         {
             app_env.rm_start_requested = 0;
+
+            /* Switch to program 3 (audio mode) before entering RM */
+            app_env.saved_prog_before_rm = bs300_get_active_prog();
+            if (app_env.saved_prog_before_rm != 3) {
+                bs300_set_prog_volume(3, 9);
+                bs300_mute();
+                bs300_switch_program(3);
+                bs300_persist_active_prog(app_env.saved_prog_before_rm);
+                bs300_active();
+            }
+
             APP_RM_Init(ear_side);
             Audio_Init();
             RF_SwitchToCPMode();
@@ -141,6 +152,14 @@ void Main_Loop(void)
             NVIC_ClearPendingIRQ(TIMER0_IRQn);
             NVIC_ClearPendingIRQ(TIMER1_IRQn);
             RF_SwitchToBLEMode();
+
+            /* Restore program that was active before RM */
+            if (app_env.saved_prog_before_rm != 3) {
+                bs300_mute();
+                bs300_switch_program(app_env.saved_prog_before_rm);
+                bs300_active();
+            }
+
             app_env.audio_streaming = 0;
         }
 #endif

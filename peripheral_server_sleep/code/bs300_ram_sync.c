@@ -246,6 +246,17 @@ uint8_t bs300_get_module_volume(uint8_t prog_idx)
     return s_volumes[prog_idx];
 }
 
+void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level)
+{
+    if (prog_idx < 4 && level <= 9)
+        s_volumes[prog_idx] = level;
+}
+
+void bs300_persist_active_prog(uint8_t prog)
+{
+    bs300_settings_save(prog, s_volumes);
+}
+
 const bs300_calib_t *bs300_get_cached_calib(void)
 {
     return s_boot_cached ? &s_calib_cache : NULL;
