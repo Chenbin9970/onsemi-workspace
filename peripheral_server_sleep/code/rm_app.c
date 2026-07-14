@@ -200,6 +200,10 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             if (app_env.init_done && app_env.audio_streaming)
             {
                 RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
+
+                /* Mute BS300 before tearing down audio pipeline */
+                bs300_mute();
+
                 RM_Disable();
                 Sys_Timers_Stop(SELECT_TIMER0);
                 Sys_Timers_Stop(SELECT_TIMER1);
@@ -207,9 +211,8 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 NVIC_ClearPendingIRQ(TIMER1_IRQn);
                 RF_SwitchToBLEMode();
 
-                /* Restore program that was active before RM */
+                /* Restore pre-RM program for normal hearing aid operation */
                 if (app_env.saved_prog_before_rm != 3) {
-                    bs300_mute();
                     bs300_switch_program(app_env.saved_prog_before_rm);
                     bs300_active();
                 }
@@ -230,6 +233,10 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
         case LINK_ESTABLISHED:
         {
             RM_PRINTF("__RM_LINK_ESTABLISHED\n");
+
+            /* Start BS300 DSP now that the audio link is ready */
+            bs300_active();
+
             asrc_stable     = false;
             cntr_stability  = 0;
             audio_sink_cnt  = 0;

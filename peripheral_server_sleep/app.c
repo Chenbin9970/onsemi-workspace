@@ -115,14 +115,15 @@ void Main_Loop(void)
         {
             app_env.rm_start_requested = 0;
 
-            /* Switch to program 3 (audio mode) before entering RM */
+            /* Switch to program 3 (audio mode) before entering RM.
+             * Mute first to prevent noise during RM search phase.
+             * active() is deferred to LINK_ESTABLISHED callback. */
             app_env.saved_prog_before_rm = bs300_get_active_prog();
+            bs300_mute();
             if (app_env.saved_prog_before_rm != 3) {
                 bs300_set_prog_volume(3, 9);
-                bs300_mute();
                 bs300_switch_program(3);
                 bs300_persist_active_prog(app_env.saved_prog_before_rm);
-                bs300_active();
             }
 
             APP_RM_Init(ear_side);
@@ -135,6 +136,10 @@ void Main_Loop(void)
         if (app_env.rm_stop_requested)
         {
             app_env.rm_stop_requested = 0;
+
+            /* Mute BS300 before tearing down audio pipeline */
+            bs300_mute();
+
             /* Stop audio pipeline before RF switch */
             NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
             NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
@@ -153,9 +158,8 @@ void Main_Loop(void)
             NVIC_ClearPendingIRQ(TIMER1_IRQn);
             RF_SwitchToBLEMode();
 
-            /* Restore program that was active before RM */
+            /* Restore pre-RM program for normal hearing aid operation */
             if (app_env.saved_prog_before_rm != 3) {
-                bs300_mute();
                 bs300_switch_program(app_env.saved_prog_before_rm);
                 bs300_active();
             }
