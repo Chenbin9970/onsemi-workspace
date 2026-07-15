@@ -545,7 +545,94 @@ s_fit_buf (已修改的 struct)
 | SetDenoise 双写 | 480B Flash + Settings Flash | ENR 数据 + denoise level 都需要掉电保存 |
 | 推送先推后切 | 按键动作分发时立即 push | App 无需等 I2C 完成就能更新 UI |
 
-## 18. 完整文件变更清单 (2026-07-15)
+## 18. MM Plus igd 识别 bug (2026-07-15)
+
+### 18.1 现象
+
+P0 (front_mic) 切 P1 (MM+ + Telecoil, `mm_type=0x00`) 时，diff 引擎只发了 13 条命令，缺失了 8 条 igd 相关命令：
+
+| 缺失命令 | 原因 |
+|---------|------|
+| 0x8020B2 WDRC KP Th | igd 公式依赖 `input_gain_diff`，P1 需补偿 telecoil_gain_diff |
+| 0x8040C2 ENR NT | 同上 |
+| 0x8050C2 ENR UNT | 同上 |
+| 0x8001B2 ISS | 同上 |
+| 0x8001C2 WNR Setup | 同上 |
+| 0x8011C2 WNR Band 0-15 | 同上 |
+| 0x8411C2 WNR Band 16-31 | 同上 |
+| 0x8021C2 WNR Single Mic | 同上 |
+
+同时多发了两条不必要的：
+- 0x8070C2 ENR ETR — ETR 公式只依赖 `ma`，不依赖 `snr_th`，被 `snr_changed` 误触发
+- 0x8080C2 ENR NRR — 同上
+
+### 18.2 根因
+
+**`get_input_type()` 不认识 MM Plus**
+
+```c
+// 修复前
+static uint8_t get_input_type(uint8_t input_selection)
+{
+    case 2: return 1;  // Telecoil
+    case 3: return 2;  // DAI
+    default: return 0; // Mic  ← P0 (0) 和 P1 (4) 都走这里!
+}
+```
+
+P1 的 `input_selection=4` (MM+) 落在 default，返回 0 (Mic)，和 P0 一致。`igd_changed=0`，diff 跳过所有 igd 依赖命令。
+
+**TC/DAI diff 同样不认 MM+**
+
+```c
+// 修复前：只判断 input_selection==2 或 3
+uint8_t n_tc = (nm->input_selection == 2 || nm->input_selection == 3) ? 1 : 0;
+// MM+ (input_selection=4) 不管 mm_type 是什么都返回 0
+```
+
+### 18.3 修复（`bs300_ram_sync.c`）
+
+**修复 1：`get_input_type()` 增加 `mm_type` 参数**
+
+```c
+static uint8_t get_input_type(uint8_t input_selection, uint8_t mm_type)
+{
+    case 4:  // MM Plus
+        if (mm_type == 0x00) return 1;  // Telecoil
+        if (mm_type == 0x01) return 2;  // DAI
+        return 0;
+}
+```
+
+11 处调用全部更新为 `get_input_type(sel, mod->mm_type)`。
+
+**修复 2：去掉 ETR/NRR 对 `snr_changed` 的依赖**
+
+```c
+// ETR: coded = 2524971008*(etr-100) / (1600*etr*ma)  → 只依赖 ma + etr
+if (ma_changed || etr_changed)  // 原来: snr_changed || ma_changed || etr_changed
+
+// NRR: coded = 2524970707*nrr / (16000*ma)  → 只依赖 ma + nrr
+if (ma_changed || nrr_changed)  // 原来: snr_changed || ma_changed || nrr_changed
+```
+
+**修复 3：TC/DAI diff 条件改用 `get_input_type()`**
+
+```c
+// 修复前
+uint8_t n_tc = (nm->input_selection == 2 || nm->input_selection == 3) ? 1 : 0;
+
+// 修复后：MM+ 的 mm_type=0x00/0x01 也视为需要 TC/DAI
+uint8_t n_tc = (get_input_type(nm->input_selection, nm->mm_type) != 0) ? 1 : 0;
+```
+
+### 18.4 影响范围
+
+- MM+ 模式 (input_selection=4) 切换时 igd 正确识别，ig-dependent WDRC KP/ENR NT/ENR UNT/ISS/WNR 等命令会被发送
+- `bs300_set_volume_async` / `bs300_set_eq_async` 在 MM+ 模式下的 bin_gain 编码也会正确应用 igd 补偿
+- MM+ 的 `mm_type` 已在 Flash 解码阶段正确读取（`bs300_param_encode.c` decode MM Plus 分支）
+
+## 19. 完整文件变更清单 (2026-07-15)
 
 | 文件 | 变更内容 |
 |------|---------|

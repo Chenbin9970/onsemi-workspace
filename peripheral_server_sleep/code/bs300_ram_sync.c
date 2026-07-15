@@ -562,11 +562,15 @@ int bs300_sync_tick(bs300_sync_session_t *s)
 /* ================================================================
  *  Dynamic encode sync — builds 31 commands into session or sends directly
  * ================================================================ */
-static uint8_t get_input_type(uint8_t input_selection)
+static uint8_t get_input_type(uint8_t input_selection, uint8_t mm_type)
 {
     switch (input_selection) {
     case 2: return 1;  /* Telecoil */
     case 3: return 2;  /* DAI */
+    case 4:  /* MM Plus — igd determined by mm_type */
+        if (mm_type == 0x00) return 1;  /* Telecoil */
+        if (mm_type == 0x01) return 2;  /* DAI */
+        return 0;
     default: return 0; /* Mic */
     }
 }
@@ -661,7 +665,7 @@ static int sync_program_inner(bs300_prog_struct_t *prog,
         return -1;
     }
 
-    input_type = get_input_type(prog->modules.input_selection);
+    input_type = get_input_type(prog->modules.input_selection, prog->modules.mm_type);
 
     return bs300_sync_program_dynamic(prog, &calib, input_type, session);
 }
@@ -851,9 +855,9 @@ static void switch_diff_enr(const bs300_enr_t *ne,
             SEND_IF_DIRTY(session, 0x8050C2, bs300_encode_enr_upper_noise_th(ne, calib, new_it, data));
         if (sf_changed)
             SEND_IF_DIRTY(session, 0x8060C2, bs300_encode_enr_smoothing(ne, data));
-        if (snr_changed || ma_changed || etr_changed)
+        if (ma_changed || etr_changed)
             SEND_IF_DIRTY(session, 0x8070C2, bs300_encode_enr_etr(ne, data));
-        if (snr_changed || ma_changed || nrr_changed)
+        if (ma_changed || nrr_changed)
             SEND_IF_DIRTY(session, 0x8080C2, bs300_encode_enr_nrr(ne, data));
     }
 }
@@ -933,10 +937,10 @@ static void switch_diff_post_enr(bs300_modules_t *nm,
     const bs300_modules_t *om = &s_dsp_state.modules;
     int ret;
 
-    /* TC/DAI */
+    /* TC/DAI — includes MM+ with mm_type=Telecoil/DAI */
     {
-        uint8_t o_tc = (om->input_selection == 2 || om->input_selection == 3) ? 1 : 0;
-        uint8_t n_tc = (nm->input_selection == 2 || nm->input_selection == 3) ? 1 : 0;
+        uint8_t o_tc = (get_input_type(om->input_selection, om->mm_type) != 0) ? 1 : 0;
+        uint8_t n_tc = (get_input_type(nm->input_selection, nm->mm_type) != 0) ? 1 : 0;
         if (o_tc == 0 && n_tc == 0) {
         } else if (o_tc == 0 && n_tc == 1) {
             SEND_IF_DIRTY(session, 0x804272, bs300_encode_tc_dai(calib, new_it, data));
@@ -1030,8 +1034,8 @@ static int build_diff_session(bs300_sync_session_t *s)
 
     if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(s_target.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(s_target.modules.input_selection, s_target.modules.mm_type);
     igd_changed = (old_it != new_it);
 
     switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
@@ -1084,8 +1088,8 @@ int bs300_switch_program(uint8_t new_prog_idx)
 
     if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(s_target.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(s_target.modules.input_selection, s_target.modules.mm_type);
     igd_changed = (old_it != new_it);
 
     PRINTF("[BS300] switch RAM %d->%d\r\n", s_cur_prog, new_prog_idx);
@@ -1222,7 +1226,7 @@ int bs300_set_volume(uint8_t level)
 
     return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
                                        &s_dsp_state.modules,
-                                       get_input_type(s_dsp_state.modules.input_selection),
+                                       get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type),
                                        data) == 0
            && bs300_advanced_write(0x8060B2, data);
 }
@@ -1240,7 +1244,7 @@ int bs300_set_eq(int8_t low, int8_t mid, int8_t high)
 
     return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
                                        &s_dsp_state.modules,
-                                       get_input_type(s_dsp_state.modules.input_selection),
+                                       get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type),
                                        data) == 0
            && bs300_advanced_write(0x8060B2, data);
 }
@@ -1401,8 +1405,8 @@ int bs300_resync_diff(bs300_prog_struct_t *_new)
     if (_new == NULL) return -1;
     if (load_calib(&calib) < 0) return -1;
 
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(_new->modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(_new->modules.input_selection, _new->modules.mm_type);
     igd_changed = (old_it != new_it);
 
     PRINTF("[BS300] resync diff prog=%d\r\n", s_cur_prog);
@@ -1449,8 +1453,8 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
     for (i = 0; i < len; i++) raw[offset + i] = val[i];
 
     if (load_calib(&calib) < 0) return -1;
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(new_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(new_prog.modules.input_selection, new_prog.modules.mm_type);
     igd_changed = (old_it != new_it);
 
     switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
@@ -1654,7 +1658,7 @@ static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd
     int ret;
 
     if (load_calib(&calib) < 0) return -1;
-    input_type = get_input_type(s_dsp_state.modules.input_selection);
+    input_type = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
 
     bs300_sync_session_init(&g_bs300_sync);
     g_bs300_sync_on_done = on_done;
@@ -1809,8 +1813,8 @@ int bs300_resync_diff_start(bs300_sync_session_t *s, bs300_prog_struct_t *_new)
     s->target = &s_target;
 
     if (load_calib(&calib) < 0) return -1;
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(_new->modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(_new->modules.input_selection, _new->modules.mm_type);
     igd_changed = (old_it != new_it);
 
     PRINTF("[BS300] resync diff async prog=%d\r\n", s_cur_prog);
@@ -1859,8 +1863,8 @@ int bs300_param_modify_start(bs300_sync_session_t *s, uint8_t prog_idx,
     s->target = &s_target;
 
     if (load_calib(&calib) < 0) return -1;
-    old_it = get_input_type(s_dsp_state.modules.input_selection);
-    new_it = get_input_type(new_prog.modules.input_selection);
+    old_it = get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type);
+    new_it = get_input_type(new_prog.modules.input_selection, new_prog.modules.mm_type);
     igd_changed = (old_it != new_it);
 
     switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
