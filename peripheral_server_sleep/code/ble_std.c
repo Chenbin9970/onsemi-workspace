@@ -25,6 +25,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "ble_rempro_cmd.h"
 
 /* Bluetooth Environment Structure */
 struct ble_env_tag ble_env;
@@ -556,6 +557,9 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         ble_env.con_interval = param->con_interval;
         ble_env.con_latency = param->con_latency;
         ble_env.sup_to = param->sup_to;
+        PRINTF("[BLE] connected: interval=%u (%.2fms) latency=%u timeout=%u\r\n",
+               param->con_interval, param->con_interval * 1.25f,
+               param->con_latency, param->sup_to);
 
         /* Set the actual connection parameters */
         ble_env.actual_con_interval = param->con_interval;
@@ -647,6 +651,10 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
     /* Persist BS300 settings (program + volume) on disconnect —
      * Flash_EraseSector is unsafe during connected state. */
     bs300_settings_persist();
+
+    /* Clear HDLC reassembly buffer so stale frames don't leak
+     * into the next connection. */
+    rempro_reasm_reset();
 
     Advertising_Start();
 

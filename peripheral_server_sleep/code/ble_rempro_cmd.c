@@ -12,6 +12,25 @@
 #define REASM_BUF_SIZE  100
 static uint8_t reasm_buf[REASM_BUF_SIZE];
 static uint8_t reasm_len;
+static bool    reasm_pending;
+
+void rempro_reasm_append(const uint8_t *data, uint8_t len)
+{
+    if (reasm_len + len > REASM_BUF_SIZE) {
+        reasm_len = 0;   /* overflow — drop and restart */
+        reasm_pending = false;
+        return;
+    }
+    memcpy(reasm_buf + reasm_len, data, len);
+    reasm_len += len;
+    reasm_pending = true;
+}
+
+void rempro_reasm_reset(void)
+{
+    reasm_len = 0;
+    reasm_pending = false;
+}
 
 #define TX_BUF_SIZE     100
 static uint8_t tx_buf[TX_BUF_SIZE];
@@ -113,7 +132,8 @@ static const uint8_t *hdlc_parse_frame(const uint8_t *buf, uint8_t len,
                                        uint16_t *cmd_id, uint8_t *data_len,
                                        uint8_t *consumed)
 {
-    if (len < 7) return NULL;
+    *consumed = 0;
+    if (len < 6) return NULL;
     if (buf[0] != HDLC_SEPARATOR) return NULL;
 
     uint8_t fcs_pos_raw = 0;
@@ -145,6 +165,7 @@ static const uint8_t *hdlc_parse_frame(const uint8_t *buf, uint8_t len,
     uint8_t exp = hdlc_fcs(unstuffed, fcs_pos);
     if (unstuffed[fcs_pos] != exp) {
         PRINTF("[REMPRO] FCS err got=%02X exp=%02X\r\n", unstuffed[fcs_pos], exp);
+        *consumed = 0;  /* wait for more data — FCS may be split across chunks */
         return NULL;
     }
 
@@ -563,23 +584,11 @@ static void cmd_setdenoise(const uint8_t *data, uint8_t len)
  * ================================================================ */
 void rempro_cmd_process(void)
 {
-    if (!rempro_env.role_value_changed) return;
-    rempro_env.role_value_changed = 0;
-
-    /* Append incoming chunk to reassembly buffer */
-    uint8_t chunk_len = rempro_env.role_value_len;
-    print_hex("RX chunk", rempro_env.role_value, chunk_len);
-    if (reasm_len + chunk_len > REASM_BUF_SIZE) {
-        PRINTF("[REMPRO] reasm overflow: %u + %u > %u\r\n",
-               reasm_len, chunk_len, REASM_BUF_SIZE);
-        reasm_len = 0;   /* reset, drop bad data */
-        return;
-    }
-    memcpy(reasm_buf + reasm_len, rempro_env.role_value, chunk_len);
-    reasm_len += chunk_len;
+    if (!reasm_pending) return;
+    reasm_pending = false;
 
     /* Process as many complete frames as we can */
-    while (reasm_len >= 7) {   /* minimum frame: 7E SY CMDL CMDH FCS 7E */
+    while (reasm_len >= 6) {   /* minimum frame: 7E SY CMDL CMDH FCS 7E = 6B */
 
         /* Skip leading garbage until we find 0x7E */
         if (reasm_buf[0] != HDLC_SEPARATOR) {
@@ -593,7 +602,7 @@ void rempro_cmd_process(void)
         }
 
         uint16_t cmd_id;
-        uint8_t data_len, consumed;
+        uint8_t data_len = 0, consumed = 0;
         const uint8_t *data = hdlc_parse_frame(reasm_buf, reasm_len,
                                                &cmd_id, &data_len, &consumed);
         if (consumed == 0) {

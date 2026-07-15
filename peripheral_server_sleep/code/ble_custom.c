@@ -19,6 +19,7 @@
 
 #include "app.h"
 #include "ble_rempro.h"
+#include "ble_rempro_cmd.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -392,9 +393,12 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             switch (attnum)
             {
                 case REMPRO_IDX_ROLE_VALUE_VAL:
-                    valptr = (uint8_t *)&rempro_env.role_value;
-                    rempro_env.role_value_len = param->length;
-                    rempro_env.role_value_changed = 1;
+                    valptr = NULL;  /* bypass memcpy below — data goes straight to reasm_buf */
+                    PRINTF("[REMPRO GATT] len=%u:", param->length);
+                    for (uint8_t _i = 0; _i < param->length; _i++)
+                        PRINTF(" %02X", param->value[_i]);
+                    PRINTF("\r\n");
+                    rempro_reasm_append(param->value, param->length);
                     break;
                 case REMPRO_IDX_ROLE_VALU_CCC:
                     valptr = (uint8_t *)&rempro_env.role_cccd_value;

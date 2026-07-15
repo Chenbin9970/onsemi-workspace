@@ -68,9 +68,8 @@ bool bs300_driver_init(void)
     }
     PRINTF("[BS300] startup OK\r\n");
 
-    /* Step 3: Always read all 4 programs from BS300 Flash */
+    /* Step 3: Read all 4 programs from BS300 Flash */
     PRINTF("[BS300] reading all programs from chip...\r\n");
-    bs300_settings_invalidate();
     if (!read_and_save_all()) return false;
 
     /* Step 4: Restore settings (active program + volume / EQ / denoise) */

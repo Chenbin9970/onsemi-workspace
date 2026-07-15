@@ -34,6 +34,12 @@ extern "C" {
 
 void rempro_cmd_process(void);
 
+/* Called from GATT callback — appends raw BLE chunk directly to
+ * reassembly buffer.  Avoids the single-slot role_value race condition
+ * when the App sends multi-chunk frames back-to-back. */
+void rempro_reasm_append(const uint8_t *data, uint8_t len);
+void rempro_reasm_reset(void);
+
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);
 void rempro_push_volume_change(uint8_t prog, uint8_t volume);

@@ -725,7 +725,7 @@ if (wnr_changed || igd_changed) {
 
 ### 21.1 问题
 
-设计和实现不一致。§10 已决定 "flash 持久化延迟到 BLE 断开"，但代码中调音量/EQ/降噪/切程序/验配路径仍在 BLE 连接态同步调用 `Flash_EraseSector`（~40ms 阻塞），导致主循环停摆 → 看门狗超时 → 设备重启。
+设计和实现不一致。§10 已决定 "flash 持久化延迟到 BLE 断开"，但代码中调音量/EQ/降噪/切程序/验配路径仍在连接态同步调用 `Flash_EraseSector`。后续验证发现根因并非 BLE 阻塞，而是 Flash 擦除期间中断命中 Flash → HardFault → 复位（见 §26）。Settings Flash 延迟到断连的根本原因改为了：减少不必要的 Flash 擦写次数，而非防止重启（重启已由 §26 的关中断方案解决）。
 
 ### 21.2 涉及的热路径调用点（已全部移除）
 
@@ -848,3 +848,58 @@ s_target.modules.eq_low  = s_eq_low[new_prog_idx];
 s_target.modules.eq_mid  = s_eq_mid[new_prog_idx];
 s_target.modules.eq_high = s_eq_high[new_prog_idx];
 ```
+
+## 26. Flash_EraseSector 中断保护 (2026-07-15)
+
+### 26.1 问题
+
+之前分析认为 Flash_EraseSector 重启是因为 BLE 连接态阻塞。但测试发现**无 BLE 连接时擦写 Flash 也会重启**。根因是 RSL10 单 Flash 宏，擦除期间整个 Flash 不可读。SysTick（Keil RTX 内核调度）每毫秒触发一次，ISR 在 Flash 中 → CPU 取指失败 → HardFault → 复位。
+
+### 26.2 修复
+
+`bs300_storage.c` 两处 Flash 操作加 `__disable_irq()` / `__enable_irq()` 包裹：
+
+```c
+Sys_Watchdog_Refresh();
+__disable_irq();
+Flash_EraseSector(base);
+// ... Flash_WriteBuffer ...
+__enable_irq();
+```
+
+### 26.3 受影响函数
+
+- `bs300_settings_save()` — Settings Flash 擦写
+- `bs300_storage_write_program()` — Program Flash 擦写
+
+## 27. HDLC 分片重组修复 (2026-07-15)
+
+### 27.1 问题 A: GATT 单缓冲丢数据
+
+`rempro_env.role_value` 只有 20 字节单槽位。App 连续发多包 BLE Write（如 SetGain 4 包），GATT 回调之间 Main_Loop 来不及跑，后面的包覆盖前面的包。
+
+### 27.2 修复 A: 直接追加
+
+GATT 回调直接调 `rempro_reasm_append(param->value, param->length)` 追加到 `reasm_buf`，绕过 `role_value` 中转。
+
+新增函数：
+- `rempro_reasm_append()` — GATT 回调中调用，直接追加到重组缓冲
+- `rempro_reasm_reset()` — 断连时清空缓冲
+
+### 27.3 问题 B: 6 字节帧永远卡住
+
+`while (reasm_len >= 7)` 和 `if (len < 7)` 用的阈值是 7，但最短 HDLC 帧（无负载的查询指令如 CMD=4/26）是 6 字节：`7E SY CMDL CMDH FCS 7E`。6 字节帧落在 buffer 末尾时被 while 跳过，永远不处理，App 等不到回复就重发。
+
+### 27.4 修复 B: off-by-one
+
+`>= 7` → `>= 6`，`< 7` → `< 6`。
+
+### 27.5 问题 C: FCS 失败误消费
+
+帧不完整（缺 FCS+尾 7E）时 `hdlc_parse_frame()` 不设 `*consumed`，调用方未初始化的 `consumed` 读到栈随机值，跳过 "waiting" 路径。
+
+### 27.6 修复 C: 显式置零
+
+- 调用方 `consumed = 0` 初始化
+- `hdlc_parse_frame()` 入口 `*consumed = 0`
+- FCS 校验失败时 `*consumed = 0`（等待更多数据到达，而非错误消费）

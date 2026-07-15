@@ -111,7 +111,7 @@ extern "C"
 /* Slave preferred connection parameters */
 #define PREF_SLV_MIN_CON_INTERVAL       400
 #define PREF_SLV_MAX_CON_INTERVAL       400
-#define PREF_SLV_LATENCY                19
+#define PREF_SLV_LATENCY                10
 #define PREF_SLV_SUP_TIMEOUT            3200
 
 /* Set the device name */

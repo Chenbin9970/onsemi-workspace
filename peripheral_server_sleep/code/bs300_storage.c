@@ -107,13 +107,16 @@ bool bs300_storage_write_program(uint8_t idx, const uint8_t *data)
     }
 
     Sys_Watchdog_Refresh();
+    __disable_irq();
     if (Flash_EraseSector(base) != FLASH_ERR_NONE) {
+        __enable_irq();
         PRINTF("[BS300] program %u erase FAIL\r\n", idx);
         return false;
     }
 
     Sys_Watchdog_Refresh();
     if (Flash_WriteBuffer(base, BS300_TOTAL_DATA / 4, buf) != FLASH_ERR_NONE) {
+        __enable_irq();
         PRINTF("[BS300] program %u write FAIL\r\n", idx);
         return false;
     }
@@ -124,10 +127,12 @@ bool bs300_storage_write_program(uint8_t idx, const uint8_t *data)
         memcpy(thdr, hdr, 8);
         Sys_Watchdog_Refresh();
         if (Flash_WriteBuffer(base + BS300_TOTAL_DATA, 2, thdr) != FLASH_ERR_NONE) {
+            __enable_irq();
             PRINTF("[BS300] program %u hdr write FAIL\r\n", idx);
             return false;
         }
     }
+    __enable_irq();
 
     PRINTF("[BS300] program %u saved\r\n", idx);
     return true;
@@ -235,16 +240,20 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
     /* Refresh watchdog — ROM flash-erase may not service it */
     Sys_Watchdog_Refresh();
 
+    __disable_irq();
     if (Flash_EraseSector(SETTINGS_BASE) != FLASH_ERR_NONE) {
+        __enable_irq();
         PRINTF("[BS300] settings erase FAIL\r\n");
         return false;
     }
 
     /* buf already at the same address as wbuf — no memcpy needed */
     if (Flash_WriteBuffer(SETTINGS_BASE, BS300_TOTAL_DATA / 4, wbuf) != FLASH_ERR_NONE) {
+        __enable_irq();
         PRINTF("[BS300] settings write FAIL\r\n");
         return false;
     }
+    __enable_irq();
 
     PRINTF("[BS300] settings saved prog=%u vol=[%u,%u,%u,%u]\r\n",
            active_prog,

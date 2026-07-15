@@ -323,6 +323,7 @@ void Main_Loop(void)
                     uint8_t next = (prog + 1) % 3;
                     rempro_push_scene_change(next);
                     bs300_switch_program_async(next, on_btn_switch_done);
+                    bs300_settings_persist();
                 }
                 else
                 {
@@ -330,6 +331,7 @@ void Main_Loop(void)
                     app_env.volume = vol;
                     rempro_push_volume_change(bs300_get_active_prog(), vol);
                     bs300_set_volume_async(vol, on_btn_volume_done);
+                    bs300_settings_persist();
                 }
                 pending_action = BTN_NONE;
             }
