@@ -989,9 +989,8 @@ static void switch_diff_post_enr(bs300_modules_t *nm,
             else { if (bs300_advanced_write(0x8001C2, data)) (*sent)++; else (*fail)++; }
         } else {
             int wnr_changed = (om->wnr_preset != nm->wnr_preset);
-            if (wnr_changed || igd_changed)
+            if (wnr_changed || igd_changed) {
                 SEND_IF_DIRTY(session, 0x8001C2, bs300_encode_wnr_setup(nm, calib, data));
-            if (igd_changed) {
                 SEND_IF_DIRTY(session, 0x8011C2, bs300_encode_wnr_band_0_15(nm, calib, new_it, data));
                 SEND_IF_DIRTY(session, 0x8411C2, bs300_encode_wnr_band_16_31(nm, calib, new_it, data));
                 SEND_IF_DIRTY(session, 0x8021C2, bs300_encode_wnr_single_mic(nm, calib, new_it, data));

@@ -1654,7 +1654,7 @@ int bs300_encode_wnr_setup(const bs300_modules_t *mod,
 
     /* word 3: suppression strength preset */
     ssp = (mod->wnr_preset < 5) ? wnr_preset_to_ssp[mod->wnr_preset] : 12;
-    set_word(data, 3, (ssp >= 12) ? 0x000006 : 0x000003);
+    set_word(data, 3, (ssp >= 6) ? 0x000006 : 0x000003);
 
     /* words 4-6: fixed */
     set_word(data, 4, 0x001543);
@@ -1675,7 +1675,7 @@ int bs300_encode_wnr_band_0_15(const bs300_modules_t *mod,
     memset(data, 0, 48);
 
     igd = get_input_gain_diff_tenth_db(input_type, calib);
-    ssp = 0;  /* chip uses SSP level 0 for band data offsets */
+    ssp = (mod->wnr_preset > 0) ? (mod->wnr_preset - 1) : 0;
 
     /* band_N_data = 0x2A9764 - db_to_frac24((mic1 + igd/10) * 2 - offset)
      * n_tenth_db = mic1*20 + igd*2 - offset*10 (exact integer) */
@@ -1701,7 +1701,7 @@ int bs300_encode_wnr_band_16_31(const bs300_modules_t *mod,
     memset(data, 0, 48);
 
     igd = get_input_gain_diff_tenth_db(input_type, calib);
-    ssp = 0;  /* chip uses SSP level 0 for band data offsets */
+    ssp = (mod->wnr_preset > 0) ? (mod->wnr_preset - 1) : 0;
 
     for (i = 0; i < 16; i++) {
         uint8_t band = 16 + i;
@@ -1726,7 +1726,7 @@ int bs300_encode_wnr_single_mic(const bs300_modules_t *mod,
     memset(data, 0, 48);
 
     igd = get_input_gain_diff_tenth_db(input_type, calib);
-    ssp = 0;  /* chip uses SSP level 0 for band data offsets */
+    ssp = (mod->wnr_preset > 0) ? (mod->wnr_preset - 1) : 0;
 
     /* Single mic detection: bands 0-2, data2 formula:
      * data2 = 3292041 - db_to_frac24((mic1 + igd/10) * 2 - offset) */

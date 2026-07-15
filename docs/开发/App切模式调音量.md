@@ -632,7 +632,80 @@ uint8_t n_tc = (get_input_type(nm->input_selection, nm->mm_type) != 0) ? 1 : 0;
 - `bs300_set_volume_async` / `bs300_set_eq_async` 在 MM+ 模式下的 bin_gain 编码也会正确应用 igd 补偿
 - MM+ 的 `mm_type` 已在 Flash 解码阶段正确读取（`bs300_param_encode.c` decode MM Plus 分支）
 
-## 19. 完整文件变更清单 (2026-07-15)
+## 19. WNR preset 编码 bug (2026-07-15)
+
+### 19.1 现象
+
+P1→P2 切换时 WNR band 命令（0x8011C2/0x8411C2/0x8021C2）数据与 P1 完全相同，但 P1(preset=1) 和 P2(preset=3) 的 `strength_preset` 不同，I2C 数据应随之变化。
+
+### 19.2 根因
+
+两个问题，都在 `bs300_param_encode.c`：
+
+**问题 1：band 编码硬编码 ssp=0**
+
+```c
+// 修复前
+ssp = 0;  /* chip uses SSP level 0 for band data offsets */
+```
+
+Python 交叉验证只覆盖了 P0/P1（都是 preset=1, ssp=0），没发现其他 preset 需要不同的 ssp level。正确映射：`ssp = preset - 1`（DSP preset 1~5 对应表列 0~4）。
+
+**问题 2：WNR Setup word3 阈值错误**
+
+```c
+// 修复前
+set_word(data, 3, (ssp >= 12) ? 0x000006 : 0x000003);
+```
+
+阈值 12 导致 preset 0~3 (ssp=0,1,3,6) 全映射到 0x000003。正确阈值应为 6，区分 Low suppression（ssp<6→3）和 High suppression（ssp≥6→6）。
+
+### 19.3 修复（`bs300_param_encode.c`）
+
+**修复 1：band 编码使用 preset-1 作为 ssp level**
+
+```c
+// 修复后
+ssp = (mod->wnr_preset > 0) ? (mod->wnr_preset - 1) : 0;
+```
+
+| DSP preset | struct preset | ssp_level | 表列 |
+|:--:|:--:|:--:|:--:|
+| 1 (Off) | 0 | 0 | col 0 |
+| 2 (Minimal) | 1 | 0 | col 0 |
+| 3 (Low) | 2 | 1 | col 1 |
+| 4 (Medium) | 3 | **2** | col 2 |
+| 5 (High) | 4 | 3 | col 3 |
+
+P0/P1 (preset=1, ssp_level=0) 与原来的硬编码 ssp=0 一致，不破坏已有验证。
+
+**修复 2：WNR Setup word3 阈值改为 6**
+
+```c
+// 修复后
+set_word(data, 3, (ssp >= 6) ? 0x000006 : 0x000003);
+```
+
+**修复 3：WNR diff 增加 `wnr_changed` 触发 band 命令**
+
+`bs300_ram_sync.c` WNR ON→ON 分支，原先 band 命令只在 `igd_changed` 时发送，补充 `wnr_changed` 条件：
+
+```c
+if (wnr_changed || igd_changed) {
+    SEND_IF_DIRTY(session, 0x8001C2, ...);  // Setup
+    SEND_IF_DIRTY(session, 0x8011C2, ...);  // Band 0-15
+    SEND_IF_DIRTY(session, 0x8411C2, ...);  // Band 16-31
+    SEND_IF_DIRTY(session, 0x8021C2, ...);  // Single Mic
+}
+```
+
+### 19.4 验证
+
+- P0→P1 (preset=1, ssp=0)：band 数据不变，与 Python 交叉验证一致 ✓
+- P1→P2 (preset=1→3, ssp=0→2)：band 数据变化，Setup word3 从 3→6 ✓
+- 全量同步 P2：WNR 数据正确 ✓
+
+## 20. 完整文件变更清单 (2026-07-15)
 
 | 文件 | 变更内容 |
 |------|---------|
