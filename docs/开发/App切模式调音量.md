@@ -347,3 +347,216 @@ CMD=2 收到 → cmd_setvolume()
 | flash 持久化延迟 | BLE 断开时保存 | Flash_EraseSector ~40ms，连接态会阻塞 BLE |
 | I2C 速率 | bit_delay=500 | DSP 运行时不能处理高速 I2C |
 | BLE CS 快捷命令 | 2B 协议 | 调试用，比 HDLC 简单 |
+
+## 11. MM Plus 解码踩坑记录 (2026-07-15)
+
+### 11.1 Flash 布局（Handbook §MM Plus, Cmd=0x17）
+
+| Byte | 字段 | 类型 | 公式 |
+|------|------|------|------|
+| 0 | mic_mixing_ratio | uint8 | `raw = 50 + value_in_MT` |
+| 1 | type | uint8 | `0x00`=Telecoil, `0x01`=DAI |
+| 2 | — | — | `0x00` padding |
+
+### 11.2 历史 bug 链
+
+| # | bug | 根因 | 修复 |
+|---|-----|------|------|
+| 1 | 0x800062 全零（`frac24=0x080000`） | `mix_ratio` 未从 flash 解码，保持 BSS 默认值 0 | `mix_ratio = raw[0] - 50` |
+| 2 | `mix_ratio` 解码后溢出为 200+ | 字段类型是 `uint8_t`，`raw - 50` 为负时回绕 | 改为 `int8_t`，解码用 `int16_t` 中转 |
+| 3 | frac24 恒为 0xFFFFFF | `mm_type` 未解码，igd 始终为 0，导致 `mix_ratio=-21` 时 `idx=290`，table 末端值被 clamp | 解码 `raw[1]` 存入 `mm_type` |
+| 4 | frac24 不匹配预期（0x7ECA9D） | `mm_type` 映射错误（自编 1=TC/2=DAI vs 手册 0x00=TC/0x01=DAI） | 按手册修正映射 |
+
+### 11.3 最终正确链路
+
+```
+Flash raw[0]=29, raw[1]=0x00
+    │
+    ├─ mix_ratio = raw[0] - 50 = -21 dB
+    ├─ mm_type   = raw[1] = 0x00 → Telecoil
+    │
+    ▼
+I2C 0x800062:
+    igd = telecoil_gain_diff = -450 (tenth-dB)
+    x   = mix_ratio × 10 - igd = -210 - (-450) = 240
+    idx = 500 + x = 740
+    frac24 = table[740] = 524288 × 10^(24/20) ≈ 0x7ECA9D
+```
+
+### 11.4 相关文件
+
+- `bs300_param_encode.h`: `bs300_modules_t` — 新增 `int8_t mix_ratio`、`uint8_t mm_type`
+- `bs300_param_encode.c`: `bs300_flash_to_struct()` MOD_INPUT/case 4 — MM Plus 解码
+- `bs300_param_encode.c`: `bs300_encode_mm_plus()` — igd 改用 `mod->mm_type` 查手册映射
+- `bs300_encode_tables.h`: `bs300_mm_plus_frac24_table[2001]`
+
+## 12. Flash 持久化架构 (2026-07-15)
+
+### 12.1 两条存储路径
+
+| 路径 | 存储目标 | 内容 | 写时机 |
+|------|---------|------|--------|
+| **Program Flash** (480B×4) | `0x0015D000~E800` | WDRC + ENR + Volume/Beep + DFBC + ISS + WNR + AGCO + Input | SetGain/MPO/CompressRatio/Denoise → `fitting_commit()` |
+| **Settings Flash** (2KB) | `0x0015C800` | active_prog + volume[4] + eq_*[4] + denoise[4] | 切音量/EQ/降噪 → `save_settings()` |
+
+### 12.2 struct → 480B flash 编码
+
+`bs300_struct_to_flash()` 重编码 WDRC (0x12) 和 ENR (0x1C) 模块：
+
+```
+原始 480B buffer → 扫描 module directory → 找到 WDRC/ENR → 原地替换 bit-packed 数据
+```
+
+- `encode_wdrc_flash()`: bin_gain 32×7bit + 通道数据 (lmt_th: raw=value_in_MT-30, kp_th: raw=value_in_MT)
+- `encode_enr_flash()`: nfsf/nhsf/nnsf/snasf 4bit + 16ch×(freq/max_att/snr_th/noise_th/upper_noise_th/etr/nrr)
+- 其他模块保持原样不变
+
+### 12.3 Settings 格式演进
+
+| 版本 | 新增字段 | Offset |
+|:---:|------|--------|
+| v1 | active_prog + volume[4] | 0~4 |
+| v2 | eq_low/mid/high[4] | 5~16 |
+| v3 | denoise[4] | 17~20 |
+| — | magic + CRC + version | 21~28 |
+
+## 13. 0x8060B2 I2C 编码验证 (2026-07-15)
+
+### 13.1 公式
+
+```
+vol_gain = (volume_level - 9) × 3     // 0→-27dB, 9→0dB
+eq_gain  = hz<500?eq_low : hz≤2000?eq_mid : eq_high
+gain_cal = calib.out_band[i] - calib.mic1_band[i]
+
+data[i] = trunc((bin_gain[i]*10 + vol_gain*10 + eq_gain*10 - gain_cal*10 - igd) / 10)
+        = bin_gain[i] + vol_gain + eq_gain - gain_cal       (igd=0 时约简)
+```
+
+### 13.2 I2C 帧结构 (Advanced Write, 53 bytes)
+
+```
+[0]=0x10  [1..3]=CMD_LE  [4..51]=48B payload  [52]=chk
+```
+
+chk = 0xFF - sum(payload[0..51]) & 0xFF
+
+### 13.3 验证过程中的 bug
+
+- vol=0 导致 vol_gain=-27 → I2C 数据全为负值。根因：Settings 清空后 s_volumes 默认值 0 而非 9。修复：Settings 无效时设默认值 {9,9,9,9} 再调用 bs300_restore_settings。
+
+## 14. 按键主动推送 (2026-07-15)
+
+### 14.1 推送协议
+
+| CMD | 名称 | SYS_ID | 数据 |
+|-----|------|:---:|------|
+| 4 | Receive Device Volume | 1 | prog(1) + dev_type(1) + vol(1) + vol2(1) |
+| 5 | Receive Current Scene | 1 | scene_id(1) |
+
+### 14.2 推送时机
+
+按键长按/短按 → **先推后切**（动作分发时立即 push，不等 I2C 完成）
+
+### 14.3 相关函数
+
+- `hdlc_push()`: 组帧 SYS_ID=1, 无 Flag, ≤20B 分片发送
+- `rempro_push_scene_change()`, `rempro_push_volume_change()`: BLE 未连接时跳过
+
+## 15. 上电流程变更 (2026-07-15)
+
+```
+Step 3: 强制从 DSP I2C 读取全部 4 个程序（不做缓存检查）→ erase → write flash
+Step 4: Settings 清空 (bs300_settings_invalidate) → 用默认值恢复 (prog=0, vol=9, EQ=0)
+Step 5: Boot cache → 覆盖 volume + EQ from Settings
+Step 6: MUTE → sync full program → ACTIVE
+```
+
+每次上电都是干净状态，DSP 程序重读，Settings 默认。调试用。`#ifdef` 或配置开关待加。
+
+## 16. 调试打印速查
+
+- `bs300_print_settings()`: 打印 cur_prog + volume/EQ/denoise 4×4 数组
+- 切程序 / 调音量 / 设 EQ / SetGain/MPO/CR/Denoise 入口自动调用
+- 8060B2 编码：`[8060B2] vol= vol_gain= igd= input=` — 临时调试用，已清除
+- MM Plus：`[MM+] en= mix_ratio= igd= x= idx= frac24=` — 临时调试用，已清除
+- Flash decode MM+：`[FLASH] MM+ pos= len= raw= → mix_ratio=` — 临时调试用，已清除
+
+## 17. App HDLC 协议指令清单 (2026-07-15)
+
+### 17.1 指令总览
+
+**App → 设备：**
+
+| CMD_ID | 宏 | 功能 | 数据格式 | 处理链路 |
+|:---:|------|------|------|------|
+| 2 | `CMD_SETVOLUME` | 设置音量 | dev_type(1)+vol(1)+vol2(1) | `bs300_set_volume_notone_async` → Settings persist |
+| 6 | `CMD_SETGAIN` | 设置增益 | dev(1)+prog(1)+(spectrum(1)+dB(1))* | flash load→改 bin_gain→`fitting_commit` |
+| 7 | `CMD_SETMPO` | 设置 MPO | dev(1)+prog(1)+(ch(1)+mpo(1))* | flash load→改 lmt_th_db→`fitting_commit` |
+| 8 | `CMD_SETCOMPRESSRATIO` | 设置压缩比 | dev(1)+prog(1)+turn(1)+(ch(1)+step(1))* | flash load→改 kp_r_idx→`fitting_commit` |
+| 9 | `CMD_SETDENOISE` | 设置降噪 | dev(1)+prog(1)+level(1) | flash load→enr.max_att_db[16]→`fitting_commit`+Settings |
+| 10 | `CMD_SETEQUALIZER` | 设置均衡器 | dev(1)+type(1)+val(1) | `bs300_set_eq_async` → Settings persist |
+| 15 | `CMD_GETCURRENTSCENE` | 获取当前程序 | 无 | 读取 s_dsp_state → 12B 响应 |
+| 16 | `CMD_SETCURRENTSCENE` | 切换程序 | dev(1)+scene(1) | `bs300_switch_program_async` |
+| 26 | `CMD_GETDEVICECONFIG` | 获取设备信息 | 无 | 固件版本/MAC/产品型号等 → 29B 响应 |
+
+**设备 → App 主动推送：**
+
+| CMD_ID | 宏 | 触发条件 | 数据 | SYS_ID |
+|:---:|------|------|------|:---:|
+| 4 | `CMD_PUSH_VOLUME` | 按键短按/App调音量 | prog(1)+dev_type(1)+vol(1)+vol2(1) | 1 |
+| 5 | `CMD_PUSH_SCENE` | 按键长按 | scene_id(1) | 1 |
+
+### 17.2 HDLC 帧封装
+
+**App→设备 请求帧：** `7E + SYS_ID(0) + CMD(2B LE) + Data + FCS + 7E`
+
+**设备→App 响应帧：** `7E + SYS_ID(0) + CMD(2B LE) + Flag + Data + FCS + 7E`
+
+**设备→App 推送帧：** `7E + SYS_ID(1) + CMD(2B LE) + Data + FCS + 7E`（无 Flag）
+
+Byte-stuffing 规则：`0x7E→0x7D 0x5E`, `0x7D→0x7D 0x5D`。BLE ≤20B 自动分片。
+
+### 17.3 指令分类
+
+| 类别 | 指令 | 共性 |
+|------|------|------|
+| **运行时** | SetVolume, SetEqualizer, SetCurrentScene, GetCurrentScene | 只改 Settings Flash，不改 480B 程序 Flash |
+| **验配（持久化）** | SetGain, SetMPO, SetCompressRatio, SetDenoise | 改 480B 程序 Flash + resync_diff_async |
+| **查询** | GetCurrentScene, GetDeviceConfig | 只读，不写 |
+
+### 17.4 fitting_commit 流程
+
+```
+s_fit_buf (已修改的 struct)
+  → bs300_struct_to_flash()    // 重编码 WDRC + ENR 到 bs300_work_buf
+    → bs300_storage_write_program()  // 写入 480B 到 Main Flash
+      → if (prog == active)
+          → bs300_resync_diff_async()  // 差异 I2C 同步到 DSP
+```
+
+### 17.5 关键设计决策
+
+| 决策 | 结论 | 原因 |
+|------|------|------|
+| 响应不等 I2C 完成 | flag=0 立即返回 | I2C ~3s, BLE 响应需在连接间隔内 |
+| 忙时拒绝验配指令 | flag=1 返回，App 重试 | 验配指令需写 flash，不可抢断 |
+| SetGain 重置用户参数 | volume=9, EQ=0, denoise=0 | 验配修改基参时归零用户微调 |
+| SetDenoise 双写 | 480B Flash + Settings Flash | ENR 数据 + denoise level 都需要掉电保存 |
+| 推送先推后切 | 按键动作分发时立即 push | App 无需等 I2C 完成就能更新 UI |
+
+## 18. 完整文件变更清单 (2026-07-15)
+
+| 文件 | 变更内容 |
+|------|---------|
+| `include/ble_rempro_cmd.h` | 新增 9 个 CMD 宏 + 2 个 push 函数声明 + SYS_ID_DEVICE |
+| `code/ble_rempro_cmd.c` | 新增 7 个 handler + fitting_commit + hdlc_push + s_fit_buf |
+| `include/bs300_param_encode.h` | 新增 `bs300_struct_to_flash` + mix_ratio 改 int8 + mm_type 字段 |
+| `code/bs300_param_encode.c` | 新增 bit_writer + encode_wdrc/enr_flash + struct_to_flash + MM Plus 解码 |
+| `include/bs300_ram_sync.h` | 新增 set_volume_notone_async + set_prog_denoise + reset_user_params + print_settings |
+| `code/bs300_ram_sync.c` | 新增 s_eq_*/s_denoise 数组 + 持久化 + 切程序恢复 EQ + save_settings 重构 |
+| `include/bs300_storage.h` | Settings 接口扩展（新增 EQ/denoise 参数） |
+| `code/bs300_storage.c` | Settings v1→v3 演进 + Watchdog 刷新 + EQ/denoise 读写 |
+| `code/bs300_driver.c` | 强制重读 DSP + Settings 清空 + EQ/denoise 传递 |
+| `include/app.h` | DEBUG_UART_ENABLE 开启 |
+| `app.c` | 按键回调加 push + persist + 无提示音音量路径 |

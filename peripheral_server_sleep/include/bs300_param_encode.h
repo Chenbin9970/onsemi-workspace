@@ -95,9 +95,10 @@ typedef struct {
     uint16_t agco_attack_01ms;      /* [1, 2500] */
     uint16_t agco_release_01ms;     /* [1, 2500] */
 
-    /* MM Plus (2 bytes) */
+    /* MM Plus (3 bytes) */
     uint8_t  mm_plus_enable;        /* 0=off, 1=on */
-    uint8_t  mix_ratio;             /* integer */
+    int8_t   mix_ratio;             /* [-50, 24] dB */
+    uint8_t  mm_type;               /* 0x00=Telecoil, 0x01=DAI */
 
     /* DDM2 (5 bytes) */
     uint8_t  ddm2_enable;           /* 0=off, 1=on */
@@ -129,6 +130,7 @@ typedef struct {
  *  Flash decode
  * ================================================================ */
 int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out);
+int bs300_struct_to_flash(const bs300_prog_struct_t *prog, uint8_t *flash_buf);
 
 /* ================================================================
  *  Param I2C Encode functions (31 total)

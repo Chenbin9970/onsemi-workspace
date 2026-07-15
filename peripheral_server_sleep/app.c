@@ -222,7 +222,8 @@ void Main_Loop(void)
                 else if (cmd == 0x02)
                 {
                     app_env.volume = arg;
-                    bs300_set_volume_async(arg, on_bs300_volume_done);
+                    bs300_set_volume_notone_async(arg, on_bs300_volume_done);
+                    bs300_settings_persist();
                     PRINTF("[BS300] volume=%d\r\n", arg);
                 }
                 else if (cmd == 0xFE)
@@ -321,13 +322,16 @@ void Main_Loop(void)
                 {
                     uint8_t prog = bs300_get_active_prog();
                     uint8_t next = (prog + 1) % 3;
+                    rempro_push_scene_change(next);
                     bs300_switch_program_async(next, on_btn_switch_done);
                 }
                 else
                 {
                     uint8_t vol = (app_env.volume + 1) % 10;
                     app_env.volume = vol;
+                    rempro_push_volume_change(bs300_get_active_prog(), vol);
                     bs300_set_volume_async(vol, on_btn_volume_done);
+                    bs300_settings_persist();
                 }
                 pending_action = BTN_NONE;
             }

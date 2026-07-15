@@ -2,6 +2,7 @@
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
 #include "bs300_ram_sync.h"
+#include "bs300_storage.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -156,6 +157,64 @@ static const uint8_t *hdlc_parse_frame(const uint8_t *buf, uint8_t len,
     return NULL;
 }
 
+/* Build, stuff, and send an HDLC push frame (device→app, SYS_ID=1, no Flag).
+ * Same chunking logic as hdlc_response, but SYS_ID=1 and no Flag byte. */
+static void hdlc_push(uint16_t cmd_id, const uint8_t *data, uint8_t data_len)
+{
+    uint8_t raw[TX_BUF_SIZE];
+    raw[0] = HDLC_SYS_ID_DEVICE;
+    raw[1] = (uint8_t)(cmd_id & 0xFF);
+    raw[2] = (uint8_t)((cmd_id >> 8) & 0xFF);
+    uint8_t raw_len = 3;
+    if (data_len) {
+        memcpy(raw + raw_len, data, data_len);
+        raw_len += data_len;
+    }
+    raw[raw_len] = hdlc_fcs(raw, raw_len);
+    raw_len++;
+
+    uint8_t *p = tx_buf;
+    *p++ = HDLC_SEPARATOR;
+    p += hdlc_stuff(p, raw, raw_len);
+    *p++ = HDLC_SEPARATOR;
+    uint8_t frame_len = (uint8_t)(p - tx_buf);
+
+    print_hex("TX push", tx_buf, frame_len);
+    uint8_t offset = 0;
+    while (offset < frame_len) {
+        uint8_t chunk = frame_len - offset;
+        if (chunk > 20) chunk = 20;
+        RemproService_SendNotification(ble_env.conidx,
+                                       REMPRO_IDX_ONOFF_VALUE_VAL,
+                                       tx_buf + offset, chunk);
+        offset += chunk;
+    }
+}
+
+/* Active push: notify app of program switch (CMD=5, SYS_ID=1).
+ * Protocol: SYS_ID(1) + CMD_ID(2) + Scene_ID(1) */
+void rempro_push_scene_change(uint8_t scene_id)
+{
+    if (ble_env.state != APPM_CONNECTED) return;
+    PRINTF("[REMPRO] push scene=%u\r\n", scene_id);
+    hdlc_push(CMD_PUSH_SCENE, &scene_id, 1);
+}
+
+/* Active push: notify app of volume change (CMD=4, SYS_ID=1).
+ * Protocol: SYS_ID(1) + CMD_ID(2) + Current_Number(1) + Device_Type(1)
+ *         + Volume(1) + Volume2(1) */
+void rempro_push_volume_change(uint8_t prog, uint8_t volume)
+{
+    if (ble_env.state != APPM_CONNECTED) return;
+    uint8_t d[4];
+    d[0] = prog;       /* Current_Number */
+    d[1] = 1;          /* Device_Type: 1=left (single device) */
+    d[2] = volume;     /* Volume */
+    d[3] = volume;     /* Volume2 (same as Volume for single device) */
+    PRINTF("[REMPRO] push vol: prog=%u vol=%u\r\n", prog, volume);
+    hdlc_push(CMD_PUSH_VOLUME, d, 4);
+}
+
 /* ================================================================
  * Command Handlers
  * ================================================================ */
@@ -172,10 +231,11 @@ static void cmd_setvolume(const uint8_t *data, uint8_t len)
     if (volume > 9) volume = 9;
     if (volume2 > 9) volume2 = 9;
 
-    /* Left side volume */
+    /* Left side volume — no tone, same path as EQ (re-encode bin_gain → 0x8060B2) */
     if (dev_type == 0 || dev_type == 1) {
         app_env.volume = volume;
-        bs300_set_volume_async(volume, NULL);
+        bs300_set_volume_notone_async(volume, NULL);
+        bs300_settings_persist();
     }
     /* Right side not supported on this device — ignore */
 
@@ -295,6 +355,224 @@ static void cmd_getdeviceconfig(void)
     hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);
 }
 
+/* ID:10  SetEqualizer */
+static void cmd_setequalizer(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t eq_type  = data[1];
+    uint8_t value    = data[2];
+
+    /* App scale [0,100] → dB [-12,12]: 50 = 0dB, each 4 steps = 1dB */
+    int16_t diff = (int16_t)value - 50;
+    int8_t dB;
+    if (diff >= 0) dB = (int8_t)((diff + 2) / 4);
+    else           dB = (int8_t)((diff - 2) / 4);
+    if (dB > 12)  dB = 12;
+    if (dB < -12) dB = -12;
+
+    bs300_prog_struct_t *dsp = bs300_get_dsp_state();
+    int8_t low  = dsp->modules.eq_low;
+    int8_t mid  = dsp->modules.eq_mid;
+    int8_t high = dsp->modules.eq_high;
+
+    switch (eq_type) {
+    case 0: low  = dB; break;   /* bass  ≤500Hz */
+    case 1: mid  = dB; break;   /* mid   500-2000Hz */
+    case 2: high = dB; break;   /* treble >2000Hz */
+    default: break;
+    }
+
+    PRINTF("[REMPRO] SetEqualizer: dev=%u type=%u val=%u dB=%d → L=%d M=%d H=%d\r\n",
+           dev_type, eq_type, value, dB, low, mid, high);
+    bs300_set_eq_async(low, mid, high, NULL);
+
+    uint8_t status = 1;
+    hdlc_response(CMD_SETEQUALIZER, 0, &status, 1);
+}
+
+/* Shared buffer for fitting command handlers — 490B, avoids stack alloc */
+static bs300_prog_struct_t s_fit_buf;
+
+/* Commit s_fit_buf to flash for the given program.
+ * Caller must have already loaded raw→struct into s_fit_buf and modified it.
+ * bs300_work_buf still holds the original raw 480B from the load call.
+ * If active program, trigger I2C resync to DSP. */
+static int fitting_commit(uint8_t prog_idx)
+{
+    if (bs300_struct_to_flash(&s_fit_buf, bs300_work_buf) < 0) return -1;
+    bs300_storage_write_program(prog_idx, bs300_work_buf);
+
+    if (prog_idx == bs300_get_active_prog()) {
+        bs300_resync_diff_async(&s_fit_buf, NULL);
+    }
+    return 0;
+}
+
+/* ID:6  SetGain */
+static void cmd_setgain(const uint8_t *data, uint8_t len)
+{
+    if (len < 4 || ((len - 2) & 1)) {
+        hdlc_response(CMD_SETGAIN, 1, NULL, 0); return;
+    }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETGAIN, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t prog     = data[1];
+    uint8_t pairs    = (len - 2) / 2;
+    uint8_t i;
+
+    if (prog >= 4) { hdlc_response(CMD_SETGAIN, 1, NULL, 0); return; }
+
+    bs300_print_settings();
+
+    /* Load flash → struct */
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
+        hdlc_response(CMD_SETGAIN, 1, NULL, 0); return;
+    }
+
+    for (i = 0; i < pairs; i++) {
+        uint8_t spectrum = data[2 + i * 2];
+        int16_t decibel  = data[3 + i * 2];
+        if (spectrum < 32) {
+            if (decibel > 100) decibel = 100;
+            s_fit_buf.wdrc.bin_gain[spectrum] = (int8_t)decibel;
+        }
+    }
+
+    PRINTF("[REMPRO] SetGain: dev=%u prog=%u pairs=%u\r\n", dev_type, prog, pairs);
+    bs300_reset_user_params(prog);
+    fitting_commit(prog);
+    hdlc_response(CMD_SETGAIN, 0, NULL, 0);
+}
+
+/* ID:7  SetMPO */
+static void cmd_setmpo(const uint8_t *data, uint8_t len)
+{
+    if (len < 4 || ((len - 2) & 1)) {
+        hdlc_response(CMD_SETMPO, 1, NULL, 0); return;
+    }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETMPO, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t prog     = data[1];
+    uint8_t pairs    = (len - 2) / 2;
+    uint8_t i;
+
+    if (prog >= 4) { hdlc_response(CMD_SETMPO, 1, NULL, 0); return; }
+
+    bs300_print_settings();
+
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
+        hdlc_response(CMD_SETMPO, 1, NULL, 0); return;
+    }
+
+    for (i = 0; i < pairs; i++) {
+        uint8_t channel = data[2 + i * 2];
+        int16_t mpo_val = data[3 + i * 2];
+        if (channel < 16) {
+            if (mpo_val > 127) mpo_val = 127;
+            s_fit_buf.wdrc.lmt_th_db[channel] = (int8_t)mpo_val;
+        }
+    }
+
+    PRINTF("[REMPRO] SetMPO: dev=%u prog=%u pairs=%u\r\n", dev_type, prog, pairs);
+    fitting_commit(prog);
+    hdlc_response(CMD_SETMPO, 0, NULL, 0);
+}
+
+/* ID:8  SetCompressRatio */
+static void cmd_setcompressratio(const uint8_t *data, uint8_t len)
+{
+    if (len < 5 || ((len - 3) & 1)) {
+        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
+    }
+    if (bs300_sync_is_busy()) {
+        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
+    }
+
+    uint8_t dev_type  = data[0];
+    uint8_t prog      = data[1];
+    uint8_t turn_num  = data[2];
+    uint8_t pairs     = (len - 3) / 2;
+    uint8_t i;
+
+    if (prog >= 4) {
+        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
+    }
+
+    bs300_print_settings();
+
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
+        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
+    }
+
+    for (i = 0; i < pairs; i++) {
+        uint8_t channel = data[3 + i * 2];
+        uint8_t step    = data[4 + i * 2];
+        if (channel < 16) {
+            if (turn_num == 0)
+                s_fit_buf.wdrc.kp1_r_idx[channel] = step;
+            else
+                s_fit_buf.wdrc.kp2_r_idx[channel] = step;
+        }
+    }
+
+    PRINTF("[REMPRO] SetCompressRatio: dev=%u prog=%u turn=%u pairs=%u\r\n",
+           dev_type, prog, turn_num, pairs);
+    fitting_commit(prog);
+    hdlc_response(CMD_SETCOMPRESSRATIO, 0, NULL, 0);
+}
+
+/* Denoise level → ENR max_att_db mapping */
+static const uint8_t denoise_to_max_att[5] = { 6, 9, 12, 15, 18 };
+
+/* ID:9  SetDenoise */
+static void cmd_setdenoise(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) {
+        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
+    }
+    if (bs300_sync_is_busy()) {
+        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
+    }
+
+    uint8_t dev_type = data[0];
+    uint8_t prog     = data[1];
+    uint8_t level    = data[2];
+    uint8_t i;
+
+    if (prog >= 4 || level > 4) {
+        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
+    }
+
+    bs300_print_settings();
+
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
+        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
+    }
+
+    /* Map level → max_att_db, apply to all 16 channels */
+    {
+        uint8_t att = denoise_to_max_att[level];
+        for (i = 0; i < 16; i++) {
+            s_fit_buf.enr.max_att_db[i] = att;
+        }
+    }
+
+    PRINTF("[REMPRO] SetDenoise: dev=%u prog=%u level=%u → att=%u\r\n",
+           dev_type, prog, level, denoise_to_max_att[level]);
+    bs300_set_prog_denoise(prog, level);
+    bs300_settings_persist();
+    fitting_commit(prog);
+    hdlc_response(CMD_SETDENOISE, 0, NULL, 0);
+}
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
@@ -358,6 +636,26 @@ void rempro_cmd_process(void)
         case CMD_SETCURRENTSCENE:
             if (data) cmd_setcurrentscene(data, data_len);
             else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+            break;
+        case CMD_SETGAIN:
+            if (data) cmd_setgain(data, data_len);
+            else hdlc_response(CMD_SETGAIN, 1, NULL, 0);
+            break;
+        case CMD_SETMPO:
+            if (data) cmd_setmpo(data, data_len);
+            else hdlc_response(CMD_SETMPO, 1, NULL, 0);
+            break;
+        case CMD_SETCOMPRESSRATIO:
+            if (data) cmd_setcompressratio(data, data_len);
+            else hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0);
+            break;
+        case CMD_SETDENOISE:
+            if (data) cmd_setdenoise(data, data_len);
+            else hdlc_response(CMD_SETDENOISE, 1, NULL, 0);
+            break;
+        case CMD_SETEQUALIZER:
+            if (data) cmd_setequalizer(data, data_len);
+            else hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0);
             break;
         case CMD_GETCURRENTSCENE:
             cmd_getcurrentscene();

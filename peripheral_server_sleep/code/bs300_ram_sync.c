@@ -18,6 +18,10 @@ static bs300_prog_struct_t  s_dsp_state;      /* 490B — always == DSP register
 static bs300_prog_struct_t  s_target;         /* 490B — target program loaded during switch */
 static bs300_calib_t        s_calib_cache;    /* ~80B — calibration, shared by all programs */
 static uint8_t              s_volumes[4];     /* 4B — per-program volume, persists across switches */
+static int8_t               s_eq_low[4];      /* 4B — per-program EQ low */
+static int8_t               s_eq_mid[4];      /* 4B — per-program EQ mid */
+static int8_t               s_eq_high[4];     /* 4B — per-program EQ high */
+static uint8_t              s_denoise[4];     /* 4B — per-program denoise level 0-4 */
 static uint8_t              s_cur_prog;       /* 1B — current active program index */
 static bool                 s_boot_cached;    /* 1B — calibration loaded flag */
 
@@ -252,9 +256,15 @@ void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level)
         s_volumes[prog_idx] = level;
 }
 
+void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level)
+{
+    if (prog_idx < 4 && level <= 4)
+        s_denoise[prog_idx] = level;
+}
+
 void bs300_persist_active_prog(uint8_t prog)
 {
-    bs300_settings_save(prog, s_volumes);
+    bs300_settings_save(prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high, s_denoise);
 }
 
 const bs300_calib_t *bs300_get_cached_calib(void)
@@ -265,19 +275,74 @@ const bs300_calib_t *bs300_get_cached_calib(void)
 /* ================================================================
  *  Settings restore (power-loss recovery)
  * ================================================================ */
-void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume)
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
+                            const int8_t *eq_low, const int8_t *eq_mid,
+                            const int8_t *eq_high, const uint8_t *denoise)
 {
+    uint8_t i;
     s_cur_prog = active_prog;
     if (volume != NULL) {
-        uint8_t i;
         for (i = 0; i < 4; i++) s_volumes[i] = volume[i];
+    }
+    if (eq_low != NULL) {
+        for (i = 0; i < 4; i++) s_eq_low[i] = eq_low[i];
+    }
+    if (eq_mid != NULL) {
+        for (i = 0; i < 4; i++) s_eq_mid[i] = eq_mid[i];
+    }
+    if (eq_high != NULL) {
+        for (i = 0; i < 4; i++) s_eq_high[i] = eq_high[i];
+    }
+    if (denoise != NULL) {
+        for (i = 0; i < 4; i++) s_denoise[i] = denoise[i];
     }
     PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
 }
 
+void bs300_print_settings(void)
+{
+    PRINTF("[SETTINGS] ========================================\r\n");
+    PRINTF("[SETTINGS] cur_prog=%u\r\n", s_cur_prog);
+    PRINTF("[SETTINGS] volume  = [%u,%u,%u,%u]\r\n",
+           s_volumes[0], s_volumes[1], s_volumes[2], s_volumes[3]);
+    PRINTF("[SETTINGS] eq_low  = [%d,%d,%d,%d]\r\n",
+           s_eq_low[0], s_eq_low[1], s_eq_low[2], s_eq_low[3]);
+    PRINTF("[SETTINGS] eq_mid  = [%d,%d,%d,%d]\r\n",
+           s_eq_mid[0], s_eq_mid[1], s_eq_mid[2], s_eq_mid[3]);
+    PRINTF("[SETTINGS] eq_high = [%d,%d,%d,%d]\r\n",
+           s_eq_high[0], s_eq_high[1], s_eq_high[2], s_eq_high[3]);
+    PRINTF("[SETTINGS] denoise = [%u,%u,%u,%u]\r\n",
+           s_denoise[0], s_denoise[1], s_denoise[2], s_denoise[3]);
+}
+
+static void save_settings(void);
+
+/* Reset user-adjustable params (volume=9, EQ=0) for a program.
+ * Called when base calibration is modified (SetGain). */
+void bs300_reset_user_params(uint8_t prog_idx)
+{
+    if (prog_idx >= 4) return;
+
+    s_volumes[prog_idx] = 9;
+    s_eq_low[prog_idx]  = 0;
+    s_eq_mid[prog_idx]  = 0;
+    s_eq_high[prog_idx] = 0;
+    s_denoise[prog_idx] = 0;
+
+    if (prog_idx == s_cur_prog) {
+        s_dsp_state.modules.volume_level = 9;
+        s_dsp_state.modules.eq_low  = 0;
+        s_dsp_state.modules.eq_mid  = 0;
+        s_dsp_state.modules.eq_high = 0;
+    }
+
+    save_settings();
+}
+
 static void save_settings(void)
 {
-    bs300_settings_save(s_cur_prog, s_volumes);
+    bs300_settings_save(s_cur_prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
+                        s_denoise);
 }
 
 /* Public wrapper — call on BLE disconnect or any safe idle moment. */
@@ -299,6 +364,9 @@ void bs300_cache_boot_state(void)
     bs300_storage_load_program(s_cur_prog, bs300_work_buf);
     bs300_flash_to_struct(bs300_work_buf, &s_dsp_state);
     s_dsp_state.modules.volume_level = s_volumes[s_cur_prog];
+    s_dsp_state.modules.eq_low  = s_eq_low[s_cur_prog];
+    s_dsp_state.modules.eq_mid  = s_eq_mid[s_cur_prog];
+    s_dsp_state.modules.eq_high = s_eq_high[s_cur_prog];
 
     PRINTF("[BS300] boot cache: prog=%d vol=%d input=%d\r\n",
            s_cur_prog, s_dsp_state.modules.volume_level,
@@ -1503,6 +1571,7 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 {
     if (new_prog_idx >= 4) return -1;
     if (s_cur_prog == new_prog_idx) return 0;
+    bs300_print_settings();
 
     /* Busy → abort current session and queue the new switch.
      * Must NOT call bs300_sync_session_init here because it would
@@ -1612,6 +1681,7 @@ static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
 {
     if (level > 9) return -1;
+    bs300_print_settings();
 
     /* Update in-memory state. Flash persist deferred to BLE disconnect. */
     s_dsp_state.modules.volume_level = level;
@@ -1628,6 +1698,25 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
                (level == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
 }
 
+/* Same as bs300_set_volume_async but without prompt tone — for app-initiated
+ * volume changes where the app already provides its own feedback. */
+int bs300_set_volume_notone_async(uint8_t level, void (*on_done)(void))
+{
+    if (level > 9) return -1;
+    bs300_print_settings();
+
+    s_dsp_state.modules.volume_level = level;
+    s_volumes[s_cur_prog] = level;
+
+    if (bs300_sync_is_busy()) {
+        s_pending_volume = (int8_t)level;
+        s_pending_volume_cb = on_done;
+        return 0;
+    }
+
+    return reencode_bin_gain_async_core(on_done, 0);
+}
+
 void bs300_async_done_callback(void)
 {
     /* No pending queue — abort mechanism eliminates the need */
@@ -1637,10 +1726,15 @@ int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
                         void (*on_done)(void))
 {
     if (bs300_sync_is_busy()) return -1;
+    bs300_print_settings();
 
     s_dsp_state.modules.eq_low  = low;
     s_dsp_state.modules.eq_mid  = mid;
     s_dsp_state.modules.eq_high = high;
+    s_eq_low[s_cur_prog]  = low;
+    s_eq_mid[s_cur_prog]  = mid;
+    s_eq_high[s_cur_prog] = high;
+    save_settings();
     return reencode_bin_gain_async_core(on_done, 0);  /* no tone for EQ */
 }
 
@@ -1678,6 +1772,9 @@ int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
 
     if (load_struct(new_prog_idx, &s_target) < 0) return -1;
     s_target.modules.volume_level = s_volumes[new_prog_idx];
+    s_target.modules.eq_low  = s_eq_low[new_prog_idx];
+    s_target.modules.eq_mid  = s_eq_mid[new_prog_idx];
+    s_target.modules.eq_high = s_eq_high[new_prog_idx];
 
     s_cur_prog = new_prog_idx;
     save_settings();

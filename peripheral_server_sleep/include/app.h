@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-/* #define DEBUG_UART_ENABLE */
+#define DEBUG_UART_ENABLE
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.

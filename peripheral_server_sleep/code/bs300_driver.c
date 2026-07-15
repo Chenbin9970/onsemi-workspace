@@ -68,21 +68,29 @@ bool bs300_driver_init(void)
     }
     PRINTF("[BS300] startup OK\r\n");
 
-    /* Step 3: Load programs from Main Flash cache or read from BS300 Flash */
-    if (bs300_storage_is_valid(0)) {
-        PRINTF("[BS300] cache valid, skip flash read\r\n");
-    } else {
-        PRINTF("[BS300] cache empty, reading from chip...\r\n");
-        if (!read_and_save_all()) return false;
-    }
+    /* Step 3: Always read all 4 programs from BS300 Flash */
+    PRINTF("[BS300] reading all programs from chip...\r\n");
+    bs300_settings_invalidate();
+    if (!read_and_save_all()) return false;
 
-    /* Step 4: Restore settings (active program + volume) */
+    /* Step 4: Restore settings (active program + volume / EQ / denoise) */
     {
         uint8_t saved_prog = 0;
-        uint8_t saved_vol[4] = {0};
-        if (bs300_settings_load(&saved_prog, saved_vol)) {
-            bs300_restore_settings(saved_prog, saved_vol);
+        uint8_t saved_vol[4] = {9, 9, 9, 9};
+        int8_t  saved_eq_low[4] = {0};
+        int8_t  saved_eq_mid[4] = {0};
+        int8_t  saved_eq_high[4] = {0};
+        uint8_t saved_denoise[4] = {0};
+        if (bs300_settings_load(&saved_prog, saved_vol,
+                                 saved_eq_low, saved_eq_mid, saved_eq_high,
+                                 saved_denoise)) {
+            PRINTF("[BS300] settings loaded from flash\r\n");
+        } else {
+            PRINTF("[BS300] settings invalid, using defaults\r\n");
         }
+        bs300_restore_settings(saved_prog, saved_vol,
+                               saved_eq_low, saved_eq_mid, saved_eq_high,
+                               saved_denoise);
     }
 
     /* Step 5: Boot cache — load active program into s_dsp_state + calibration */
@@ -128,8 +136,16 @@ bool bs300_driver_refresh(void)
     {
         uint8_t saved_prog = 0;
         uint8_t saved_vol[4] = {0};
-        if (bs300_settings_load(&saved_prog, saved_vol)) {
-            bs300_restore_settings(saved_prog, saved_vol);
+        int8_t  saved_eq_low[4] = {0};
+        int8_t  saved_eq_mid[4] = {0};
+        int8_t  saved_eq_high[4] = {0};
+        uint8_t saved_denoise[4] = {0};
+        if (bs300_settings_load(&saved_prog, saved_vol,
+                                 saved_eq_low, saved_eq_mid, saved_eq_high,
+                                 saved_denoise)) {
+            bs300_restore_settings(saved_prog, saved_vol,
+                                   saved_eq_low, saved_eq_mid, saved_eq_high,
+                                   saved_denoise);
         }
     }
 

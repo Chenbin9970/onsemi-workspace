@@ -24,12 +24,15 @@ void bs300_storage_invalidate(uint8_t idx);
 
 /* ---- Settings (active program + volume per program) ---- */
 
-/* Save current active program and volume levels to Settings sector. */
-bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume);
+/* Save active program, volume, EQ, and denoise levels to Settings sector. */
+bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
+                          const int8_t *eq_low, const int8_t *eq_mid,
+                          const int8_t *eq_high, const uint8_t *denoise);
 
-/* Load active program and volume levels from Settings sector.
- * Returns false if no valid settings found (first boot). */
-bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume);
+/* Load active program, volume, EQ, and denoise levels from Settings sector. */
+bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
+                          int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
+                          uint8_t *denoise);
 
 /* Invalidate settings sector. */
 void bs300_settings_invalidate(void);

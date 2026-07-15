@@ -117,6 +117,7 @@ int  bs300_param_modify_async(uint8_t prog_idx, uint16_t offset,
 int bs300_set_volume(uint8_t level);
 int bs300_set_eq(int8_t low, int8_t mid, int8_t high);
 int bs300_set_volume_async(uint8_t level, void (*on_done)(void));
+int bs300_set_volume_notone_async(uint8_t level, void (*on_done)(void));
 void bs300_async_done_callback(void);
 int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
                         void (*on_done)(void));
@@ -160,6 +161,8 @@ void bs300_play_prompt_tone(uint8_t program, uint8_t volume);
 uint8_t bs300_get_active_prog(void);
 uint8_t bs300_get_module_volume(uint8_t prog_idx);
 void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level);
+void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level);
+void bs300_print_settings(void);
 void bs300_persist_active_prog(uint8_t prog);
 bool    bs300_is_boot_cached(void);
 const bs300_calib_t *bs300_get_cached_calib(void);
@@ -168,7 +171,10 @@ const bs300_calib_t *bs300_get_cached_calib(void);
  *  Boot-time init — load active program into s_dsp_state
  * ================================================================ */
 void bs300_cache_boot_state(void);
-void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume);
+void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
+                            const int8_t *eq_low, const int8_t *eq_mid,
+                            const int8_t *eq_high, const uint8_t *denoise);
+void bs300_reset_user_params(uint8_t prog_idx);
 
 /* Direct access to current DSP state (490B .bss) */
 bs300_prog_struct_t *bs300_get_dsp_state(void);

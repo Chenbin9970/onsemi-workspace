@@ -38,16 +38,19 @@ static const uint32_t PROG_BASE[4] = {
 static const uint8_t PROG_MAGIC[4] = { 'B', 'S', 'P', 'G' };
 #define PROG_VERSION  1
 
-/* ---- Settings layout (16 bytes in 2KB sector) ---- */
+/* ---- Settings layout (29 bytes in 2KB sector) ---- */
 #define SETTINGS_ACTIVE_PROG   0
 #define SETTINGS_VOLUME        1   /* volume[0..3] at offset 1..4 */
-#define SETTINGS_RESERVED      5
-#define SETTINGS_MAGIC         8
-#define SETTINGS_CRC           12
-#define SETTINGS_VERSION       14
+#define SETTINGS_EQ_LOW        5   /* eq_low[0..3] at offset 5..8 */
+#define SETTINGS_EQ_MID        9   /* eq_mid[0..3] at offset 9..12 */
+#define SETTINGS_EQ_HIGH       13  /* eq_high[0..3] at offset 13..16 */
+#define SETTINGS_DENOISE       17  /* denoise[0..3] at offset 17..20 */
+#define SETTINGS_MAGIC         21
+#define SETTINGS_CRC           25
+#define SETTINGS_VERSION       27
 
 static const uint8_t SETTINGS_MAGIC_VAL[4] = { 'B', 'S', 'S', 'T' };
-#define SETTINGS_VER  1
+#define SETTINGS_VER  3  /* bumped: added denoise per-program storage */
 
 /* ---- Main Flash unlock (HIGH region: 0x00150000+) ---- */
 static void main_flash_unlock(void)
@@ -103,11 +106,13 @@ bool bs300_storage_write_program(uint8_t idx, const uint8_t *data)
         hdr[7] = (uint8_t)(crc >> 8);
     }
 
+    Sys_Watchdog_Refresh();
     if (Flash_EraseSector(base) != FLASH_ERR_NONE) {
         PRINTF("[BS300] program %u erase FAIL\r\n", idx);
         return false;
     }
 
+    Sys_Watchdog_Refresh();
     if (Flash_WriteBuffer(base, BS300_TOTAL_DATA / 4, buf) != FLASH_ERR_NONE) {
         PRINTF("[BS300] program %u write FAIL\r\n", idx);
         return false;
@@ -117,6 +122,7 @@ bool bs300_storage_write_program(uint8_t idx, const uint8_t *data)
     {
         uint32_t thdr[2];
         memcpy(thdr, hdr, 8);
+        Sys_Watchdog_Refresh();
         if (Flash_WriteBuffer(base + BS300_TOTAL_DATA, 2, thdr) != FLASH_ERR_NONE) {
             PRINTF("[BS300] program %u hdr write FAIL\r\n", idx);
             return false;
@@ -171,9 +177,14 @@ void bs300_storage_invalidate(uint8_t idx)
 
 static void settings_build_payload(uint8_t active_prog,
                                    const uint8_t *volume,
+                                   const int8_t *eq_low,
+                                   const int8_t *eq_mid,
+                                   const int8_t *eq_high,
+                                   const uint8_t *denoise,
                                    uint8_t *out)
 {
     uint16_t crc;
+    uint8_t i;
     memset(out, 0xFF, BS300_TOTAL_DATA);
 
     out[SETTINGS_ACTIVE_PROG] = active_prog;
@@ -182,6 +193,22 @@ static void settings_build_payload(uint8_t active_prog,
         out[SETTINGS_VOLUME + 1] = volume[1];
         out[SETTINGS_VOLUME + 2] = volume[2];
         out[SETTINGS_VOLUME + 3] = volume[3];
+    }
+    if (eq_low != NULL) {
+        for (i = 0; i < 4; i++)
+            out[SETTINGS_EQ_LOW + i] = (uint8_t)eq_low[i];
+    }
+    if (eq_mid != NULL) {
+        for (i = 0; i < 4; i++)
+            out[SETTINGS_EQ_MID + i] = (uint8_t)eq_mid[i];
+    }
+    if (eq_high != NULL) {
+        for (i = 0; i < 4; i++)
+            out[SETTINGS_EQ_HIGH + i] = (uint8_t)eq_high[i];
+    }
+    if (denoise != NULL) {
+        for (i = 0; i < 4; i++)
+            out[SETTINGS_DENOISE + i] = denoise[i];
     }
 
     memcpy(out + SETTINGS_MAGIC, SETTINGS_MAGIC_VAL, 4);
@@ -193,16 +220,17 @@ static void settings_build_payload(uint8_t active_prog,
     out[SETTINGS_CRC + 1] = (uint8_t)(crc >> 8);
 }
 
-bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume)
+bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
+                          const int8_t *eq_low, const int8_t *eq_mid,
+                          const int8_t *eq_high, const uint8_t *denoise)
 {
-    /* Reuse global work buffer (word-aligned) — avoids 960B stack alloc
-     * that overflows the 1024B main stack during deferred switch. */
     extern uint8_t bs300_work_buf[BS300_TOTAL_DATA];
     uint32_t *wbuf = (uint32_t *)(void *)bs300_work_buf;
     uint8_t *buf = bs300_work_buf;
 
     main_flash_unlock();
-    settings_build_payload(active_prog, volume, buf);
+    settings_build_payload(active_prog, volume, eq_low, eq_mid, eq_high,
+                           denoise, buf);
 
     /* Refresh watchdog — ROM flash-erase may not service it */
     Sys_Watchdog_Refresh();
@@ -225,15 +253,24 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume)
     return true;
 }
 
-bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume)
+bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
+                          int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
+                          uint8_t *denoise)
 {
     const uint8_t *base = (const uint8_t *)SETTINGS_BASE;
     uint8_t magic[4];
     uint16_t stored_crc, calc_crc;
+    uint8_t ver, i;
 
     memcpy(magic, base + SETTINGS_MAGIC, 4);
     if (memcmp(magic, SETTINGS_MAGIC_VAL, 4) != 0) {
         PRINTF("[BS300] settings not found\r\n");
+        return false;
+    }
+
+    ver = base[SETTINGS_VERSION];
+    if (ver > SETTINGS_VER) {
+        PRINTF("[BS300] settings ver=%u too new\r\n", ver);
         return false;
     }
 
@@ -253,6 +290,30 @@ bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume)
         volume[1] = base[SETTINGS_VOLUME + 1];
         volume[2] = base[SETTINGS_VOLUME + 2];
         volume[3] = base[SETTINGS_VOLUME + 3];
+    }
+
+    if (ver >= 2) {
+        if (eq_low != NULL)
+            for (i = 0; i < 4; i++) eq_low[i] = (int8_t)base[SETTINGS_EQ_LOW + i];
+        if (eq_mid != NULL)
+            for (i = 0; i < 4; i++) eq_mid[i] = (int8_t)base[SETTINGS_EQ_MID + i];
+        if (eq_high != NULL)
+            for (i = 0; i < 4; i++) eq_high[i] = (int8_t)base[SETTINGS_EQ_HIGH + i];
+    } else {
+        if (eq_low != NULL)
+            for (i = 0; i < 4; i++) eq_low[i] = 0;
+        if (eq_mid != NULL)
+            for (i = 0; i < 4; i++) eq_mid[i] = 0;
+        if (eq_high != NULL)
+            for (i = 0; i < 4; i++) eq_high[i] = 0;
+    }
+
+    if (ver >= 3) {
+        if (denoise != NULL)
+            for (i = 0; i < 4; i++) denoise[i] = base[SETTINGS_DENOISE + i];
+    } else {
+        if (denoise != NULL)
+            for (i = 0; i < 4; i++) denoise[i] = 0;
     }
 
     PRINTF("[BS300] settings loaded prog=%u vol=[%u,%u,%u,%u]\r\n",

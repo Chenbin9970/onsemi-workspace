@@ -53,6 +53,52 @@ static void br_skip(bit_reader_t *br, uint8_t n_bits)
 }
 
 /* ================================================================
+ *  Bit-level writing helpers for Flash encode
+ * ================================================================ */
+
+typedef struct {
+    uint8_t *data;
+    uint16_t byte_pos;
+    uint8_t  bit_pos;
+} bit_writer_t;
+
+static void bw_init(bit_writer_t *bw, uint8_t *data)
+{
+    bw->data = data;
+    bw->byte_pos = 0;
+    bw->bit_pos = 0;
+}
+
+static void bw_write(bit_writer_t *bw, uint32_t value, uint8_t n_bits)
+{
+    uint8_t i;
+    for (i = 0; i < n_bits; i++) {
+        if (value & 1)
+            bw->data[bw->byte_pos] |= (uint8_t)(1 << bw->bit_pos);
+        else
+            bw->data[bw->byte_pos] &= (uint8_t)(~(1 << bw->bit_pos));
+        value >>= 1;
+        bw->bit_pos++;
+        if (bw->bit_pos >= 8) {
+            bw->bit_pos = 0;
+            bw->byte_pos++;
+        }
+    }
+}
+
+static void bw_skip(bit_writer_t *bw, uint8_t n_bits)
+{
+    uint16_t total = (uint16_t)bw->byte_pos * 8 + bw->bit_pos + n_bits;
+    bw->byte_pos = total / 8;
+    bw->bit_pos = (uint8_t)(total % 8);
+}
+
+static uint16_t bw_total_bits(const bit_writer_t *bw)
+{
+    return (uint16_t)bw->byte_pos * 8 + bw->bit_pos;
+}
+
+/* ================================================================
  *  Module type lookup
  * ================================================================ */
 
@@ -162,6 +208,81 @@ static int decode_wdrc_flash(const uint8_t *data, bs300_wdrc_t *wdrc)
 }
 
 /* ================================================================
+ *  WDRC Flash encode — reverse of decode_wdrc_flash
+ * ================================================================ */
+
+static void encode_wdrc_channel_flash(bit_writer_t *bw, uint8_t ch_idx,
+                                      const bs300_wdrc_t *wdrc)
+{
+    bw_write(bw, wdrc->freq_idx[ch_idx], 6);
+    bw_write(bw, wdrc->epd_at_idx[ch_idx], 7);
+    bw_write(bw, wdrc->epd_rt_idx[ch_idx], 7);
+    bw_write(bw, wdrc->epd_r_idx[ch_idx], 7);
+    bw_skip(bw, 2);
+    bw_write(bw, (uint32_t)(uint8_t)wdrc->kp1_th_db[ch_idx], 7);
+    bw_write(bw, (uint32_t)(uint8_t)wdrc->kp2_th_db[ch_idx], 7);
+    bw_skip(bw, 2);
+    bw_write(bw, wdrc->kp1_at_idx[ch_idx], 7);
+    bw_write(bw, wdrc->kp2_at_idx[ch_idx], 7);
+    bw_skip(bw, 2);
+    bw_write(bw, wdrc->kp1_rt_idx[ch_idx], 7);
+    bw_write(bw, wdrc->kp2_rt_idx[ch_idx], 7);
+    bw_skip(bw, 2);
+    bw_write(bw, wdrc->kp1_r_idx[ch_idx], 7);
+    bw_write(bw, wdrc->kp2_r_idx[ch_idx], 7);
+    /* lmt_th: raw = value_in_MT - 30 */
+    {
+        int32_t raw = (int32_t)wdrc->lmt_th_db[ch_idx] - 30;
+        if (raw < 0) raw = 0;
+        if (raw > 127) raw = 127;
+        bw_write(bw, (uint32_t)raw, 7);
+    }
+    bw_write(bw, wdrc->lmt_at_idx[ch_idx], 7);
+    bw_write(bw, wdrc->lmt_rt_idx[ch_idx], 7);
+    bw_write(bw, wdrc->lmt_r_idx[ch_idx], 7);
+}
+
+static int encode_wdrc_flash(uint8_t *data, uint16_t max_bytes,
+                              const bs300_wdrc_t *wdrc)
+{
+    bit_writer_t bw;
+    uint8_t i;
+
+    bw_init(&bw, data);
+
+    /* B0: [fixed 1:1] [limiter:1] [kp_mode:1] [zeros:5] */
+    bw_write(&bw, 1, 1);
+    bw_write(&bw, wdrc->limiter, 1);
+    bw_write(&bw, (wdrc->kp_mode == 1) ? 0 : 1, 1);
+    bw_skip(&bw, 5);
+
+    /* B1: [marker 1:1], then 32 × bin_gain (raw = value_in_MT + 27) */
+    bw_write(&bw, 1, 1);
+    for (i = 0; i < 32; i++) {
+        int32_t raw = (int32_t)wdrc->bin_gain[i] + 27;
+        if (raw < 0) raw = 0;
+        if (raw > 127) raw = 127;
+        bw_write(&bw, (uint32_t)raw, 7);
+    }
+
+    /* num_ch:5, reserved:1 */
+    bw_write(&bw, wdrc->total_channels, 5);
+    bw_skip(&bw, 1);
+
+    /* Per-channel data */
+    for (i = 0; i < wdrc->total_channels; i++) {
+        encode_wdrc_channel_flash(&bw, i, wdrc);
+    }
+
+    {
+        uint16_t bits = bw_total_bits(&bw);
+        uint16_t bytes = (bits + 7) / 8;
+        if (bytes > max_bytes) return -1;
+        return (int)bytes;
+    }
+}
+
+/* ================================================================
  *  Volume/Beep Flash decode
  * ================================================================ */
 
@@ -258,6 +379,57 @@ static int decode_enr_flash(const uint8_t *data, bs300_enr_t *enr)
     }
 
     return 0;
+}
+
+/* Reverse of decode_enr_flash — see field offset table above. */
+static int encode_enr_flash(uint8_t *data, uint16_t max_bytes,
+                             const bs300_enr_t *enr)
+{
+    bit_writer_t bw;
+    uint8_t num_ch;
+    uint8_t i;
+
+    bw_init(&bw, data);
+
+    num_ch = enr->enable_num_ch & 0x0F;
+    if (num_ch == 0) num_ch = 16;
+    if (num_ch > 16) num_ch = 16;
+
+    /* Global smoothing factors */
+    bw_write(&bw, enr->nfsf, 4);
+    bw_write(&bw, enr->nhsf, 4);
+    bw_write(&bw, enr->nnsf, 4);
+    bw_write(&bw, num_ch & 0x0F, 4);
+    bw_write(&bw, (num_ch >> 4) & 0x03, 2);
+
+    /* Per-channel data */
+    for (i = 0; i < num_ch && i < 16; i++) {
+        int32_t raw;
+
+        bw_write(&bw, enr->freq_idx[i], 6);
+        bw_write(&bw, enr->max_att_db[i], 5);       /* raw = value_in_MT */
+        bw_write(&bw, enr->snr_th_db[i], 5);         /* raw = value_in_MT */
+
+        raw = (int32_t)enr->noise_th_db[i] - 10;     /* raw = value_in_MT - 10 */
+        if (raw < 0) raw = 0; if (raw > 63) raw = 63;
+        bw_write(&bw, (uint32_t)raw, 6);
+
+        raw = (int32_t)enr->upper_noise_th_db[i] - 40; /* raw = value_in_MT - 40 */
+        if (raw < 0) raw = 0; if (raw > 63) raw = 63;
+        bw_write(&bw, (uint32_t)raw, 6);
+
+        bw_write(&bw, enr->etr_x100[i], 7);          /* raw = value_in_MT */
+        bw_write(&bw, enr->nrr_x10[i], 4);           /* raw = value_in_MT */
+    }
+
+    bw_write(&bw, enr->snasf, 4);
+
+    {
+        uint16_t bits = bw_total_bits(&bw);
+        uint16_t bytes = (bits + 7) / 8;
+        if (bytes > max_bytes) return -1;
+        return (int)bytes;
+    }
 }
 
 /* ================================================================
@@ -372,6 +544,11 @@ int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out)
                 cmd_data_to_input_selection(cmd_data);
             if (out->modules.input_selection == 4) {
                 out->modules.mm_plus_enable = 1;
+                if (length_bytes >= 3) {
+                    int16_t raw = (int16_t)flash_buf[pos];
+                    out->modules.mix_ratio = (int8_t)(raw - 50);
+                    out->modules.mm_type = flash_buf[pos + 1];
+                }
             } else if (out->modules.input_selection == 5) {
                 const uint8_t *ddm2 = flash_buf + pos;
                 uint8_t byte2 = ddm2[2];
@@ -414,6 +591,82 @@ int bs300_flash_to_struct(const uint8_t *flash_buf, bs300_prog_struct_t *out)
 
     PRINTF("[BS300] flash_to_struct ok, modules=%d, channels=%d\r\n",
                 module_count, out->wdrc.total_channels);
+    return 0;
+}
+
+/* ================================================================
+ *  struct_to_flash — reverse: modify 480B flash in-place from struct
+ * ================================================================ */
+
+int bs300_struct_to_flash(const bs300_prog_struct_t *prog, uint8_t *flash_buf)
+{
+    uint8_t module_count;
+    uint8_t i;
+    uint16_t dir_end;
+    uint16_t pos;
+    int new_len;
+
+    uint8_t found_wdrc = 0;
+    uint8_t found_enr  = 0;
+
+    if (prog == NULL || flash_buf == NULL) return -1;
+    if (flash_buf[1] != 0x80 || flash_buf[2] != 0x00) return -1;
+
+    module_count = flash_buf[3] - 1;
+    if (module_count == 0 || module_count > 16) return -1;
+
+    dir_end = 4U + (uint16_t)module_count * 3U;
+    pos = dir_end + 2;  /* skip "FB 00" marker */
+
+    for (i = 0; i < module_count; i++) {
+        uint8_t cmd_data  = flash_buf[4 + i * 3];
+        uint8_t length_w  = flash_buf[4 + i * 3 + 2];
+        uint16_t length_b = (uint16_t)length_w * 3;
+
+        if (cmd_data == 0x12) {
+            /* Re-encode WDRC */
+            uint8_t mod_buf[320];
+            memset(mod_buf, 0, sizeof(mod_buf));
+            new_len = encode_wdrc_flash(mod_buf, length_b, &prog->wdrc);
+            if (new_len < 0) return -1;
+            if ((uint16_t)new_len > length_b) {
+                PRINTF("[BS300] struct_to_flash: WDRC overflow %d > %u\r\n",
+                       new_len, length_b);
+                return -1;
+            }
+            memcpy(flash_buf + pos, mod_buf, (uint16_t)new_len);
+            if ((uint16_t)new_len < length_b)
+                memset(flash_buf + pos + new_len, 0, length_b - (uint16_t)new_len);
+            found_wdrc = 1;
+        }
+        else if (cmd_data == 0x1C) {
+            /* Re-encode ENR */
+            uint8_t mod_buf[200];
+            memset(mod_buf, 0, sizeof(mod_buf));
+            new_len = encode_enr_flash(mod_buf, length_b, &prog->enr);
+            if (new_len < 0) return -1;
+            if ((uint16_t)new_len > length_b) {
+                PRINTF("[BS300] struct_to_flash: ENR overflow %d > %u\r\n",
+                       new_len, length_b);
+                return -1;
+            }
+            memcpy(flash_buf + pos, mod_buf, (uint16_t)new_len);
+            if ((uint16_t)new_len < length_b)
+                memset(flash_buf + pos + new_len, 0, length_b - (uint16_t)new_len);
+            found_enr = 1;
+        }
+        pos += length_b;
+    }
+
+    if (!found_wdrc) {
+        PRINTF("[BS300] struct_to_flash: WDRC module not found\r\n");
+        return -1;
+    }
+    /* ENR is optional — some programs may not have it */
+    if (!found_enr) {
+        PRINTF("[BS300] struct_to_flash: ENR module not found (skipped)\r\n");
+    }
+
     return 0;
 }
 
@@ -883,13 +1136,12 @@ int bs300_encode_wdrc_bin_gain(const bs300_wdrc_t *wdrc,
     if (wdrc == NULL || calib == NULL || mod == NULL || data == NULL) return -1;
     memset(data, 0, 48);
     igd = get_input_gain_diff_tenth_db(input_type, calib);
-    vol_gain = ((int32_t)mod->volume_level - 9) * 3;  /* 0→-27dB, 9→0dB */
+    vol_gain = ((int32_t)mod->volume_level - 9) * 3;
 
-    /* Formula: int(baseline + vol*5 + eq - (out_cal - mic1_cal) + igd/10.0) */
     for (i = 0; i < 32; i++) {
         int32_t gain_cal = (int32_t)calib->output_band[i] - (int32_t)calib->mic1_band[i];
-        int32_t baseline = (int32_t)wdrc->bin_gain[i] + vol_gain
-                      + (int32_t)get_eq_gain_for_band(mod, i);
+        int32_t eq_gain = (int32_t)get_eq_gain_for_band(mod, i);
+        int32_t baseline = (int32_t)wdrc->bin_gain[i] + vol_gain + eq_gain;
         int32_t numer_tenth = baseline * 10 - gain_cal * 10;
         values[i] = (uint8_t)clamp_s32(apply_igd_trunc(numer_tenth, -igd), -128, 127);
     }
@@ -1544,16 +1796,24 @@ int bs300_encode_mm_plus(const bs300_modules_t *mod,
 
     if (!mod->mm_plus_enable) return 0;
 
-    /* Data = 524288 * 10^((MixRatio - inputGainDiff_dB) / 20)
-     * = 524288 * 10^(x/200) where x = mix_ratio*10 - igd_tenth_db.
-     * Use lookup table: index = (mix_ratio * 10 - igd_tenth_db) + 500. */
     {
-        int32_t igd = get_input_gain_diff_tenth_db(input_type, calib);
-        int32_t x = (int32_t)mod->mix_ratio * 10 - igd;
-        int32_t idx = x + BS300_MM_PLUS_TABLE_OFFSET;
-        if (idx < 0) idx = 0;
-        if (idx >= BS300_MM_PLUS_TABLE_SIZE) idx = BS300_MM_PLUS_TABLE_SIZE - 1;
-        set_word(data, 1, bs300_mm_plus_frac24_table[idx]);
+        int32_t igd;
+
+        /* mm_type: 0x00=Telecoil, 0x01=DAI (per handbook §MM Plus) */
+        if (mod->mm_type == 0x00)
+            igd = (int32_t)calib->telecoil_gain_diff;
+        else if (mod->mm_type == 0x01)
+            igd = (int32_t)calib->dai_gain_diff;
+        else
+            igd = 0;
+
+        {
+            int32_t x = (int32_t)mod->mix_ratio * 10 - igd;
+            int32_t idx = x + BS300_MM_PLUS_TABLE_OFFSET;
+            if (idx < 0) idx = 0;
+            if (idx >= BS300_MM_PLUS_TABLE_SIZE) idx = BS300_MM_PLUS_TABLE_SIZE - 1;
+            set_word(data, 1, bs300_mm_plus_frac24_table[idx]);
+        }
     }
     return 0;
 }
