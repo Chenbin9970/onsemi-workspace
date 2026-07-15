@@ -296,30 +296,21 @@ static void cmd_getcurrentscene(void)
     bs300_prog_struct_t *dsp = bs300_get_dsp_state();
     uint8_t prog = bs300_get_active_prog();
 
-    /* Convert EQ from dB [-12,12] to app scale [0,100]:
-     *   50 = 0 dB (flat),  each dB = 4 steps  */
-    int16_t eq_low  = 50 + (int16_t)dsp->modules.eq_low * 4;
-    int16_t eq_mid  = 50 + (int16_t)dsp->modules.eq_mid * 4;
-    int16_t eq_high = 50 + (int16_t)dsp->modules.eq_high * 4;
-    if (eq_low  < 0) eq_low = 0;   if (eq_low  > 100) eq_low = 100;
-    if (eq_mid  < 0) eq_mid = 0;   if (eq_mid  > 100) eq_mid = 100;
-    if (eq_high < 0) eq_high = 0;  if (eq_high > 100) eq_high = 100;
-
     resp_data[0]  = prog;                          /* Left_Scene_ID */
     resp_data[1]  = prog;                          /* Right_Scene_ID (same for single device) */
     resp_data[2]  = dsp->modules.volume_level;     /* Volume_Left */
     resp_data[3]  = dsp->modules.volume_level;     /* Volume_Right (same) */
-    resp_data[4]  = dsp->modules.wnr_preset;       /* Denoise 0-4 */
-    resp_data[5]  = (uint8_t)eq_low;               /* Left_Equalizer_Low */
-    resp_data[6]  = (uint8_t)eq_mid;               /* Left_Equalizer_Middle */
-    resp_data[7]  = (uint8_t)eq_high;              /* Left_Equalizer_High */
-    resp_data[8]  = (uint8_t)eq_low;               /* Right_Equalizer_Low (same) */
-    resp_data[9]  = (uint8_t)eq_mid;               /* Right_Equalizer_Middle (same) */
-    resp_data[10] = (uint8_t)eq_high;              /* Right_Equalizer_High (same) */
+    resp_data[4]  = bs300_get_prog_denoise(prog);  /* Denoise 0-4 */
+    resp_data[5]  = (uint8_t)(int8_t)dsp->modules.eq_low;   /* Left_EQ_Low [-5,5] */
+    resp_data[6]  = (uint8_t)(int8_t)dsp->modules.eq_mid;   /* Left_EQ_Mid [-5,5] */
+    resp_data[7]  = (uint8_t)(int8_t)dsp->modules.eq_high;  /* Left_EQ_High [-5,5] */
+    resp_data[8]  = (uint8_t)(int8_t)dsp->modules.eq_low;   /* Right_EQ_Low (same) */
+    resp_data[9]  = (uint8_t)(int8_t)dsp->modules.eq_mid;   /* Right_EQ_Mid (same) */
+    resp_data[10] = (uint8_t)(int8_t)dsp->modules.eq_high;  /* Right_EQ_High (same) */
     resp_data[11] = 0;                              /* reserved/padding */
 
     PRINTF("[REMPRO] GetCurrentScene: prog=%u vol=%u denoise=%u eq=%d/%d/%d\r\n",
-           prog, dsp->modules.volume_level, dsp->modules.wnr_preset,
+           prog, dsp->modules.volume_level, bs300_get_prog_denoise(prog),
            dsp->modules.eq_low, dsp->modules.eq_mid, dsp->modules.eq_high);
     hdlc_response(CMD_GETCURRENTSCENE, 0, resp_data, 12);
 }
@@ -362,15 +353,10 @@ static void cmd_setequalizer(const uint8_t *data, uint8_t len)
 
     uint8_t dev_type = data[0];
     uint8_t eq_type  = data[1];
-    uint8_t value    = data[2];
+    int8_t  dB       = (int8_t)data[2];  /* raw step [-5,5] */
 
-    /* App scale [0,100] → dB [-12,12]: 50 = 0dB, each 4 steps = 1dB */
-    int16_t diff = (int16_t)value - 50;
-    int8_t dB;
-    if (diff >= 0) dB = (int8_t)((diff + 2) / 4);
-    else           dB = (int8_t)((diff - 2) / 4);
-    if (dB > 12)  dB = 12;
-    if (dB < -12) dB = -12;
+    if (dB > 5)   dB = 5;
+    if (dB < -5)  dB = -5;
 
     bs300_prog_struct_t *dsp = bs300_get_dsp_state();
     int8_t low  = dsp->modules.eq_low;
@@ -384,8 +370,8 @@ static void cmd_setequalizer(const uint8_t *data, uint8_t len)
     default: break;
     }
 
-    PRINTF("[REMPRO] SetEqualizer: dev=%u type=%u val=%u dB=%d → L=%d M=%d H=%d\r\n",
-           dev_type, eq_type, value, dB, low, mid, high);
+    PRINTF("[REMPRO] SetEqualizer: dev=%u type=%u dB=%d → L=%d M=%d H=%d\r\n",
+           dev_type, eq_type, dB, low, mid, high);
     bs300_set_eq_async(low, mid, high, NULL);
 
     uint8_t status = 1;

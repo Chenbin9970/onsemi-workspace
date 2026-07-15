@@ -262,6 +262,11 @@ void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level)
         s_denoise[prog_idx] = level;
 }
 
+uint8_t bs300_get_prog_denoise(uint8_t prog_idx)
+{
+    return (prog_idx < 4) ? s_denoise[prog_idx] : 0;
+}
+
 void bs300_persist_active_prog(uint8_t prog)
 {
     bs300_settings_save(prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high, s_denoise);
@@ -1546,6 +1551,9 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     /* Load target into static s_target for diff + per-command apply */
     if (load_struct(new_prog_idx, &s_target) < 0) return -1;
     s_target.modules.volume_level = s_volumes[new_prog_idx];
+    s_target.modules.eq_low  = s_eq_low[new_prog_idx];
+    s_target.modules.eq_mid  = s_eq_mid[new_prog_idx];
+    s_target.modules.eq_high = s_eq_high[new_prog_idx];
 
     s_cur_prog = new_prog_idx;
 
@@ -1683,6 +1691,7 @@ int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
                         void (*on_done)(void))
 {
     if (bs300_sync_is_busy()) return -1;
+    if (low < -5 || low > 5 || mid < -5 || mid > 5 || high < -5 || high > 5) return -1;
     bs300_print_settings();
 
     s_dsp_state.modules.eq_low  = low;

@@ -159,6 +159,7 @@ uint8_t bs300_get_active_prog(void);
 uint8_t bs300_get_module_volume(uint8_t prog_idx);
 void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level);
 void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level);
+uint8_t bs300_get_prog_denoise(uint8_t prog_idx);
 void bs300_print_settings(void);
 void bs300_persist_active_prog(uint8_t prog);
 bool    bs300_is_boot_cached(void);

@@ -109,9 +109,9 @@ typedef struct {
 
     /* Runtime Volume/EQ (4 bytes) */
     uint8_t  volume_level;          /* 0-9, each step 3dB */
-    int8_t   eq_low;                /* low freq gain (<500Hz), [-12,12] dB */
-    int8_t   eq_mid;                /* mid freq gain (500-2000Hz), [-12,12] dB */
-    int8_t   eq_high;               /* high freq gain (>2000Hz), [-12,12] dB */
+    int8_t   eq_low;                /* low freq gain (<500Hz), [-5,5] step, 3dB/step */
+    int8_t   eq_mid;                /* mid freq gain (500-2000Hz), [-5,5] step, 3dB/step */
+    int8_t   eq_high;               /* high freq gain (>2000Hz), [-5,5] step, 3dB/step */
 
     /* Padding to 64 bytes */
     uint8_t  reserved[1];

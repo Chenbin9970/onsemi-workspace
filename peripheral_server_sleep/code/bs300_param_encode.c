@@ -1116,11 +1116,11 @@ static int8_t get_eq_gain_for_band(const bs300_modules_t *mod, uint8_t band)
     uint16_t hz;
 
     if (mod == NULL || band >= 32) return 0;
-    if (band == 0) return mod->eq_low;
+    if (band == 0) return mod->eq_low * 3;
     hz = freq_table[band];
-    if (hz < 500)       return mod->eq_low;
-    else if (hz <= 2000) return mod->eq_mid;
-    else                return mod->eq_high;
+    if (hz < 500)       return mod->eq_low * 3;
+    else if (hz <= 2000) return mod->eq_mid * 3;
+    else                return mod->eq_high * 3;
 }
 
 int bs300_encode_wdrc_bin_gain(const bs300_wdrc_t *wdrc,
@@ -1143,7 +1143,7 @@ int bs300_encode_wdrc_bin_gain(const bs300_wdrc_t *wdrc,
         int32_t eq_gain = (int32_t)get_eq_gain_for_band(mod, i);
         int32_t baseline = (int32_t)wdrc->bin_gain[i] + vol_gain + eq_gain;
         int32_t numer_tenth = baseline * 10 - gain_cal * 10;
-        values[i] = (uint8_t)clamp_s32(apply_igd_trunc(numer_tenth, -igd), -128, 127);
+        values[i] = (uint8_t)clamp_s32(apply_igd_trunc(numer_tenth, -igd), -27, 96);
     }
     pack_bytes(data, 0, values, 32);
     return 0;

@@ -752,3 +752,99 @@ if (wnr_changed || igd_changed) {
 唯一调用：`ble_std.c` `GAPC_DisconnectInd()` → `bs300_settings_persist()` → `bs300_settings_save()`
 
 所有运行时修改只更新内存数组（`s_volumes[]`、`s_eq_*[]`、`s_denoise[]`），掉电不丢靠断开时一次性落盘。如果需要在连接态异常断电时也能保留，后续可考虑用非阻塞分段写入或换用 NVR 存储。
+
+## 22. CMD=15/10 EQ/Denoise 协议修正 (2026-07-15)
+
+### 22.1 问题
+
+CMD=15 (GetCurrentScene) 和 CMD=10 (SetEqualizer) 的 EQ/Denoise 字段存在问题：
+
+| 问题 | 详情 |
+|------|------|
+| Denoise 字段取错源 | offset 4 取 `wnr_preset` (0-4) 而非 `s_denoise[]` (0-4)，含义不同 |
+| EQ Get/Set 不一致 | Get 返回 `[0,100]` 转换值，但 App 实际需要 dB 值 |
+| EQ Set 多余转换 | 接收端做 `(val-50)/4` 转换，App 实际已发 dB 值 |
+
+### 22.2 修复
+
+**CMD=15 响应 12B**：
+
+| 偏移 | 字段 | 修复前 | 修复后 |
+|------|------|--------|--------|
+| 4 | Denoise | `wnr_preset` | `bs300_get_prog_denoise(prog)` |
+| 5-10 | EQ_Low/Mid/High | `50 + dB*4` [0,100] | 原始 step [-5,5] |
+
+**CMD=10 接收**：去掉 `(val-50)/4` 转换，直接取 `(int8_t)data[2]`，clamp [-5,5]。
+
+### 22.3 新增接口
+
+- `bs300_get_prog_denoise(prog_idx)` — 与已有 `bs300_set_prog_denoise()` 配对
+
+## 23. EQ 档位重构 (2026-07-15)
+
+### 23.1 变更
+
+| 项目 | 旧值 | 新值 |
+|------|------|------|
+| 存储范围 | [-12, 12] dB | [-5, 5] step |
+| 每档增益 | 1 dB | 3 dB |
+| 实际增益范围 | [-12, 12] dB | [-15, 15] dB |
+
+### 23.2 受影响位置
+
+| 文件 | 改动 |
+|------|------|
+| `bs300_param_encode.h` | struct 注释更新 |
+| `bs300_param_encode.c` `get_eq_gain_for_band()` | 返回值 `×3`，step→dB |
+| `bs300_ram_sync.c` `bs300_set_eq_async()` | 增加 `[-5,5]` 范围校验 |
+| `ble_rempro_cmd.c` `cmd_setequalizer()` | clamp `[-12,12]` → `[-5,5]` |
+
+### 23.3 编码链路
+
+```
+App 传 step [-5,5] → struct 存 step
+  → get_eq_gain_for_band() ×3 → dB [-15,15]
+  → baseline = bin_gain + vol_gain + eq_dB
+  → 0x8060B2 编码 → clamp [-27,96]
+```
+
+## 24. bin_gain 范围限制 (2026-07-15)
+
+### 24.1 问题
+
+叠加 `bin_gain + vol_gain + eq_gain ± cal ± igd` 后可能超出芯片可接受范围，当前 clamp `[-128,127]` 过于宽松。
+
+### 24.2 修复
+
+手册 §Bin Gain (0x8060B2): 范围 **[-27, 96] dB**。将 clamp 改为 `[-27, 96]`：
+
+```c
+// bs300_param_encode.c encode_wdrc_bin_gain()
+values[i] = clamp_s32(apply_igd_trunc(numer_tenth, -igd), -27, 96);
+```
+
+极端情况（vol=0 + eq=-5×3 + bin_gain=-27 = -69dB）会被 clamp 到 -27。
+
+## 25. 切程序补 EQ 恢复 (2026-07-15)
+
+### 25.1 问题
+
+`bs300_switch_program_async()` 加载目标程序 struct 后只恢复了 `volume_level`，漏了 `eq_low/mid/high`：
+
+```c
+s_target.modules.volume_level = s_volumes[new_prog_idx];
+// ← 缺 eq 三行
+```
+
+导致切程序时 0x8060B2 的 `vol_eq_changed` 检测依赖 Flash struct 中的旧 EQ 值（可能全零），用户当前设置丢失。
+
+### 25.2 修复
+
+补三行，与 `bs300_resync_diff_start()` 对齐：
+
+```c
+s_target.modules.volume_level = s_volumes[new_prog_idx];
+s_target.modules.eq_low  = s_eq_low[new_prog_idx];
+s_target.modules.eq_mid  = s_eq_mid[new_prog_idx];
+s_target.modules.eq_high = s_eq_high[new_prog_idx];
+```
