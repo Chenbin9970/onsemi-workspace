@@ -3039,7 +3039,19 @@ int bs300_write_poll(uint8_t i2c_addr, uint32_t cmd_word,
 - **WNR detect threshold** mic2_cal 缩放因子为 `0x800000` (非 `0x7FFFFF`)
 
 #### 7. WNR SSP level 匹配
-- 芯片 band data 使用 SSP level 0 (Off) 的 offset，**不管** `param_values` 中 `suppression_preset` 设置。此差异属芯片配置范畴
+- ~~芯片 band data 使用 SSP level 0 (Off) 的 offset，**不管** `param_values` 中 `suppression_preset` 设置。此差异属芯片配置范畴~~
+- **纠正 (2026-07-15)**：上述描述仅对 preset=1(Minimal) 成立，是早期交叉验证只覆盖 P0/P1 的遗留错误。实测确认 **band data 的 SSP level = Flash preset 值 - 1**（preset=1→ssp0, preset=3→ssp2），详见下表：
+
+| DSP preset 名称 | Flash 值 (`mod->wnr_preset`) | SSP 表列 (`ssp_level = preset - 1`) | Param word3 (`0x8001C2[9:11]`) |
+|:--|:--:|:--:|:--:|
+| Off | 0 | — (band 命令不发送) | 0x000003 |
+| Minimal | 1 | 0 | 0x000003 (ssp<6) |
+| Low | 2 | 1 | 0x000003 (ssp<6) |
+| Medium | 3 | 2 | **0x000006** (ssp≥6) |
+| High | 4 | 3 | 0x000006 (ssp≥6) |
+
+- **Param word3 阈值**：`wnr_preset_to_ssp[preset] ≥ 6 → 0x000006, else 0x000003`
+- **注意**：此 Flash 值与手册 §9.6 表格中的值（1,2,4,6,9,12）不完全一致，实际芯片可能使用 0-4 连续编号。以芯片实际读回值为准。
 
 #### 8. Disabled 模块编码规则
 - 当模块 selection=0 时，整条命令全部字节为 0x00

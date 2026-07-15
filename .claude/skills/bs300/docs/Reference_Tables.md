@@ -18,7 +18,9 @@
 | 枚举 | 映射 |
 |------|------|
 | DFBC Mode | Slow FBC=0x01, Slow Weak=0x03, Slow Strong=0x07, Fast FBC=0x09, Fast Weak=0x0B, Fast Strong=0x0F |
-| WNR Preset | Minimal=1, Light=3, Moderate=6, Strong=9, Maximum=12 |
+| WNR Preset (Flash) | Off=0, Minimal=1, Low=2, Medium=3, High=4（实际芯片连续编号 0-4，与手册旧表 1/3/6/9/12 不完全一致，以芯片实际读回值为准） |
+| WNR SSP band 列映射 | `ssp_level = Flash_preset - 1`（preset=1→col0, preset=3→col2）, preset=0 不发 WNR 命令 |
+| WNR Setup word3 | `wnr_preset_to_ssp[preset]` = {0,1,3,6,12}, 阈值 6: `ssp≥6→0x000006, else 0x000003` |
 | Input Cmd | FrontMic=0x03, RearMic=0x04, Telecoil=0x05, DAI=0x06, MM_Plus=0x17, DDM2=0x1B, DualMic=0x1E |
 
 ## 2. 未实现模块（按优先级）

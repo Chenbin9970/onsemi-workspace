@@ -78,7 +78,7 @@ Advanced Write:  [02] 10 [Cmd_L] [Cmd_M] [Cmd_H] [Data 48B] [Chk] (54B)
 | DFBC Configure | `0x800052` | mode 枚举 | ✓ |
 | ISS Configure | `0x8001B2` | 见下方 ISS | ✓ |
 | WNR Detect Thr | `0x8001C2` | `avg ceil` | ✓ |
-| WNR Bands 0-15 | `0x8011C2` | `_WNR_SSP_OFFSET[band][preset]` | ✓ |
+| WNR Bands 0-15 | `0x8011C2` | `_WNR_SSP_OFFSET[band][preset-1]` (preset≥1) | ✓ |
 | WNR Bands 16-31 | `0x8411C2` | 同上 | ✓ |
 | WNR Single Mic | `0x8021C2` | 直存 | ✓ |
 | AGCO | `0x800382` | 见下方 AGCO | ✓ (±1) |

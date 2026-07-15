@@ -15,7 +15,7 @@
 | 6 | **全模块** | 修改 .h 后 make 不重新编译 | SDK Makefile 头文件依赖追踪不完整 | 关键 .h 修改后 `touch` 对应 .c 强制重编译，或 `make clean && make` |
 | 7 | **全模块** | `const` 编译错误 | `sync_program` 需要修改传入 struct 的 enable 位，但参数声明为 `const` | 全量同步函数不加 `const`，它可能需要修改 struct |
 | 8 | **全模块** | hex 对比定位延迟 | 手动从设备 log 复制 hex 做对比，多次构造出错误长度（59B、56B 而非 48B） | 用脚本自动提取 I2C payload（跳过 4B 帧头 + 1B 校验和），禁止手动复制粘贴 |
-| 9 | **WNR** | Setup 与 Band/SingleMic 的 SSP 映射方式不一致 | Setup 用 `wnr_preset_to_ssp[preset]` 查表，Band 用 `min(preset, 4)` 直接做下标 | 所有 WNR 函数统一 SSP 映射方式，不一致时写注释说明原因 |
+| 9 | **WNR** | Setup 与 Band/SingleMic 的 SSP 映射方式不一致 | Setup 用 `wnr_preset_to_ssp[preset]` 查 ssp_value 算 word3 阈值 (6)，Band 用 `preset-1` 做 ssp_level 查 offset 表列。两者是不同映射体系：ssp_value∈{0,1,3,6,12} vs ssp_level∈{0,1,2,3} | 已确认正确，见 §5 完整映射表 |
 
 ## 2. C 代码生成强制规则
 
