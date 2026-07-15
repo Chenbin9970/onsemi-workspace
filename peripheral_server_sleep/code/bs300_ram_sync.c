@@ -315,7 +315,6 @@ void bs300_print_settings(void)
            s_denoise[0], s_denoise[1], s_denoise[2], s_denoise[3]);
 }
 
-static void save_settings(void);
 
 /* Reset user-adjustable params (volume=9, EQ=0) for a program.
  * Called when base calibration is modified (SetGain). */
@@ -335,20 +334,12 @@ void bs300_reset_user_params(uint8_t prog_idx)
         s_dsp_state.modules.eq_mid  = 0;
         s_dsp_state.modules.eq_high = 0;
     }
-
-    save_settings();
 }
 
-static void save_settings(void)
+void bs300_settings_persist(void)
 {
     bs300_settings_save(s_cur_prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
                         s_denoise);
-}
-
-/* Public wrapper — call on BLE disconnect or any safe idle moment. */
-void bs300_settings_persist(void)
-{
-    save_settings();
 }
 
 /* ================================================================
@@ -1095,7 +1086,6 @@ int bs300_switch_program(uint8_t new_prog_idx)
 
     s_cur_prog = new_prog_idx;
     s_target.modules.volume_level = s_volumes[new_prog_idx];
-    save_settings();
 
     switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
                         NULL, &sent, &fail, data);
@@ -1209,44 +1199,8 @@ int bs300_voice_prompt_input_restore(uint8_t original_input)
 }
 
 /* ================================================================
- *  Volume / EQ
+ *  Volume / EQ (async only — blocking wrappers removed, unused)
  * ================================================================ */
-int bs300_set_volume(uint8_t level)
-{
-    uint8_t data[48];
-    bs300_calib_t calib;
-
-    if (level > 9) return -1;
-    if (load_calib(&calib) < 0) return -1;
-
-    s_dsp_state.modules.volume_level = level;
-    s_volumes[s_cur_prog] = level;
-    save_settings();
-
-    return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
-                                       &s_dsp_state.modules,
-                                       get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type),
-                                       data) == 0
-           && bs300_advanced_write(0x8060B2, data);
-}
-
-int bs300_set_eq(int8_t low, int8_t mid, int8_t high)
-{
-    uint8_t data[48];
-    bs300_calib_t calib;
-
-    if (load_calib(&calib) < 0) return -1;
-
-    s_dsp_state.modules.eq_low  = low;
-    s_dsp_state.modules.eq_mid  = mid;
-    s_dsp_state.modules.eq_high = high;
-
-    return bs300_encode_wdrc_bin_gain(&s_dsp_state.wdrc, &calib,
-                                       &s_dsp_state.modules,
-                                       get_input_type(s_dsp_state.modules.input_selection, s_dsp_state.modules.mm_type),
-                                       data) == 0
-           && bs300_advanced_write(0x8060B2, data);
-}
 
 /* ================================================================
  *  ITG (Input Tone Generator)
@@ -1537,7 +1491,7 @@ void bs300_sync_timer_handler(void)
 
 /* Called from Main_Loop — executes deferred switch/volume that were
  * queued while a session was in progress.  Must NOT be called from
- * timer handler (save_settings allocates ~960B stack for flash ops). */
+ * timer handler (bs300_settings_persist allocates ~960B stack for flash ops). */
 void bs300_process_deferred(void)
 {
     if (bs300_sync_is_busy()) return;
@@ -1737,7 +1691,6 @@ int bs300_set_eq_async(int8_t low, int8_t mid, int8_t high,
     s_eq_low[s_cur_prog]  = low;
     s_eq_mid[s_cur_prog]  = mid;
     s_eq_high[s_cur_prog] = high;
-    save_settings();
     return reencode_bin_gain_async_core(on_done, 0);  /* no tone for EQ */
 }
 
@@ -1755,16 +1708,6 @@ void bs300_sync_dirty(void)
     }
 }
 
-int bs300_vol_commit(uint8_t level)
-{
-    if (level > 9) return -1;
-    s_dsp_state.modules.volume_level = level;
-    s_volumes[s_cur_prog] = level;
-    save_settings();
-    bs300_sync_dirty();
-    return 0;
-}
-
 /* ================================================================
  *  Async fill-mode functions
  * ================================================================ */
@@ -1780,7 +1723,6 @@ int bs300_switch_program_start(bs300_sync_session_t *s, uint8_t new_prog_idx)
     s_target.modules.eq_high = s_eq_high[new_prog_idx];
 
     s_cur_prog = new_prog_idx;
-    save_settings();
 
     s->dsp_state = &s_dsp_state;
     s->target = &s_target;

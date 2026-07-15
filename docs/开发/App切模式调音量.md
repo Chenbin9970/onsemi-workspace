@@ -344,7 +344,7 @@ CMD=2 收到 → cmd_setvolume()
 |------|------|------|
 | 响应不等 I2C 完成 | 立即返回 flag=0 | I2C 操作 ~3s，BLE 响应需在连接间隔内返回 |
 | 忙时抢断 | abort_requested + pending_switch | 不覆写 session，避免 I2C/DSP 混乱 |
-| flash 持久化延迟 | BLE 断开时保存 | Flash_EraseSector ~40ms，连接态会阻塞 BLE |
+| flash 持久化延迟 | BLE 断开时保存（已强制执行，2026-07-15） | Flash_EraseSector ~40ms，连接态会阻塞 BLE → 看门狗/断连 → 重启 |
 | I2C 速率 | bit_delay=500 | DSP 运行时不能处理高速 I2C |
 | BLE CS 快捷命令 | 2B 协议 | 调试用，比 HDLC 简单 |
 
@@ -720,3 +720,35 @@ if (wnr_changed || igd_changed) {
 | `code/bs300_driver.c` | 强制重读 DSP + Settings 清空 + EQ/denoise 传递 |
 | `include/app.h` | DEBUG_UART_ENABLE 开启 |
 | `app.c` | 按键回调加 push + persist + 无提示音音量路径 |
+
+## 21. Flash persist 连接态清理 (2026-07-15)
+
+### 21.1 问题
+
+设计和实现不一致。§10 已决定 "flash 持久化延迟到 BLE 断开"，但代码中调音量/EQ/降噪/切程序/验配路径仍在 BLE 连接态同步调用 `Flash_EraseSector`（~40ms 阻塞），导致主循环停摆 → 看门狗超时 → 设备重启。
+
+### 21.2 涉及的热路径调用点（已全部移除）
+
+| 文件 | 原调用 | 触发场景 |
+|------|--------|---------|
+| `ble_rempro_cmd.c` `cmd_setvolume()` | `bs300_settings_persist()` | App HDLC CMD=2 调音量 |
+| `ble_rempro_cmd.c` `cmd_setdenoise()` | `bs300_settings_persist()` | App HDLC CMD=9 调降噪 |
+| `app.c` CS characteristic 0x02 | `bs300_settings_persist()` | 快捷调音量 |
+| `app.c` 按键回调 | `bs300_settings_persist()` | 短按调音量 |
+| `bs300_ram_sync.c` `bs300_set_eq_async()` | `save_settings()` | App 调 EQ |
+| `bs300_ram_sync.c` `bs300_reset_user_params()` | `save_settings()` | SetGain 重置用户参数 |
+| `bs300_ram_sync.c` `bs300_switch_program()` | `save_settings()` | RM 进入/退出切程序 |
+| `bs300_ram_sync.c` `bs300_resync_diff_start()` | `save_settings()` | 验配 diff sync |
+
+### 21.3 移除的死代码
+
+- `bs300_set_volume()` — 阻塞版本，无调用者
+- `bs300_set_eq()` — 阻塞版本，无调用者
+- `bs300_vol_commit()` — 无调用者
+- `save_settings()` static 函数 — 去掉中间层，`bs300_settings_persist()` 直接调用 `bs300_settings_save()`
+
+### 21.4 最终 persist 调用点
+
+唯一调用：`ble_std.c` `GAPC_DisconnectInd()` → `bs300_settings_persist()` → `bs300_settings_save()`
+
+所有运行时修改只更新内存数组（`s_volumes[]`、`s_eq_*[]`、`s_denoise[]`），掉电不丢靠断开时一次性落盘。如果需要在连接态异常断电时也能保留，后续可考虑用非阻塞分段写入或换用 NVR 存储。

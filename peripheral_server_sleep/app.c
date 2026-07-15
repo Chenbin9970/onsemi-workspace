@@ -223,7 +223,6 @@ void Main_Loop(void)
                 {
                     app_env.volume = arg;
                     bs300_set_volume_notone_async(arg, on_bs300_volume_done);
-                    bs300_settings_persist();
                     PRINTF("[BS300] volume=%d\r\n", arg);
                 }
                 else if (cmd == 0xFE)
@@ -331,7 +330,6 @@ void Main_Loop(void)
                     app_env.volume = vol;
                     rempro_push_volume_change(bs300_get_active_prog(), vol);
                     bs300_set_volume_async(vol, on_btn_volume_done);
-                    bs300_settings_persist();
                 }
                 pending_action = BTN_NONE;
             }

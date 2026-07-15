@@ -235,7 +235,7 @@ static void cmd_setvolume(const uint8_t *data, uint8_t len)
     if (dev_type == 0 || dev_type == 1) {
         app_env.volume = volume;
         bs300_set_volume_notone_async(volume, NULL);
-        bs300_settings_persist();
+        /* Flash persist deferred to BLE disconnect — see GAPC_DisconnectInd */
     }
     /* Right side not supported on this device — ignore */
 
@@ -568,7 +568,6 @@ static void cmd_setdenoise(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetDenoise: dev=%u prog=%u level=%u → att=%u\r\n",
            dev_type, prog, level, denoise_to_max_att[level]);
     bs300_set_prog_denoise(prog, level);
-    bs300_settings_persist();
     fitting_commit(prog);
     hdlc_response(CMD_SETDENOISE, 0, NULL, 0);
 }
