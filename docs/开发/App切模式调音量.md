@@ -12,12 +12,13 @@
 | CMD_ID | 名称 | 方向 | 说明 |
 |--------|------|------|------|
 | 2 | SetVolume | App→设备 | 设置音量 0-9 |
-| 3 | SetDeviceOnOff | App→设备 | 开关机（TODO） |
+| 3 | SetDeviceOnOff | App→设备 | 开关机（MUTE/ACTIVE） |
 | 4 | GetBatteryInfo | App→设备 | 获取电量 |
 | 5 | SetFeedbackOnOff | App→设备 | 设置反馈抑制开关 |
 | 15 | GetCurrentScene | App→设备 | 获取当前程序/音量/EQ |
 | 16 | SetCurrentScene | App→设备 | 切换程序 0-3 |
 | 26 | GetDeviceConfig | App→设备 | 获取设备信息 |
+| 33 | GetDeviceOnOff | App→设备 | 获取设备开关状态 |
 | 34 | GetFeedbackOnOff | App→设备 | 获取反馈抑制开关状态 |
 
 ## 2. 数据流
@@ -554,6 +555,7 @@ Step 6: MUTE → sync full program → ACTIVE
 | CMD_ID | 宏 | 功能 | 数据格式 | 处理链路 |
 |:---:|------|------|------|------|
 | 2 | `CMD_SETVOLUME` | 设置音量 | dev_type(1)+vol(1)+vol2(1) | `bs300_set_volume_notone_async` → Settings persist |
+| 3 | `CMD_SETDEVICEONOFF` | 设置开关机 | dev_type(1)+onoff(1) | ON→`bs300_active()`, OFF→`bs300_mute()` |
 | 5 | `CMD_SETFEEDBACKONOFF` | 设置反馈抑制开关 | dev_type(1)+prog(1)+onoff(1) | RAM-only, 立即发 I2C 0x800052, 不改程序 Flash |
 | 6 | `CMD_SETGAIN` | 设置增益 | dev(1)+prog(1)+(spectrum(1)+dB(1))* | flash load→改 bin_gain→`fitting_commit`(sync=false) |
 | 7 | `CMD_SETMPO` | 设置 MPO | dev(1)+prog(1)+(ch(1)+mpo(1))* | flash load→改 lmt_th_db→`fitting_commit`(sync=false) |
@@ -563,6 +565,7 @@ Step 6: MUTE → sync full program → ACTIVE
 | 15 | `CMD_GETCURRENTSCENE` | 获取当前程序 | 无 | 读取 s_dsp_state → 12B 响应 |
 | 16 | `CMD_SETCURRENTSCENE` | 切换/刷新程序 | dev(1)+scene(1) | `bs300_switch_program_async` (同程序触发 re-sync diff) |
 | 26 | `CMD_GETDEVICECONFIG` | 获取设备信息 | 无 | 固件版本/MAC/产品型号等 → 29B 响应 |
+| 33 | `CMD_GETDEVICEONOFF` | 获取设备开关状态 | 无 | 返回 Left_OnOff(1)+Right_OnOff(1)，读取 `s_device_on` |
 | 34 | `CMD_GETFEEDBACKONOFF` | 获取反馈抑制状态 | dev_type(1)+prog(1) | 返回 Left_OnOff(1)+Right_OnOff(1) |
 
 **设备 → App 主动推送：**
@@ -1061,3 +1064,35 @@ Byte 6-47:  零填充
 | `include/bs300_storage.h` | `save/load` 增加 `feedback_onoff` 参数 |
 | `code/bs300_storage.c` | Settings slot 扩展 v3→v4: 新增 bytes 21-24, magic/CRC/ver 后移 |
 | `code/bs300_driver.c` | Boot/refresh 序列: init_from_flash → settings restore → fallback |
+
+## 29. SetDeviceOnOff / GetDeviceOnOff 实现 (2026-07-17)
+
+### 29.1 协议格式
+
+**SetDeviceOnOff (CMD=3) — App→设备：**
+
+| 字段 | 长度 | 描述 |
+|------|:---:|------|
+| Device_Type | 1 | 0=左右, 1=左, 2=右 |
+| OnOff | 1 | 0=关机(MUTE), 1=开机(ACTIVE) |
+
+响应：`flag(1) + status(1)` = 2B
+
+**GetDeviceOnOff (CMD=33) — App→设备：**
+
+无请求数据。
+
+响应：`flag(1) + Left_OnOff(1) + Right_OnOff(1)` = 3B
+
+### 29.2 实现
+
+- `s_device_on` 静态变量跟踪 MUTE/ACTIVE 状态，初始值 1（boot 后为 ACTIVE）
+- **SetDeviceOnOff**: ON → `bs300_active()` (I2C 0x800010)，OFF → `bs300_mute()` (I2C 0x800000)，`bs300_sync_is_busy()` 时拒绝
+- **GetDeviceOnOff**: 返回 `[s_device_on, s_device_on]`，反映当前 DSP 实际状态
+
+### 29.3 相关文件
+
+| 文件 | 变更 |
+|------|------|
+| `include/ble_rempro_cmd.h` | 新增 `CMD_GETDEVICEONOFF (33)` |
+| `code/ble_rempro_cmd.c` | 新增 `s_device_on` + 重写 `cmd_setdeviceonoff()` + 新增 `cmd_getdeviceonoff()` + switch cases |

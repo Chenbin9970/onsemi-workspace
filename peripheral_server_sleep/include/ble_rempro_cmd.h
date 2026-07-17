@@ -25,6 +25,7 @@ extern "C" {
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETDEVICECONFIG     26
+#define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */

@@ -14,6 +14,7 @@
 static uint8_t reasm_buf[REASM_BUF_SIZE];
 static uint8_t reasm_len;
 static bool    reasm_pending;
+static uint8_t s_device_on = 1;   /* tracks MUTE/ACTIVE state */
 
 void rempro_reasm_append(const uint8_t *data, uint8_t len)
 {
@@ -271,13 +272,20 @@ static void cmd_setvolume(const uint8_t *data, uint8_t len)
 static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
 {
     if (len < 2) { hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0); return; }
 
     uint8_t dev_type = data[0];
     uint8_t onoff    = data[1];
 
-    PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u\r\n", dev_type, onoff);
+    if (onoff) {
+        bs300_active();
+        s_device_on = 1;
+    } else {
+        bs300_mute();
+        s_device_on = 0;
+    }
 
-    /* TODO: implement actual on/off control */
+    PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u\r\n", dev_type, onoff);
     uint8_t status = 1;
     hdlc_response(CMD_SETDEVICEONOFF, 0, &status, 1);
 }
@@ -331,6 +339,16 @@ static void cmd_setfeedbackonoff(const uint8_t *data, uint8_t len)
            bs300_get_active_prog());
     uint8_t status = 1;
     hdlc_response(CMD_SETFEEDBACKONOFF, 0, &status, 1);
+}
+
+/* ID:33  GetDeviceOnOff */
+static void cmd_getdeviceonoff(void)
+{
+    uint8_t resp[2];
+    resp[0] = s_device_on;   /* Left_OnOff */
+    resp[1] = s_device_on;   /* Right_OnOff (same as left) */
+    PRINTF("[REMPRO] GetDeviceOnOff: L=%u R=%u\r\n", resp[0], resp[1]);
+    hdlc_response(CMD_GETDEVICEONOFF, 0, resp, 2);
 }
 
 /* ID:34  GetFeedbackOnOff */
@@ -746,6 +764,9 @@ void rempro_cmd_process(void)
             break;
         case CMD_GETDEVICECONFIG:
             cmd_getdeviceconfig();
+            break;
+        case CMD_GETDEVICEONOFF:
+            cmd_getdeviceonoff();
             break;
         case CMD_GETFEEDBACKONOFF:
             cmd_getfeedbackonoff(data, data_len);
