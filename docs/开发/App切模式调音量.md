@@ -344,7 +344,11 @@ CMD=2 收到 → cmd_setvolume()
 |------|------|------|
 | 响应不等 I2C 完成 | 立即返回 flag=0 | I2C 操作 ~3s，BLE 响应需在连接间隔内返回 |
 | 忙时抢断 | abort_requested + pending_switch | 不覆写 session，避免 I2C/DSP 混乱 |
-| flash 持久化延迟 | BLE 断开时保存（已强制执行，2026-07-15） | Flash_EraseSector ~40ms，连接态会阻塞 BLE → 看门狗/断连 → 重启 |
+| flash 持久化—按键 | **立即保存** | 按键是本地操作，用户期望断电不丢 |
+| flash 持久化—App | **BLE 断开时保存** | App 操作频繁（验配反复调参），减少擦写 |
+| flash 持久化—程序3 | **不保存**，persist 时存 0，restore 时改为 0 | 程序 3 为 RM 音频中转，不应成为开机默认 |
+| Settings 存储机制 | **64B slot 追加写**，2KB 扇区存 32 个 slot，32 次写入擦 1 次 | 避免每次按键都触发 Flash_EraseSector(~40ms + 关中断) |
+| Program 存储机制 | **512B slot 追加写**，每扇区 4 个 slot，4 次写入擦 1 次 | 验配 SetGain/MPO/CR 重复写入时减少擦除 |
 | I2C 速率 | bit_delay=500 | DSP 运行时不能处理高速 I2C |
 | BLE CS 快捷命令 | 2B 协议 | 调试用，比 HDLC 简单 |
 
@@ -390,16 +394,81 @@ I2C 0x800062:
 - `bs300_param_encode.c`: `bs300_encode_mm_plus()` — igd 改用 `mod->mm_type` 查手册映射
 - `bs300_encode_tables.h`: `bs300_mm_plus_frac24_table[2001]`
 
-## 12. Flash 持久化架构 (2026-07-15)
+## 12. Flash 持久化架构 (2026-07-17 重构)
 
 ### 12.1 两条存储路径
 
 | 路径 | 存储目标 | 内容 | 写时机 |
 |------|---------|------|--------|
-| **Program Flash** (480B×4) | `0x0015D000~E800` | WDRC + ENR + Volume/Beep + DFBC + ISS + WNR + AGCO + Input | SetGain/MPO/CompressRatio/Denoise → `fitting_commit()` |
-| **Settings Flash** (2KB) | `0x0015C800` | active_prog + volume[4] + eq_*[4] + denoise[4] | 切音量/EQ/降噪 → `save_settings()` |
+| **Program Flash** (512B slot ×4 slots ×4 扇区) | `0x0015D000~E800` | WDRC + ENR + Volume/Beep + DFBC + ISS + WNR + AGCO + Input | SetGain/MPO/CompressRatio → `fitting_commit()` |
+| **Settings Flash** (64B slot ×32 slots) | `0x0015C800` | active_prog + volume[4] + eq_*[4] + denoise[4] | 按键立即; App 指令延至 BLE 断开 |
 
-### 12.2 struct → 480B flash 编码
+### 12.2 追加写（Append-Only Slot）机制
+
+两个 Flash 区域均采用 **slot 追加写**：每次写入追加到下一个空 slot，扇区写满后才擦除一次，大幅减少 `Flash_EraseSector` 调用。
+
+```
+Save: slot 0 → 1 → 2 → ... → N-1 → (擦除) → slot 0
+Load: slot N-1 → N-2 → ... → 0 (倒序扫描，取第一个有效)
+```
+
+空 slot 判定：slot 头部 magic 字段为 `0xFFFFFFFF`（擦除态）。
+
+| 存储 | Slot 大小 | Slot 数 | 每 N 次写入擦除 |
+|------|:---:|:---:|:---:|
+| Settings | 64B | 32 | 32x |
+| Program | 512B | 4 | 4x |
+
+### 12.3 Settings slot 格式 (64B)
+
+```
+Offset 0:    active_prog (1B)
+      1-4:   volume[0..3] (4B)
+      5-8:   eq_low[0..3] (4B, int8 step [-5,5])
+      9-12:  eq_mid[0..3] (4B)
+      13-16: eq_high[0..3] (4B)
+      17-20: denoise[0..3] (4B)
+      21-24: magic "BSST" (4B, =0x54535342)
+      25-26: CRC16 XMODEM over bytes 0-24 (2B)
+      27:    version (1B, =3)
+      28-63: reserved (0xFF)
+```
+
+CRC 仅覆盖 bytes 0-24（数据字段 + magic），确保单 slot 完整性。
+
+### 12.4 Program slot 格式 (512B)
+
+```
+Offset 0-479:  480B program raw data
+      480-483: magic "BSPG" (4B)
+      484-485: version (2B, =1)
+      486-487: CRC16 XMODEM over bytes 0-479 (2B)
+      488-511: reserved (0xFF)
+```
+
+与旧格式完全兼容（旧格式在同一扇区 offset 0 写入相同布局，新代码倒序扫描时 slot 0 就是旧数据）。
+
+### 12.5 程序 3 不掉电保存
+
+- `bs300_settings_persist()`: `s_cur_prog==3` 时存 `0` 而非 `3`
+- `bs300_restore_settings()`: 恢复的 `active_prog==3` 时改为 `0`
+- 按键长按循环: `(prog + 1) % 3`，跳过程序 3
+- RM 进入时: `bs300_persist_active_prog(saved)` 保存进入前的程序号
+
+### 12.6 写入触发时机
+
+| 操作 | Settings Flash | Program Flash |
+|------|:---:|:---:|
+| 按键短按调音量 | **立即** | — |
+| 按键长按切模式 | **立即** | — |
+| App CMD=2 调音量 | BLE 断开 | — |
+| App CMD=10 调 EQ | BLE 断开 | — |
+| App CMD=16 切程序 | BLE 断开 | — |
+| App CMD=9 降噪 | BLE 断开 | — |
+| App SetGain/MPO/CR | — | 立即（验配提交） |
+| BLE 断开 | 统一落盘 | — |
+
+### 12.7 struct → 480B flash 编码
 
 `bs300_struct_to_flash()` 重编码 WDRC (0x12) 和 ENR (0x1C) 模块：
 
@@ -410,15 +479,6 @@ I2C 0x800062:
 - `encode_wdrc_flash()`: bin_gain 32×7bit + 通道数据 (lmt_th: raw=value_in_MT-30, kp_th: raw=value_in_MT)
 - `encode_enr_flash()`: nfsf/nhsf/nnsf/snasf 4bit + 16ch×(freq/max_att/snr_th/noise_th/upper_noise_th/etr/nrr)
 - 其他模块保持原样不变
-
-### 12.3 Settings 格式演进
-
-| 版本 | 新增字段 | Offset |
-|:---:|------|--------|
-| v1 | active_prog + volume[4] | 0~4 |
-| v2 | eq_low/mid/high[4] | 5~16 |
-| v3 | denoise[4] | 17~20 |
-| — | magic + CRC + version | 21~28 |
 
 ## 13. 0x8060B2 I2C 编码验证 (2026-07-15)
 
@@ -721,37 +781,42 @@ if (wnr_changed || igd_changed) {
 | `include/app.h` | DEBUG_UART_ENABLE 开启 |
 | `app.c` | 按键回调加 push + persist + 无提示音音量路径 |
 
-## 21. Flash persist 连接态清理 (2026-07-15)
+## 21. Flash persist 机制演进 (2026-07-17 重构)
 
-### 21.1 问题
+### 21.1 演进历史
 
-设计和实现不一致。§10 已决定 "flash 持久化延迟到 BLE 断开"，但代码中调音量/EQ/降噪/切程序/验配路径仍在连接态同步调用 `Flash_EraseSector`。后续验证发现根因并非 BLE 阻塞，而是 Flash 擦除期间中断命中 Flash → HardFault → 复位（见 §26）。Settings Flash 延迟到断连的根本原因改为了：减少不必要的 Flash 擦写次数，而非防止重启（重启已由 §26 的关中断方案解决）。
+| 阶段 | 日期 | 策略 | 问题 |
+|------|------|------|------|
+| v1 | 07-15 前 | 所有操作立即 `Flash_EraseSector` | 每次擦写 ~40ms + 关中断，频繁操作影响 BLE |
+| v2 | 07-15 | 全部延迟到 BLE 断开 | 按键断电丢数据；且每次断开必擦写 |
+| v3 | 07-17 | **按键立即 + App 延迟 + slot 追加写** | — |
 
-### 21.2 涉及的热路径调用点（已全部移除）
+### 21.2 v3 当前策略
 
-| 文件 | 原调用 | 触发场景 |
-|------|--------|---------|
-| `ble_rempro_cmd.c` `cmd_setvolume()` | `bs300_settings_persist()` | App HDLC CMD=2 调音量 |
-| `ble_rempro_cmd.c` `cmd_setdenoise()` | `bs300_settings_persist()` | App HDLC CMD=9 调降噪 |
-| `app.c` CS characteristic 0x02 | `bs300_settings_persist()` | 快捷调音量 |
-| `app.c` 按键回调 | `bs300_settings_persist()` | 短按调音量 |
-| `bs300_ram_sync.c` `bs300_set_eq_async()` | `save_settings()` | App 调 EQ |
-| `bs300_ram_sync.c` `bs300_reset_user_params()` | `save_settings()` | SetGain 重置用户参数 |
-| `bs300_ram_sync.c` `bs300_switch_program()` | `save_settings()` | RM 进入/退出切程序 |
-| `bs300_ram_sync.c` `bs300_resync_diff_start()` | `save_settings()` | 验配 diff sync |
+| 触发源 | 写 Settings Flash 时机 | 机制 |
+|------|:---:|------|
+| 按键长按（切模式） | 立即 `bs300_settings_persist()` | slot 追加写，32 次才擦 1 次 |
+| 按键短按（调音量） | 立即 | 同上 |
+| App CMD=2（调音量） | BLE 断开 | 只更新内存数组，断开时统一落盘 |
+| App CMD=10（调 EQ） | BLE 断开 | 同上 |
+| App CMD=16（切程序） | BLE 断开 | 同上 |
+| App CMD=9（降噪） | BLE 断开 | `bs300_set_prog_denoise()` 只写 `s_denoise[]` |
+| BLE 断开 | 统一 `bs300_settings_persist()` | 一次性落盘所有内存状态 |
 
-### 21.3 移除的死代码
+按键立即保存 + slot 追加写 = 既保证断电不丢，又避免每次擦除扇区。
+
+### 21.3 最终 persist 调用点
+
+- **按键路径**: `app.c` → `bs300_settings_persist()` → `bs300_settings_save()`
+- **BLE 断开**: `ble_std.c GAPC_DisconnectInd()` → `bs300_settings_persist()`
+- **RM 进入**: `app.c` → `bs300_persist_active_prog(saved)` → `bs300_settings_save()`（保存进入 RM 前的程序号）
+
+### 21.4 移除的死代码
 
 - `bs300_set_volume()` — 阻塞版本，无调用者
 - `bs300_set_eq()` — 阻塞版本，无调用者
 - `bs300_vol_commit()` — 无调用者
 - `save_settings()` static 函数 — 去掉中间层，`bs300_settings_persist()` 直接调用 `bs300_settings_save()`
-
-### 21.4 最终 persist 调用点
-
-唯一调用：`ble_std.c` `GAPC_DisconnectInd()` → `bs300_settings_persist()` → `bs300_settings_save()`
-
-所有运行时修改只更新内存数组（`s_volumes[]`、`s_eq_*[]`、`s_denoise[]`），掉电不丢靠断开时一次性落盘。如果需要在连接态异常断电时也能保留，后续可考虑用非阻塞分段写入或换用 NVR 存储。
 
 ## 22. CMD=15/10 EQ/Denoise 协议修正 (2026-07-15)
 

@@ -260,8 +260,7 @@ void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level)
 {
     if (prog_idx < 4 && level <= 5) {
         s_denoise[prog_idx] = level;
-        bs300_settings_save(bs300_get_active_prog(),
-                            s_volumes, s_eq_low, s_eq_mid, s_eq_high, s_denoise);
+        /* Flash persist deferred to BLE disconnect — see bs300_settings_persist */
     }
 }
 
@@ -288,6 +287,8 @@ void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
                             const int8_t *eq_high, const uint8_t *denoise)
 {
     uint8_t i;
+    /* Program 3 is audio mode (RM), never persist across power cycles */
+    if (active_prog == 3) active_prog = 0;
     s_cur_prog = active_prog;
     if (volume != NULL) {
         for (i = 0; i < 4; i++) s_volumes[i] = volume[i];
@@ -361,7 +362,8 @@ void bs300_reset_user_params(uint8_t prog_idx)
 
 void bs300_settings_persist(void)
 {
-    bs300_settings_save(s_cur_prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
+    uint8_t prog_to_save = (s_cur_prog == 3) ? 0 : s_cur_prog;
+    bs300_settings_save(prog_to_save, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
                         s_denoise);
 }
 
