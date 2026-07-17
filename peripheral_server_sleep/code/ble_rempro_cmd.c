@@ -2,6 +2,7 @@
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
 #include "bs300_ram_sync.h"
+#include "bs300_startup.h"
 #include "bs300_storage.h"
 
 #ifndef PRINTF
@@ -279,6 +280,75 @@ static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
     /* TODO: implement actual on/off control */
     uint8_t status = 1;
     hdlc_response(CMD_SETDEVICEONOFF, 0, &status, 1);
+}
+
+/* ID:5  SetFeedbackOnOff — RAM-only, overrides flash dfbc_enable_mode bit7 */
+static void cmd_setfeedbackonoff(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t prog     = data[1];
+    uint8_t onoff    = data[2];
+
+    if (prog >= 4) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    bs300_set_feedback_onoff(prog, onoff);
+
+    /* Reload struct from flash to get the target program's DFBC mode,
+     * then apply feedback override.  Don't change s_dsp_state unless the
+     * target program is currently active. */
+    bs300_prog_struct_t target;
+    const bs300_calib_t *calib = bs300_get_cached_calib();
+    bs300_storage_load_program(prog, bs300_work_buf);
+    bs300_flash_to_struct(bs300_work_buf, &target);
+
+    if (onoff) {
+        uint8_t mode = target.modules.dfbc_enable_mode & 0x0F;
+        if (mode == 0) mode = 0x07;
+        target.modules.dfbc_enable_mode = 0x80 | mode;
+    } else {
+        target.modules.dfbc_enable_mode = 0x00;
+    }
+
+    /* Send DFBC I2C only if target is the active program */
+    if (prog == bs300_get_active_prog()) {
+        bs300_prog_struct_t *dsp = bs300_get_dsp_state();
+        dsp->modules.dfbc_enable_mode = target.modules.dfbc_enable_mode;
+
+        uint8_t dfbc_data[48];
+        if (onoff) {
+            bs300_encode_dfbc(&dsp->modules, calib, dfbc_data);
+        } else {
+            memset(dfbc_data, 0, 48);
+        }
+        bs300_advanced_write(BS300_CMD_DFBC, dfbc_data);
+    }
+
+    PRINTF("[REMPRO] SetFeedbackOnOff: dev=%u prog=%u onoff=%u fb[%u]=%u active=%u\r\n",
+           dev_type, prog, onoff, prog, bs300_get_feedback_onoff(prog),
+           bs300_get_active_prog());
+    uint8_t status = 1;
+    hdlc_response(CMD_SETFEEDBACKONOFF, 0, &status, 1);
+}
+
+/* ID:34  GetFeedbackOnOff */
+static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
+{
+    uint8_t prog = 0;
+    if (data != NULL && len >= 2) {
+        prog = data[1];   /* Scene_ID */
+        if (prog >= 4) prog = 0;
+    }
+
+    uint8_t onoff = bs300_get_feedback_onoff(prog);
+    uint8_t resp[2];
+    resp[0] = onoff;   /* Left_OnOff */
+    resp[1] = onoff;   /* Right_OnOff (same as left) */
+
+    PRINTF("[REMPRO] GetFeedbackOnOff: prog=%u onoff=%u\r\n", prog, onoff);
+    hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
 }
 
 /* ID:4  GetBatteryInfo */
@@ -640,6 +710,10 @@ void rempro_cmd_process(void)
             if (data) cmd_setdeviceonoff(data, data_len);
             else hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0);
             break;
+        case CMD_SETFEEDBACKONOFF:
+            if (data) cmd_setfeedbackonoff(data, data_len);
+            else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
+            break;
         case CMD_GETBATTERYINFO:
             cmd_getbatteryinfo();
             break;
@@ -672,6 +746,9 @@ void rempro_cmd_process(void)
             break;
         case CMD_GETDEVICECONFIG:
             cmd_getdeviceconfig();
+            break;
+        case CMD_GETFEEDBACKONOFF:
+            cmd_getfeedbackonoff(data, data_len);
             break;
         default:
             PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);

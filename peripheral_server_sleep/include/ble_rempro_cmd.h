@@ -16,6 +16,7 @@ extern "C" {
 #define CMD_SETVOLUME           2
 #define CMD_SETDEVICEONOFF      3
 #define CMD_GETBATTERYINFO      4
+#define CMD_SETFEEDBACKONOFF    5
 #define CMD_SETGAIN             6
 #define CMD_SETMPO              7
 #define CMD_SETCOMPRESSRATIO    8
@@ -24,6 +25,7 @@ extern "C" {
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETDEVICECONFIG     26
+#define CMD_GETFEEDBACKONOFF    34
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
 #define CMD_PUSH_VOLUME         4

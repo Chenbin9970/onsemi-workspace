@@ -160,6 +160,8 @@ uint8_t bs300_get_module_volume(uint8_t prog_idx);
 void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level);
 void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level);
 uint8_t bs300_get_prog_denoise(uint8_t prog_idx);
+void bs300_set_feedback_onoff(uint8_t prog_idx, uint8_t onoff);
+uint8_t bs300_get_feedback_onoff(uint8_t prog_idx);
 void bs300_print_settings(void);
 void bs300_persist_active_prog(uint8_t prog);
 bool    bs300_is_boot_cached(void);
@@ -169,9 +171,11 @@ const bs300_calib_t *bs300_get_cached_calib(void);
  *  Boot-time init — load active program into s_dsp_state
  * ================================================================ */
 void bs300_cache_boot_state(void);
+void bs300_init_feedback_from_flash(void);
 void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
                             const int8_t *eq_low, const int8_t *eq_mid,
-                            const int8_t *eq_high, const uint8_t *denoise);
+                            const int8_t *eq_high, const uint8_t *denoise,
+                            const uint8_t *feedback_onoff);
 void bs300_reset_to_defaults(void);
 void bs300_reset_user_params(uint8_t prog_idx);
 

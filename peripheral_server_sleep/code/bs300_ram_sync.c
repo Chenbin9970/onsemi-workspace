@@ -21,8 +21,9 @@ static uint8_t              s_volumes[4];     /* 4B — per-program volume, pers
 static int8_t               s_eq_low[4];      /* 4B — per-program EQ low */
 static int8_t               s_eq_mid[4];      /* 4B — per-program EQ mid */
 static int8_t               s_eq_high[4];     /* 4B — per-program EQ high */
-static uint8_t              s_denoise[4];     /* 4B — per-program denoise level 0-4 */
-static uint8_t              s_cur_prog;       /* 1B — current active program index */
+static uint8_t              s_denoise[4];        /* 4B — per-program denoise level 0-4 */
+static uint8_t              s_feedback_onoff[4]; /* 4B — per-program DFBC on/off, override flash */
+static uint8_t              s_cur_prog;          /* 1B — current active program index */
 static bool                 s_boot_cached;    /* 1B — calibration loaded flag */
 
 /* Shared raw Flash work buffer — also used by driver.c */
@@ -269,9 +270,41 @@ uint8_t bs300_get_prog_denoise(uint8_t prog_idx)
     return (prog_idx < 4) ? s_denoise[prog_idx] : 0;
 }
 
+void bs300_set_feedback_onoff(uint8_t prog_idx, uint8_t onoff)
+{
+    if (prog_idx < 4) {
+        s_feedback_onoff[prog_idx] = (onoff != 0) ? 1 : 0;
+    }
+}
+
+uint8_t bs300_get_feedback_onoff(uint8_t prog_idx)
+{
+    if (prog_idx >= 4) return 0;
+    return s_feedback_onoff[prog_idx];
+}
+
 void bs300_persist_active_prog(uint8_t prog)
 {
-    bs300_settings_save(prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high, s_denoise);
+    bs300_settings_save(prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
+                        s_denoise, s_feedback_onoff);
+}
+
+/* Initialize s_feedback_onoff from each program's flash dfbc_enable_mode bit7.
+ * Called at boot before settings restore — flash values are the default;
+ * settings restore may override with persisted user preference. */
+void bs300_init_feedback_from_flash(void)
+{
+    uint8_t i;
+    for (i = 0; i < 4; i++) {
+        bs300_prog_struct_t prog;
+        bs300_storage_load_program(i, bs300_work_buf);
+        if (bs300_flash_to_struct(bs300_work_buf, &prog) == 0) {
+            s_feedback_onoff[i] = (prog.modules.dfbc_enable_mode & 0x0F) ? 1 : 0;
+        }
+    }
+    PRINTF("[BS300] feedback init from flash: [%u,%u,%u,%u]\r\n",
+           s_feedback_onoff[0], s_feedback_onoff[1],
+           s_feedback_onoff[2], s_feedback_onoff[3]);
 }
 
 const bs300_calib_t *bs300_get_cached_calib(void)
@@ -284,7 +317,8 @@ const bs300_calib_t *bs300_get_cached_calib(void)
  * ================================================================ */
 void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
                             const int8_t *eq_low, const int8_t *eq_mid,
-                            const int8_t *eq_high, const uint8_t *denoise)
+                            const int8_t *eq_high, const uint8_t *denoise,
+                            const uint8_t *feedback_onoff)
 {
     uint8_t i;
     /* Program 3 is audio mode (RM), never persist across power cycles */
@@ -305,6 +339,9 @@ void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
     if (denoise != NULL) {
         for (i = 0; i < 4; i++) s_denoise[i] = denoise[i];
     }
+    if (feedback_onoff != NULL) {
+        for (i = 0; i < 4; i++) s_feedback_onoff[i] = feedback_onoff[i];
+    }
     PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
 }
 
@@ -318,6 +355,7 @@ void bs300_reset_to_defaults(void)
         s_eq_mid[i]   = 0;
         s_eq_high[i]  = 0;
         s_denoise[i]  = 0;
+        s_feedback_onoff[i] = 0;
     }
     s_boot_cached = false;
     PRINTF("[BS300] state reset to defaults (prog=0)\r\n");
@@ -337,6 +375,9 @@ void bs300_print_settings(void)
            s_eq_high[0], s_eq_high[1], s_eq_high[2], s_eq_high[3]);
     PRINTF("[SETTINGS] denoise = [%u,%u,%u,%u]\r\n",
            s_denoise[0], s_denoise[1], s_denoise[2], s_denoise[3]);
+    PRINTF("[SETTINGS] fbonoff = [%u,%u,%u,%u]\r\n",
+           s_feedback_onoff[0], s_feedback_onoff[1],
+           s_feedback_onoff[2], s_feedback_onoff[3]);
 }
 
 
@@ -351,12 +392,14 @@ void bs300_reset_user_params(uint8_t prog_idx)
     s_eq_mid[prog_idx]  = 0;
     s_eq_high[prog_idx] = 0;
     s_denoise[prog_idx] = 0;
+    s_feedback_onoff[prog_idx] = 0;
 
     if (prog_idx == s_cur_prog) {
         s_dsp_state.modules.volume_level = 9;
         s_dsp_state.modules.eq_low  = 0;
         s_dsp_state.modules.eq_mid  = 0;
         s_dsp_state.modules.eq_high = 0;
+        s_dsp_state.modules.dfbc_enable_mode = 0x00;
     }
 }
 
@@ -364,7 +407,7 @@ void bs300_settings_persist(void)
 {
     uint8_t prog_to_save = (s_cur_prog == 3) ? 0 : s_cur_prog;
     bs300_settings_save(prog_to_save, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
-                        s_denoise);
+                        s_denoise, s_feedback_onoff);
 }
 
 /* ================================================================
@@ -399,6 +442,18 @@ void bs300_cache_boot_state(void)
         }
     }
 
+    /* Apply feedback on/off: override dfbc_enable_mode bit7 */
+    {
+        uint8_t fb = s_feedback_onoff[s_cur_prog];
+        if (fb) {
+            uint8_t mode = s_dsp_state.modules.dfbc_enable_mode & 0x0F;
+            if (mode == 0) mode = 0x07;   /* default: SlowStrong */
+            s_dsp_state.modules.dfbc_enable_mode = 0x80 | mode;
+        } else {
+            s_dsp_state.modules.dfbc_enable_mode = 0x00;
+        }
+    }
+
     PRINTF("[BS300] boot cache: prog=%d vol=%d denoise=%d input=%d\r\n",
            s_cur_prog, s_dsp_state.modules.volume_level,
            s_denoise[s_cur_prog],
@@ -430,6 +485,18 @@ static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
             int16_t v = (int16_t)out->enr.max_att_db[i] + off;
             if (v > 30) v = 30;
             out->enr.max_att_db[i] = (uint8_t)v;
+        }
+    }
+
+    /* Apply feedback on/off: override dfbc_enable_mode bit7 */
+    {
+        uint8_t fb = (prog_idx < 4) ? s_feedback_onoff[prog_idx] : 0;
+        if (fb) {
+            uint8_t mode = out->modules.dfbc_enable_mode & 0x0F;
+            if (mode == 0) mode = 0x07;
+            out->modules.dfbc_enable_mode = 0x80 | mode;
+        } else {
+            out->modules.dfbc_enable_mode = 0x00;
         }
     }
     return 0;

@@ -57,13 +57,13 @@ static const uint8_t PROG_MAGIC[4] = { 'B', 'S', 'P', 'G' };
  *  27:    version
  *  28-63: reserved (0xFF)
  */
-#define SLOT_DATA_LEN     25   /* bytes 0-24: covered by CRC */
-#define SLOT_MAGIC_OFF    21
-#define SLOT_CRC_OFF      25
-#define SLOT_VER_OFF      27
+#define SLOT_DATA_LEN     29   /* bytes 0-28: covered by CRC */
+#define SLOT_MAGIC_OFF    25
+#define SLOT_CRC_OFF      29
+#define SLOT_VER_OFF      31
 
 static const uint32_t SETTINGS_MAGIC_WORD = 0x54535342;  /* "BSST" little-endian */
-#define SETTINGS_VER  3  /* bumped: added denoise per-program storage */
+#define SETTINGS_VER  4  /* bumped: added feedback_onoff per-program storage */
 
 /* ---- Main Flash unlock (HIGH region: 0x00150000+) ---- */
 static void main_flash_unlock(void)
@@ -244,6 +244,7 @@ static void settings_build_slot(uint8_t active_prog,
                                   const int8_t *eq_mid,
                                   const int8_t *eq_high,
                                   const uint8_t *denoise,
+                                  const uint8_t *feedback_onoff,
                                   uint8_t *slot)
 {
     uint16_t crc;
@@ -269,6 +270,9 @@ static void settings_build_slot(uint8_t active_prog,
     if (denoise != NULL) {
         for (i = 0; i < 4; i++) slot[17 + i] = denoise[i];
     }
+    if (feedback_onoff != NULL) {
+        for (i = 0; i < 4; i++) slot[21 + i] = feedback_onoff[i];
+    }
 
     memcpy(slot + SLOT_MAGIC_OFF, &SETTINGS_MAGIC_WORD, 4);
     slot[SLOT_VER_OFF] = SETTINGS_VER;
@@ -280,7 +284,8 @@ static void settings_build_slot(uint8_t active_prog,
 
 bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
                           const int8_t *eq_low, const int8_t *eq_mid,
-                          const int8_t *eq_high, const uint8_t *denoise)
+                          const int8_t *eq_high, const uint8_t *denoise,
+                          const uint8_t *feedback_onoff)
 {
     uint32_t slot_buf[SETTINGS_SLOT_SIZE / 4];
     uint8_t *slot = (uint8_t *)slot_buf;
@@ -288,7 +293,7 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
     int i;
 
     settings_build_slot(active_prog, volume, eq_low, eq_mid, eq_high,
-                        denoise, slot);
+                        denoise, feedback_onoff, slot);
 
     main_flash_unlock();
 
@@ -336,7 +341,7 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
 
 bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
                           int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
-                          uint8_t *denoise)
+                          uint8_t *denoise, uint8_t *feedback_onoff)
 {
     int i;
     uint8_t j;
@@ -379,6 +384,8 @@ bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
                 for (j = 0; j < 4; j++) eq_high[j] = (int8_t)slot[13 + j];
             if (denoise != NULL)
                 for (j = 0; j < 4; j++) denoise[j] = slot[17 + j];
+            if (feedback_onoff != NULL)
+                for (j = 0; j < 4; j++) feedback_onoff[j] = slot[21 + j];
         }
 
         PRINTF("[BS300] settings loaded prog=%u slot=%d vol=[%u,%u,%u,%u]\r\n",

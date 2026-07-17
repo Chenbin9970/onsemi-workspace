@@ -43,6 +43,10 @@ static bool read_and_save_all(void)
         Sys_Watchdog_Refresh();
     }
     PRINTF("[BS300] 4 programs read + saved\r\n");
+
+    /* Init feedback on/off from chip data (only runs when reading from BS300) */
+    bs300_init_feedback_from_flash();
+
     return true;
 }
 
@@ -85,7 +89,7 @@ bool bs300_driver_init(void)
         if (!read_and_save_all()) return false;
     }
 
-    /* Step 4: Restore settings (active program + volume / EQ / denoise) */
+    /* Step 4: Restore settings (active program + volume / EQ / denoise / feedback) */
     {
         uint8_t saved_prog = 0;
         uint8_t saved_vol[4] = {9, 9, 9, 9};
@@ -93,16 +97,26 @@ bool bs300_driver_init(void)
         int8_t  saved_eq_mid[4] = {0};
         int8_t  saved_eq_high[4] = {0};
         uint8_t saved_denoise[4] = {0};
+        uint8_t saved_fbonoff[4] = {0};
+        const uint8_t *fb_ptr = NULL;
         if (bs300_settings_load(&saved_prog, saved_vol,
                                  saved_eq_low, saved_eq_mid, saved_eq_high,
-                                 saved_denoise)) {
+                                 saved_denoise, saved_fbonoff)) {
+            /* Only use settings feedback if any program was explicitly set */
+            if (saved_fbonoff[0] | saved_fbonoff[1] |
+                saved_fbonoff[2] | saved_fbonoff[3])
+                fb_ptr = saved_fbonoff;
             PRINTF("[BS300] settings loaded from flash\r\n");
         } else {
             PRINTF("[BS300] settings invalid, using defaults\r\n");
         }
         bs300_restore_settings(saved_prog, saved_vol,
                                saved_eq_low, saved_eq_mid, saved_eq_high,
-                               saved_denoise);
+                               saved_denoise, fb_ptr);
+
+        /* Fallback: if settings didn't have feedback, init from program flash */
+        if (fb_ptr == NULL)
+            bs300_init_feedback_from_flash();
     }
 
     /* Step 5: Boot cache — load active program into s_dsp_state + calibration */
@@ -152,13 +166,20 @@ bool bs300_driver_refresh(void)
         int8_t  saved_eq_mid[4] = {0};
         int8_t  saved_eq_high[4] = {0};
         uint8_t saved_denoise[4] = {0};
+        uint8_t saved_fbonoff[4] = {0};
+        const uint8_t *fb_ptr = NULL;
         if (bs300_settings_load(&saved_prog, saved_vol,
                                  saved_eq_low, saved_eq_mid, saved_eq_high,
-                                 saved_denoise)) {
+                                 saved_denoise, saved_fbonoff)) {
+            if (saved_fbonoff[0] | saved_fbonoff[1] |
+                saved_fbonoff[2] | saved_fbonoff[3])
+                fb_ptr = saved_fbonoff;
             bs300_restore_settings(saved_prog, saved_vol,
                                    saved_eq_low, saved_eq_mid, saved_eq_high,
-                                   saved_denoise);
+                                   saved_denoise, fb_ptr);
         }
+        if (fb_ptr == NULL)
+            bs300_init_feedback_from_flash();
     }
 
     bs300_cache_boot_state();
