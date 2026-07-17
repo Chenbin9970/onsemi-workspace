@@ -46,6 +46,15 @@ static bool read_and_save_all(void)
     return true;
 }
 
+static bool all_programs_cached(void)
+{
+    uint8_t i;
+    for (i = 0; i < 4; i++) {
+        if (!bs300_storage_is_valid(i)) return false;
+    }
+    return true;
+}
+
 /* ============================================================
  *  Public API
  * ============================================================ */
@@ -68,9 +77,13 @@ bool bs300_driver_init(void)
     }
     PRINTF("[BS300] startup OK\r\n");
 
-    /* Step 3: Read all 4 programs from BS300 Flash */
-    PRINTF("[BS300] reading all programs from chip...\r\n");
-    if (!read_and_save_all()) return false;
+    /* Step 3: First boot reads programs from chip; cached boot skips */
+    if (all_programs_cached()) {
+        PRINTF("[BS300] Main Flash cache valid, skip chip read\r\n");
+    } else {
+        PRINTF("[BS300] reading all programs from chip...\r\n");
+        if (!read_and_save_all()) return false;
+    }
 
     /* Step 4: Restore settings (active program + volume / EQ / denoise) */
     {

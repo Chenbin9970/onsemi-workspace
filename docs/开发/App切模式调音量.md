@@ -491,13 +491,13 @@ Step 6: MUTE → sync full program → ACTIVE
 | CMD_ID | 宏 | 功能 | 数据格式 | 处理链路 |
 |:---:|------|------|------|------|
 | 2 | `CMD_SETVOLUME` | 设置音量 | dev_type(1)+vol(1)+vol2(1) | `bs300_set_volume_notone_async` → Settings persist |
-| 6 | `CMD_SETGAIN` | 设置增益 | dev(1)+prog(1)+(spectrum(1)+dB(1))* | flash load→改 bin_gain→`fitting_commit` |
-| 7 | `CMD_SETMPO` | 设置 MPO | dev(1)+prog(1)+(ch(1)+mpo(1))* | flash load→改 lmt_th_db→`fitting_commit` |
-| 8 | `CMD_SETCOMPRESSRATIO` | 设置压缩比 | dev(1)+prog(1)+turn(1)+(ch(1)+step(1))* | flash load→改 kp_r_idx→`fitting_commit` |
-| 9 | `CMD_SETDENOISE` | 设置降噪 | dev(1)+prog(1)+level(1) | flash load→enr.max_att_db[16]→`fitting_commit`+Settings |
+| 6 | `CMD_SETGAIN` | 设置增益 | dev(1)+prog(1)+(spectrum(1)+dB(1))* | flash load→改 bin_gain→`fitting_commit`(sync=false) |
+| 7 | `CMD_SETMPO` | 设置 MPO | dev(1)+prog(1)+(ch(1)+mpo(1))* | flash load→改 lmt_th_db→`fitting_commit`(sync=false) |
+| 8 | `CMD_SETCOMPRESSRATIO` | 设置压缩比 | dev(1)+prog(1)+turn(1)+(ch(1)+step(1))* | flash load→改 kp_r_idx→`fitting_commit`(sync=false) |
+| 9 | `CMD_SETDENOISE` | 设置降噪 | dev(1)+prog(1)+level(1) | `s_denoise[prog]=level`→Settings persist (不改 Flash) |
 | 10 | `CMD_SETEQUALIZER` | 设置均衡器 | dev(1)+type(1)+val(1) | `bs300_set_eq_async` → Settings persist |
 | 15 | `CMD_GETCURRENTSCENE` | 获取当前程序 | 无 | 读取 s_dsp_state → 12B 响应 |
-| 16 | `CMD_SETCURRENTSCENE` | 切换程序 | dev(1)+scene(1) | `bs300_switch_program_async` |
+| 16 | `CMD_SETCURRENTSCENE` | 切换/刷新程序 | dev(1)+scene(1) | `bs300_switch_program_async` (同程序触发 re-sync diff) |
 | 26 | `CMD_GETDEVICECONFIG` | 获取设备信息 | 无 | 固件版本/MAC/产品型号等 → 29B 响应 |
 
 **设备 → App 主动推送：**

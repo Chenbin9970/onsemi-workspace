@@ -176,7 +176,7 @@ void Main_Loop(void)
             if (++tick_cnt >= 10000)
             {
                 tick_cnt = 0;
-                PRINTF("tick\r\n");
+                /* DEBUG: tick print disabled */
             }
         }
 #endif
@@ -230,6 +230,7 @@ void Main_Loop(void)
                     uint8_t i;
                     for (i = 0; i < 4; i++) bs300_storage_invalidate(i);
                     bs300_settings_invalidate();
+                    bs300_reset_to_defaults();
                     PRINTF("[BS300] cache cleared, reset to reload\r\n");
                 }
             }

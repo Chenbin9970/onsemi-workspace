@@ -154,7 +154,17 @@ bs300_switch_program_async(new_prog_idx)
         ├─ switch_diff_post_enr()  ← TC/DAI / ISS / WNR / AGCO
         ├─ switch_diff_vol_beep()  ← Vol/Beep
         └─ switch_diff_wdrc()      ← WDRC × 11
-        强制追加: DDM2(if input==5) / MM+(if input==4) / Vol/Beep(always)
+        全部按需对比 (ON→ON memcmp)，无强制追加指令。
+
+### 5.2 同程序 re-sync
+
+SetGain/MPO/CompressRatio 修改当前活跃程序时只写 Flash 不同步 BS300 (见 §15)。
+App 再次发送 SetCurrentScene(当前程序) 触发 re-sync:
+  ├─ load_struct(prog) → s_target (从 Flash 加载最新值)
+  ├─ s_cur_prog 不变
+  ├─ 不播提示音
+  └─ build_diff_session(): s_dsp_state vs s_target → 仅发出实际变化的模块
+     (如仅修改 WDRC，则只发 WDRC diff，不发 ENR/AGCO/ISS)
 ```
 
 ### 5.2 每模块 OFF→OFF / OFF→ON / ON→OFF / ON→ON 四分支
@@ -467,3 +477,69 @@ void bs300_settings_invalidate(void);
 | AGCO | byte-level ±1 | rounding tolerance (float_32 vs int_16t) |
 | WDRC KP Th (P1) | byte-level ±1 | rounding tolerance |
 | DDM2/MM+ | 仅支持 disabled (全零) | enable 模式编码待补 |
+
+## 15. 验配参数持久化
+
+### 15.1 Flash-Only (SetGain / SetMPO / SetCompressRatio)
+
+SetGain (ID:6)、SetMPO (ID:7)、SetCompressRatio (ID:8) 只写 Main Flash，不通过 I2C 同步到 BS300 RAM。
+参数生效需重启或切程序。
+
+```
+cmd_setgain / cmd_setmpo / cmd_setcompressratio
+  ├─ 解析 App 数据 (Flash raw 格式 → value_in_MT)
+  │   bin_gain: vmt = raw - 27
+  │   lmt_th:   vmt = raw + 30
+  │   kp_r_idx: vmt = raw (无偏移)
+  ├─ bs300_storage_load_program(prog) → flash_to_struct → s_fit_buf
+  ├─ 修改 s_fit_buf 对应字段
+  └─ fitting_commit(prog, false)
+       ├─ struct_to_flash → 480B 编码
+       ├─ bs300_storage_write_program → Erase + Write 扇区
+       └─ 不调用 bs300_resync_diff_async (sync_dsp=false)
+```
+
+**生效流程**: App 配完参数 → 发 SetCurrentScene(当前程序) → 同程序 re-sync (见 §5.2) → diff 同步到 BS300。
+
+### 15.2 RAM-Only (SetDenoise)
+
+SetDenoise (ID:9) 只存 RAM，**不修改 Program Flash**。类似音量/EQ，切程序时自动在 Flash 原始值上叠加偏移。
+
+```
+cmd_setdenoise
+  ├─ bs300_set_prog_denoise(prog, level) → s_denoise[prog] = level
+  │                                       → bs300_settings_save() 立即持久化
+  └─ 若 prog == active: bs300_switch_program_async(prog) → re-sync diff 到 DSP
+```
+
+**偏移模式**（非固定绝对值，保留各通道原始差异）：
+
+| level | offset | max_att_db | clamp |
+|:--:|:--:|------|:--:|
+| 0 | +0 | Flash 原始值（不覆盖） | — |
+| 1 | +3 | 各通道 +3 | ≤30 |
+| 2 | +6 | 各通道 +6 | ≤30 |
+| 3 | +9 | 各通道 +9 | ≤30 |
+| 4 | +12 | 各通道 +12 | ≤30 |
+| 5 | +15 | 各通道 +15 | ≤30 |
+
+max_att_db 为 5-bit Flash 字段，手册定义范围 [0, 30]，叠加后超过 30 截断。
+
+覆盖时机（两处，逻辑一致）：
+- `load_struct()` — 切程序/re-sync 时，Flash 加载后叠加
+- `bs300_cache_boot_state()` — 开机加载活跃程序后叠加
+- 公式: `if (level >= 1) max_att_db[i] = min(max_att_db[i] + level*3, 30)`
+
+## 16. 已修复 Bug
+
+| # | 模块 | bug | 修复 |
+|---|------|-----|------|
+| 1 | ENR num_ch | `encode_enr_flash` 提取 num_ch 缺少 `-1`，导致 `enable_num_ch` 每次 round-trip 漂移 +1 | `num_ch = (enable_num_ch & 0x0F) - 1`，循环 `i <= num_ch` |
+
+## 17. BLE 0xFE 清空缓存
+
+写 RX 特征值 `0xFE`:
+1. 擦除 4 个 Program 扇区 (`bs300_storage_invalidate(i)`)
+2. 擦除 Settings 扇区 (`bs300_settings_invalidate()`)
+3. 重置 RAM 状态 (`bs300_reset_to_defaults()`): s_cur_prog=0, vol=9, EQ=0, denoise=0
+4. 下次开机从 BS300 芯片重新读取全部程序

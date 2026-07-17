@@ -39,7 +39,7 @@ int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
     (void)param;
     (void)dest_id;
     (void)src_id;
-    PRINTF("[BS300] timer tick\r\n");
+        /* DEBUG: timer tick disabled for BS300 flow tracing */
     bs300_sync_timer_handler();
     return (KE_MSG_CONSUMED);
 }

@@ -172,6 +172,7 @@ void bs300_cache_boot_state(void);
 void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
                             const int8_t *eq_low, const int8_t *eq_mid,
                             const int8_t *eq_high, const uint8_t *denoise);
+void bs300_reset_to_defaults(void);
 void bs300_reset_user_params(uint8_t prog_idx);
 
 /* Direct access to current DSP state (490B .bss) */

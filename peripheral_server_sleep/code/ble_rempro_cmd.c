@@ -300,11 +300,12 @@ static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
     uint8_t dev_type = data[0];
     uint8_t scene_id = data[1];
 
+    PRINTF("[REMPRO] SetCurrentScene: dev=%u active=%u -> %u\r\n",
+           dev_type, bs300_get_active_prog(), scene_id);
+
     if (scene_id < 4) {
         bs300_switch_program_async(scene_id, NULL);
     }
-
-    PRINTF("[REMPRO] SetCurrentScene: dev=%u scene=%u\r\n", dev_type, scene_id);
 
     uint8_t status = 1;
     hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
@@ -405,14 +406,23 @@ static bs300_prog_struct_t s_fit_buf;
 /* Commit s_fit_buf to flash for the given program.
  * Caller must have already loaded raw→struct into s_fit_buf and modified it.
  * bs300_work_buf still holds the original raw 480B from the load call.
- * If active program, trigger I2C resync to DSP. */
-static int fitting_commit(uint8_t prog_idx)
+ * sync_dsp: if true and target is the active program, trigger I2C resync
+ * to DSP; if false, flash-only (takes effect on next program switch/reboot). */
+static int fitting_commit(uint8_t prog_idx, bool sync_dsp)
 {
+    uint8_t active = bs300_get_active_prog();
+
     if (bs300_struct_to_flash(&s_fit_buf, bs300_work_buf) < 0) return -1;
     bs300_storage_write_program(prog_idx, bs300_work_buf);
 
-    if (prog_idx == bs300_get_active_prog()) {
+    PRINTF("[FITTING] commit prog=%u active=%u sync=%d\r\n",
+           prog_idx, active, sync_dsp);
+
+    if (sync_dsp && prog_idx == active) {
+        PRINTF("[FITTING] >>> I2C resync to DSP <<<\r\n");
         bs300_resync_diff_async(&s_fit_buf, NULL);
+    } else {
+        PRINTF("[FITTING] flash-only, no I2C sync\r\n");
     }
     return 0;
 }
@@ -432,6 +442,9 @@ static void cmd_setgain(const uint8_t *data, uint8_t len)
 
     if (prog >= 4) { hdlc_response(CMD_SETGAIN, 1, NULL, 0); return; }
 
+    PRINTF("[REMPRO] SetGain IN: target_prog=%u active_prog=%u pairs=%u\r\n",
+           prog, bs300_get_active_prog(), pairs);
+
     bs300_print_settings();
 
     /* Load flash → struct */
@@ -442,16 +455,21 @@ static void cmd_setgain(const uint8_t *data, uint8_t len)
 
     for (i = 0; i < pairs; i++) {
         uint8_t spectrum = data[2 + i * 2];
-        int16_t decibel  = data[3 + i * 2];
+        int16_t raw_val  = data[3 + i * 2];
         if (spectrum < 32) {
-            if (decibel > 100) decibel = 100;
-            s_fit_buf.wdrc.bin_gain[spectrum] = (int8_t)decibel;
+            /* App sends Flash raw: raw = 27 + value_in_MT → value_in_MT = raw - 27 */
+            int16_t vmt = raw_val - 27;
+            if (vmt > 100) vmt = 100;
+            s_fit_buf.wdrc.bin_gain[spectrum] = (int8_t)vmt;
         }
     }
 
-    PRINTF("[REMPRO] SetGain: dev=%u prog=%u pairs=%u\r\n", dev_type, prog, pairs);
+    PRINTF("[REMPRO] SetGain: dev=%u prog=%u pairs=%u → gain[0-3]=%d,%d,%d,%d\r\n",
+           dev_type, prog, pairs,
+           s_fit_buf.wdrc.bin_gain[0], s_fit_buf.wdrc.bin_gain[1],
+           s_fit_buf.wdrc.bin_gain[2], s_fit_buf.wdrc.bin_gain[3]);
     bs300_reset_user_params(prog);
-    fitting_commit(prog);
+    fitting_commit(prog, false);
     hdlc_response(CMD_SETGAIN, 0, NULL, 0);
 }
 
@@ -470,6 +488,9 @@ static void cmd_setmpo(const uint8_t *data, uint8_t len)
 
     if (prog >= 4) { hdlc_response(CMD_SETMPO, 1, NULL, 0); return; }
 
+    PRINTF("[REMPRO] SetMPO IN: target_prog=%u active_prog=%u pairs=%u\r\n",
+           prog, bs300_get_active_prog(), pairs);
+
     bs300_print_settings();
 
     bs300_storage_load_program(prog, bs300_work_buf);
@@ -479,15 +500,18 @@ static void cmd_setmpo(const uint8_t *data, uint8_t len)
 
     for (i = 0; i < pairs; i++) {
         uint8_t channel = data[2 + i * 2];
-        int16_t mpo_val = data[3 + i * 2];
+        int16_t raw_val = data[3 + i * 2];
         if (channel < 16) {
-            if (mpo_val > 127) mpo_val = 127;
-            s_fit_buf.wdrc.lmt_th_db[channel] = (int8_t)mpo_val;
+            /* App sends Flash raw: raw = value_in_MT - 30 → value_in_MT = raw + 30 */
+            s_fit_buf.wdrc.lmt_th_db[channel] = (int8_t)(raw_val + 30);
         }
     }
 
-    PRINTF("[REMPRO] SetMPO: dev=%u prog=%u pairs=%u\r\n", dev_type, prog, pairs);
-    fitting_commit(prog);
+    PRINTF("[REMPRO] SetMPO: dev=%u prog=%u pairs=%u → lmt_th[0-3]=%d,%d,%d,%d\r\n",
+           dev_type, prog, pairs,
+           s_fit_buf.wdrc.lmt_th_db[0], s_fit_buf.wdrc.lmt_th_db[1],
+           s_fit_buf.wdrc.lmt_th_db[2], s_fit_buf.wdrc.lmt_th_db[3]);
+    fitting_commit(prog, false);
     hdlc_response(CMD_SETMPO, 0, NULL, 0);
 }
 
@@ -511,6 +535,9 @@ static void cmd_setcompressratio(const uint8_t *data, uint8_t len)
         hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
     }
 
+    PRINTF("[REMPRO] SetCompressRatio IN: target_prog=%u active_prog=%u pairs=%u\r\n",
+           prog, bs300_get_active_prog(), pairs);
+
     bs300_print_settings();
 
     bs300_storage_load_program(prog, bs300_work_buf);
@@ -529,16 +556,17 @@ static void cmd_setcompressratio(const uint8_t *data, uint8_t len)
         }
     }
 
-    PRINTF("[REMPRO] SetCompressRatio: dev=%u prog=%u turn=%u pairs=%u\r\n",
-           dev_type, prog, turn_num, pairs);
-    fitting_commit(prog);
+    PRINTF("[REMPRO] SetCompressRatio: dev=%u prog=%u turn=%u pairs=%u → CR0[0-3]=%d,%d,%d,%d CR1[0-3]=%d,%d,%d,%d\r\n",
+           dev_type, prog, turn_num, pairs,
+           s_fit_buf.wdrc.kp1_r_idx[0], s_fit_buf.wdrc.kp1_r_idx[1],
+           s_fit_buf.wdrc.kp1_r_idx[2], s_fit_buf.wdrc.kp1_r_idx[3],
+           s_fit_buf.wdrc.kp2_r_idx[0], s_fit_buf.wdrc.kp2_r_idx[1],
+           s_fit_buf.wdrc.kp2_r_idx[2], s_fit_buf.wdrc.kp2_r_idx[3]);
+    fitting_commit(prog, false);
     hdlc_response(CMD_SETCOMPRESSRATIO, 0, NULL, 0);
 }
 
-/* Denoise level → ENR max_att_db mapping */
-static const uint8_t denoise_to_max_att[5] = { 6, 9, 12, 15, 18 };
-
-/* ID:9  SetDenoise */
+/* ID:9  SetDenoise — RAM-only, like volume. Does NOT modify program flash. */
 static void cmd_setdenoise(const uint8_t *data, uint8_t len)
 {
     if (len < 3) {
@@ -551,31 +579,19 @@ static void cmd_setdenoise(const uint8_t *data, uint8_t len)
     uint8_t dev_type = data[0];
     uint8_t prog     = data[1];
     uint8_t level    = data[2];
-    uint8_t i;
 
-    if (prog >= 4 || level > 4) {
+    if (prog >= 4 || level > 5) {
         hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
     }
 
-    bs300_print_settings();
-
-    bs300_storage_load_program(prog, bs300_work_buf);
-    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
-        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
-    }
-
-    /* Map level → max_att_db, apply to all 16 channels */
-    {
-        uint8_t att = denoise_to_max_att[level];
-        for (i = 0; i < 16; i++) {
-            s_fit_buf.enr.max_att_db[i] = att;
-        }
-    }
-
-    PRINTF("[REMPRO] SetDenoise: dev=%u prog=%u level=%u → att=%u\r\n",
-           dev_type, prog, level, denoise_to_max_att[level]);
+    PRINTF("[REMPRO] SetDenoise: dev=%u prog=%u level=%u\r\n",
+           dev_type, prog, level);
     bs300_set_prog_denoise(prog, level);
-    fitting_commit(prog);
+
+    /* If active program, re-sync to apply new ENR max_att to DSP */
+    if (prog == bs300_get_active_prog()) {
+        bs300_switch_program_async(prog, NULL);
+    }
     hdlc_response(CMD_SETDENOISE, 0, NULL, 0);
 }
 

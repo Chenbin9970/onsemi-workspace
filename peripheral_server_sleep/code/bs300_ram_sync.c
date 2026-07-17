@@ -258,8 +258,11 @@ void bs300_set_prog_volume(uint8_t prog_idx, uint8_t level)
 
 void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level)
 {
-    if (prog_idx < 4 && level <= 4)
+    if (prog_idx < 4 && level <= 5) {
         s_denoise[prog_idx] = level;
+        bs300_settings_save(bs300_get_active_prog(),
+                            s_volumes, s_eq_low, s_eq_mid, s_eq_high, s_denoise);
+    }
 }
 
 uint8_t bs300_get_prog_denoise(uint8_t prog_idx)
@@ -302,6 +305,21 @@ void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
         for (i = 0; i < 4; i++) s_denoise[i] = denoise[i];
     }
     PRINTF("[BS300] settings restored prog=%u\r\n", active_prog);
+}
+
+void bs300_reset_to_defaults(void)
+{
+    uint8_t i;
+    s_cur_prog = 0;
+    for (i = 0; i < 4; i++) {
+        s_volumes[i]  = 9;
+        s_eq_low[i]   = 0;
+        s_eq_mid[i]   = 0;
+        s_eq_high[i]  = 0;
+        s_denoise[i]  = 0;
+    }
+    s_boot_cached = false;
+    PRINTF("[BS300] state reset to defaults (prog=0)\r\n");
 }
 
 void bs300_print_settings(void)
@@ -364,9 +382,32 @@ void bs300_cache_boot_state(void)
     s_dsp_state.modules.eq_mid  = s_eq_mid[s_cur_prog];
     s_dsp_state.modules.eq_high = s_eq_high[s_cur_prog];
 
-    PRINTF("[BS300] boot cache: prog=%d vol=%d input=%d\r\n",
+    /* Apply denoise level: offset from flash original (level * 3 per channel)
+     * max_att_db is 5-bit Flash field, range [0, 30] */
+    {
+        uint8_t dl = s_denoise[s_cur_prog];
+        if (dl >= 1 && dl <= 5) {
+            int16_t off = (int16_t)dl * 3;
+            uint8_t k;
+            for (k = 0; k < 16; k++) {
+                int16_t v = (int16_t)s_dsp_state.enr.max_att_db[k] + off;
+                if (v > 30) v = 30;
+                s_dsp_state.enr.max_att_db[k] = (uint8_t)v;
+            }
+        }
+    }
+
+    PRINTF("[BS300] boot cache: prog=%d vol=%d denoise=%d input=%d\r\n",
            s_cur_prog, s_dsp_state.modules.volume_level,
+           s_denoise[s_cur_prog],
            s_dsp_state.modules.input_selection);
+    PRINTF("[BOOT] WDRC gain[0-3]=%d,%d,%d,%d lmt_th[0-3]=%d,%d,%d,%d CR0[0-3]=%d,%d,%d,%d\r\n",
+           s_dsp_state.wdrc.bin_gain[0], s_dsp_state.wdrc.bin_gain[1],
+           s_dsp_state.wdrc.bin_gain[2], s_dsp_state.wdrc.bin_gain[3],
+           s_dsp_state.wdrc.lmt_th_db[0], s_dsp_state.wdrc.lmt_th_db[1],
+           s_dsp_state.wdrc.lmt_th_db[2], s_dsp_state.wdrc.lmt_th_db[3],
+           s_dsp_state.wdrc.kp1_r_idx[0], s_dsp_state.wdrc.kp1_r_idx[1],
+           s_dsp_state.wdrc.kp2_r_idx[0], s_dsp_state.wdrc.kp2_r_idx[1]);
 }
 
 /* ================================================================
@@ -374,8 +415,22 @@ void bs300_cache_boot_state(void)
  * ================================================================ */
 static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
 {
+    uint8_t i, level;
     bs300_storage_load_program(prog_idx, bs300_work_buf);
-    return bs300_flash_to_struct(bs300_work_buf, out);
+    if (bs300_flash_to_struct(bs300_work_buf, out) < 0) return -1;
+
+    /* Apply denoise level: offset from flash original (level * 3 per channel)
+     * max_att_db is 5-bit Flash field, range [0, 30] */
+    level = (prog_idx < 4) ? s_denoise[prog_idx] : 0;
+    if (level >= 1 && level <= 5) {
+        int16_t off = (int16_t)level * 3;
+        for (i = 0; i < 16; i++) {
+            int16_t v = (int16_t)out->enr.max_att_db[i] + off;
+            if (v > 30) v = 30;
+            out->enr.max_att_db[i] = (uint8_t)v;
+        }
+    }
+    return 0;
 }
 
 static int load_calib(bs300_calib_t *calib)
@@ -1045,24 +1100,6 @@ static int build_diff_session(bs300_sync_session_t *s)
                      &calib, new_it, igd_changed,
                      s, &sent, &fail, data);
 
-    /* Force DDM2/MM+ if target input requires them (diff may have missed
-     * due to voice_prompt_input_switch side-effects on DSP registers). */
-    if (s_target.modules.input_selection == 5) {
-        memset(data, 0, 48);
-        bs300_encode_ddm2(&s_target.modules, &calib, data);
-        bs300_session_append(s, 0x800022, data);
-    }
-    if (s_target.modules.input_selection == 4) {
-        memset(data, 0, 48);
-        bs300_encode_mm_plus(&s_target.modules, &calib, new_it, data);
-        bs300_session_append(s, 0x800062, data);
-    }
-
-    /* Force Vol/Beep — input_selection must be guaranteed */
-    memset(data, 0, 48);
-    bs300_encode_volume_beep(&s_target.modules, &calib, data);
-    bs300_session_append(s, 0x800081, data);
-
     return 0;
 }
 
@@ -1532,7 +1569,7 @@ static int start_async_session(void (*on_done)(void))
 int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 {
     if (new_prog_idx >= 4) return -1;
-    if (s_cur_prog == new_prog_idx) return 0;
+    bool same_prog = (s_cur_prog == new_prog_idx);
     bs300_print_settings();
 
     /* Busy → abort current session and queue the new switch.
@@ -1555,25 +1592,32 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
     s_target.modules.eq_mid  = s_eq_mid[new_prog_idx];
     s_target.modules.eq_high = s_eq_high[new_prog_idx];
 
-    s_cur_prog = new_prog_idx;
+    PRINTF("[SWITCH] target prog=%d from flash: gain[0-3]=%d,%d,%d,%d lmt_th[0-3]=%d,%d,%d,%d CR0[0-3]=%d,%d,%d,%d\r\n",
+           new_prog_idx,
+           s_target.wdrc.bin_gain[0], s_target.wdrc.bin_gain[1],
+           s_target.wdrc.bin_gain[2], s_target.wdrc.bin_gain[3],
+           s_target.wdrc.lmt_th_db[0], s_target.wdrc.lmt_th_db[1],
+           s_target.wdrc.lmt_th_db[2], s_target.wdrc.lmt_th_db[3],
+           s_target.wdrc.kp1_r_idx[0], s_target.wdrc.kp1_r_idx[1],
+           s_target.wdrc.kp2_r_idx[0], s_target.wdrc.kp2_r_idx[1]);
 
-    /* Defer flash write — Flash_EraseSector takes ~40ms and may
-     * stall BLE timing / trigger watchdog during connected state.
-     * Settings are persisted on BLE disconnect instead. */
-
-    PRINTF("[BS300] switch RAM async %d->%d\r\n",
-           s_cur_prog, new_prog_idx);
+    if (!same_prog) {
+        s_cur_prog = new_prog_idx;
+    }
 
     bs300_sync_session_init(&g_bs300_sync);
     g_bs300_sync.dsp_state = &s_dsp_state;
     g_bs300_sync.target = &s_target;
 
-    /* Prompt tone FIRST */
-    {
+    /* Prompt tone only on actual program change, not re-sync */
+    if (!same_prog) {
         uint8_t tone_data[48];
         memset(tone_data, 0, 48);
         bs300_session_append(&g_bs300_sync, bs300_tone_for_program(new_prog_idx),
                              tone_data);
+    } else {
+        PRINTF("[BS300] switch RAM re-sync (same prog=%d, flash→DSP diff)\r\n",
+               new_prog_idx);
     }
 
     if (build_diff_session(&g_bs300_sync) < 0) return -1;
@@ -1584,6 +1628,8 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
 int bs300_resync_diff_async(bs300_prog_struct_t *_new, void (*on_done)(void))
 {
     if (bs300_sync_is_busy()) return -1;
+
+    PRINTF("[SYNC] bs300_resync_diff_async ENTER\r\n");
 
     memcpy(&s_target, _new, sizeof(s_target));
 

@@ -391,9 +391,10 @@ static int encode_enr_flash(uint8_t *data, uint16_t max_bytes,
 
     bw_init(&bw, data);
 
-    num_ch = enr->enable_num_ch & 0x0F;
-    if (num_ch == 0) num_ch = 16;
-    if (num_ch > 16) num_ch = 16;
+    /* enable_num_ch stores (flash_num_ch + 1): 0x80 | (flash_num_ch + 1)
+     * flash_num_ch = actual_channels - 1  (e.g. 15 for 16 channels) */
+    num_ch = (enr->enable_num_ch & 0x0F) - 1;
+    if (num_ch > 15) num_ch = 15;
 
     /* Global smoothing factors */
     bw_write(&bw, enr->nfsf, 4);
@@ -402,8 +403,8 @@ static int encode_enr_flash(uint8_t *data, uint16_t max_bytes,
     bw_write(&bw, num_ch & 0x0F, 4);
     bw_write(&bw, (num_ch >> 4) & 0x03, 2);
 
-    /* Per-channel data */
-    for (i = 0; i < num_ch && i < 16; i++) {
+    /* Per-channel data — num_ch is zero-based max index, so i <= num_ch */
+    for (i = 0; i <= num_ch && i < 16; i++) {
         int32_t raw;
 
         bw_write(&bw, enr->freq_idx[i], 6);
@@ -411,11 +412,13 @@ static int encode_enr_flash(uint8_t *data, uint16_t max_bytes,
         bw_write(&bw, enr->snr_th_db[i], 5);         /* raw = value_in_MT */
 
         raw = (int32_t)enr->noise_th_db[i] - 10;     /* raw = value_in_MT - 10 */
-        if (raw < 0) raw = 0; if (raw > 63) raw = 63;
+        if (raw < 0) raw = 0;
+        if (raw > 63) raw = 63;
         bw_write(&bw, (uint32_t)raw, 6);
 
         raw = (int32_t)enr->upper_noise_th_db[i] - 40; /* raw = value_in_MT - 40 */
-        if (raw < 0) raw = 0; if (raw > 63) raw = 63;
+        if (raw < 0) raw = 0;
+        if (raw > 63) raw = 63;
         bw_write(&bw, (uint32_t)raw, 6);
 
         bw_write(&bw, enr->etr_x100[i], 7);          /* raw = value_in_MT */
