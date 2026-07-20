@@ -1806,7 +1806,7 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
     }
 
     return reencode_bin_gain_async_core(on_done,
-               (level == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
+               (level == 9) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
 }
 
 /* Same as bs300_set_volume_async but without prompt tone — for app-initiated

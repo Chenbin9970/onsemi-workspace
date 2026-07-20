@@ -20,6 +20,9 @@
 #include "app.h"
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
+#ifdef CFG_FOTA
+#include "sys_fota.h"
+#endif
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -423,6 +426,12 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
                        param->length,
                        param->length > 0 ? param->value[0] : 0,
                        param->length > 1 ? param->value[1] : 0);
+#ifdef CFG_FOTA
+                if (param->length >= 1 && param->value[0] == 0xFD) {
+                    PRINTF("[FOTA] Triggered via Custom RX, entering DFU...\r\n");
+                    Sys_Fota_StartDfu(1);
+                }
+#endif
             }
             break;
 

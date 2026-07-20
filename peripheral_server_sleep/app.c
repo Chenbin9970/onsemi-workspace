@@ -65,8 +65,8 @@ int main()
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
 
-    /* Button DIO2: must be re-init after each wakeup (see Continue_Application) */
-    Sys_DIO_Config(2, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+    /* Button DIO12: must be re-init after each wakeup (see Continue_Application) */
+    Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 
 #ifndef DEBUG_UART_ENABLE
     /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
@@ -276,7 +276,7 @@ void Main_Loop(void)
             /* Multi-sample filter: 5x read, majority vote */
             for (i = 0; i < 5; i++)
             {
-                if (DIO_DATA->ALIAS[2] == 0) cnt_low++;
+                if (DIO_DATA->ALIAS[12] == 0) cnt_low++;
             }
             btn_now = (cnt_low >= 3) ? 1 : 0;
 

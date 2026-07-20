@@ -29,7 +29,14 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define DEBUG_UART_ENABLE
+//#define DEBUG_UART_ENABLE
+
+#ifdef CFG_FOTA
+#define VER_ID                  "BS300"
+#define VER_MAJOR               1
+#define VER_MINOR               0
+#define VER_REVISION            0
+#endif
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
  * have a C binding.
@@ -58,6 +65,10 @@ extern "C"
 #include "calibration.h"
 #include "RTE_Device.h"
 #include "bs300_program_read.h"
+#ifdef CFG_FOTA
+#include "sys_fota.h"
+#include "sys_boot.h"
+#endif
 
 /* Enable BS300 I2C Flash Read test (requires DEBUG_UART_ENABLE for output) */
 #define BS300_TEST_ENABLE

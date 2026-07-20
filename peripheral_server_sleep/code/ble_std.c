@@ -27,6 +27,10 @@
 #include "app.h"
 #include "ble_rempro_cmd.h"
 
+#ifdef CFG_FOTA
+SYS_FOTA_VERSION(VER_ID, VER_MAJOR, VER_MINOR, VER_REVISION);
+#endif
+
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
 #endif

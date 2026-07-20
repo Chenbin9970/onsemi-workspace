@@ -335,7 +335,7 @@ CMD=2 收到 → cmd_setvolume()
     ├─ busy? → s_pending_volume = level, return
     └─ !busy? → reencode_bin_gain_async_core()
          ├─ bs300_encode_wdrc_bin_gain (编码 bin_gain 48B)
-         ├─ 追加 0xFCD2F2 (提示音) + 0x8060B2 (bin_gain)
+         ├─ 追加 TONE (提示音，vol=9 时 0xFD12F2, 其他 0xFCD2F2) + 0x8060B2 (bin_gain)
          └─ start_async_session → ke_timer 启动
 ```
 
