@@ -137,8 +137,20 @@ int bs300_itg_clear(void);
 /* ================================================================
  *  Pure-tone Audiometry
  * ================================================================ */
+
+typedef enum {
+    BS300_AUDIOMETRY_NONE = 0,
+    BS300_AUDIOMETRY_TEST = 1,   /* CMD 40 status=0: pure-tone audiometry */
+} bs300_audiometry_state_t;
+
 int bs300_audiometry_enter(void);
 int bs300_audiometry_exit(void);
+bs300_audiometry_state_t bs300_get_audiometry_state(void);
+void bs300_set_audiometry_state(bs300_audiometry_state_t s);
+
+/* Schedule a one-shot callback after delay_10ms (×10ms units, max ~163s).
+ * Used for non-blocking deferred notifications. */
+void bs300_schedule_delayed_push(void (*cb)(void), uint16_t delay_10ms);
 
 /* ================================================================
  *  Basic commands

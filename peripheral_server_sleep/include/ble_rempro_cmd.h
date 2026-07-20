@@ -22,15 +22,19 @@ extern "C" {
 #define CMD_SETCOMPRESSRATIO    8
 #define CMD_SETDENOISE          9
 #define CMD_SETEQUALIZER        10
+#define CMD_SETPLAYVOICE         13
+#define CMD_SETSTOPVOICE         14
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETDEVICECONFIG     26
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
+#define CMD_SETAUDIOMETRYSTATUS  40
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
-#define CMD_PUSH_VOLUME         4
-#define CMD_PUSH_SCENE          5
+#define CMD_PUSH_VOLUME              4
+#define CMD_PUSH_SCENE               5
+#define CMD_PUSH_INITIAL_STATUS      6   /* Receive device initial Status */
 
 /* HDLC SYS_ID for device-initiated push */
 #define HDLC_SYS_ID_DEVICE      1
@@ -46,6 +50,8 @@ void rempro_reasm_reset(void);
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);
 void rempro_push_volume_change(uint8_t prog, uint8_t volume);
+void rempro_push_initial_status_done(void);
+void rempro_push_audiometry_exit(void);
 
 #ifdef __cplusplus
 }

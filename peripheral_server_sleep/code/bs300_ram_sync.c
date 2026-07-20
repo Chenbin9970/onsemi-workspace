@@ -25,6 +25,7 @@ static uint8_t              s_denoise[4];        /* 4B — per-program denoise l
 static uint8_t              s_feedback_onoff[4]; /* 4B — per-program DFBC on/off, override flash */
 static uint8_t              s_cur_prog;          /* 1B — current active program index */
 static bool                 s_boot_cached;    /* 1B — calibration loaded flag */
+static bs300_audiometry_state_t s_audiometry_state; /* 1B — audiometry/trial state for button intercept */
 
 /* Shared raw Flash work buffer — also used by driver.c */
 uint8_t bs300_work_buf[480];
@@ -1413,6 +1414,8 @@ int bs300_audiometry_exit(void)
     ret = bs300_mute();
     if (ret < 0) return ret;
 
+    s_audiometry_state = BS300_AUDIOMETRY_NONE;
+
     bs300_itg_clear();
 
     /* Full re-sync from s_dsp_state — restore original config */
@@ -1420,6 +1423,16 @@ int bs300_audiometry_exit(void)
     if (ret < 0) return ret;
 
     return bs300_active();
+}
+
+bs300_audiometry_state_t bs300_get_audiometry_state(void)
+{
+    return s_audiometry_state;
+}
+
+void bs300_set_audiometry_state(bs300_audiometry_state_t s)
+{
+    s_audiometry_state = s;
 }
 
 /* ================================================================
@@ -1551,6 +1564,7 @@ static int8_t  s_pending_switch = -1;          /* deferred switch target */
 static void (*s_pending_switch_on_done)(void) = NULL;
 static int8_t  s_pending_volume = -1;          /* deferred volume level */
 static void (*s_pending_volume_cb)(void) = NULL;
+static void (*s_delayed_push_cb)(void) = NULL; /* one-shot callback after timer delay */
 
 static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd);
 
@@ -1564,6 +1578,14 @@ int bs300_sync_is_busy(void)
 void bs300_sync_timer_handler(void)
 {
     uint16_t delay;
+
+    /* Delayed push callback (non-I2C, e.g. audiometry init-done notify) */
+    if (g_bs300_sync.state == BS300_SYNC_IDLE && s_delayed_push_cb) {
+        void (*cb)(void) = s_delayed_push_cb;
+        s_delayed_push_cb = NULL;
+        cb();
+        return;
+    }
 
     if (!bs300_sync_tick(&g_bs300_sync)) {
         void (*cb)(void) = g_bs300_sync_on_done;
@@ -1625,6 +1647,15 @@ void bs300_process_deferred(void)
         reencode_bin_gain_async_core(vol_cb,
             (vol == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
     }
+}
+
+/* Schedule a one-shot callback after delay_ms via ke_timer.
+ * Used for non-blocking deferred notifications (e.g. 2s after audiometry
+ * enter completes, to let DSP stabilize before notifying the app). */
+void bs300_schedule_delayed_push(void (*cb)(void), uint16_t delay_10ms)
+{
+    s_delayed_push_cb = cb;
+    ke_timer_set(BS300_SYNC_TIMER, TASK_APP, delay_10ms);
 }
 
 static int start_async_session(void (*on_done)(void))

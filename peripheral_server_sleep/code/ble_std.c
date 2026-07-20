@@ -27,6 +27,10 @@
 #include "app.h"
 #include "ble_rempro_cmd.h"
 
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
 /* Bluetooth Environment Structure */
 struct ble_env_tag ble_env;
 

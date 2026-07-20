@@ -238,6 +238,32 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume)
     hdlc_push(CMD_PUSH_VOLUME, d, 4);
 }
 
+/* Active push: notify app of initial status done (CMD=6, SYS_ID=1).
+ * Protocol: SYS_ID(1) + CMD_ID(2) + Device_Type(1) + Initial_Status(1)
+ *   Device_Type=1 (left), Initial_Status=2 (初始化完成) */
+void rempro_push_initial_status_done(void)
+{
+    if (ble_env.state != APPM_CONNECTED) return;
+    uint8_t d[2];
+    d[0] = 1;   /* Device_Type: 1=left (single device) */
+    d[1] = 2;   /* Initial_Status: 2=初始化完成 */
+    PRINTF("[REMPRO] push initial status done\r\n");
+    hdlc_push(CMD_PUSH_INITIAL_STATUS, d, 2);
+}
+
+/* Active push: notify app of audiometry exit (CMD=6, SYS_ID=1).
+ * Protocol: SYS_ID(1) + CMD_ID(2) + Device_Type(1) + Initial_Status(1)
+ *   Device_Type=1 (left), Initial_Status=1 (未初始化) */
+void rempro_push_audiometry_exit(void)
+{
+    if (ble_env.state != APPM_CONNECTED) return;
+    uint8_t d[2];
+    d[0] = 1;   /* Device_Type: 1=left (single device) */
+    d[1] = 1;   /* Initial_Status: 1=未初始化 */
+    PRINTF("[REMPRO] push audiometry exit\r\n");
+    hdlc_push(CMD_PUSH_INITIAL_STATUS, d, 2);
+}
+
 /* ================================================================
  * Command Handlers
  * ================================================================ */
@@ -684,6 +710,91 @@ static void cmd_setdenoise(const uint8_t *data, uint8_t len)
 }
 
 /* ================================================================
+ * Audiometry frequency table: Spectrum (CMD 13) → Hz
+ * ================================================================ */
+static const uint16_t s_audiometry_freq[17] = {
+    250, 500, 1000, 1500, 2000, 2500, 3000, 3500,
+    4000, 4500, 5000, 5500, 6000, 6500, 7000, 7500, 8000
+};
+
+/* ID:13  SetPlayVoice — play pure tone at given frequency & dB */
+static void cmd_setplayvoice(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) { hdlc_response(CMD_SETPLAYVOICE, 1, NULL, 0); return; }
+
+    uint8_t spectrum = data[1];
+    uint8_t decibel  = data[2];
+    uint8_t status   = 1;
+
+    if (spectrum < 17 && decibel >= 20 && decibel <= 100) {
+        uint16_t freq_hz = s_audiometry_freq[spectrum];
+        const bs300_calib_t *calib = bs300_get_cached_calib();
+
+        /* Protocol flow: Mute → ITG write → Active */
+        bs300_mute();
+        if (bs300_itg_write(decibel, freq_hz, calib) == 0)
+            bs300_active();
+        else
+            status = 0;
+    } else {
+        status = 0;
+    }
+
+    PRINTF("[REMPRO] SetPlayVoice: spec=%u dB=%u freq=%u\r\n",
+           spectrum, decibel,
+           (spectrum < 17) ? s_audiometry_freq[spectrum] : 0);
+    hdlc_response(CMD_SETPLAYVOICE, 0, &status, 1);
+}
+
+/* ID:14  SetStopVoice — stop playing pure tone */
+static void cmd_setstopvoice(const uint8_t *data, uint8_t len)
+{
+    (void)data; (void)len;
+
+    /* Protocol flow: Mute → ITG clear */
+    bs300_mute();
+    bs300_itg_clear();
+
+    PRINTF("[REMPRO] SetStopVoice\r\n");
+    uint8_t status = 1;
+    hdlc_response(CMD_SETSTOPVOICE, 0, &status, 1);
+}
+
+/* ID:40  SetAudiometryStatus — enter/exit audiometry */
+static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
+{
+    if (len < 2) { hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0); return; }
+
+    uint8_t fitting_status = data[1];
+
+    PRINTF("[REMPRO] SetAudiometryStatus: status=%u\r\n", fitting_status);
+
+    /* Respond immediately — acknowledge receipt */
+    {
+        uint8_t ack = 1;
+        hdlc_response(CMD_SETAUDIOMETRYSTATUS, 0, &ack, 1);
+    }
+
+    /* Then do the work; push initial-status-done after enter completes */
+    switch (fitting_status) {
+    case 0:  /* Enter audiometry */
+        if (bs300_audiometry_enter() == 0) {
+            bs300_set_audiometry_state(BS300_AUDIOMETRY_TEST);
+            /* Notify app after 2s DSP stabilization, non-blocking */
+            bs300_schedule_delayed_push(rempro_push_initial_status_done, 200);
+        }
+        break;
+    case 1:  /* Exit audiometry */
+        bs300_audiometry_exit();
+        bs300_schedule_delayed_push(rempro_push_audiometry_exit, 200);
+        break;
+    default:
+        break;
+    }
+}
+
+/* ================================================================
  * Main dispatcher
  * ================================================================ */
 void rempro_cmd_process(void)
@@ -758,6 +869,18 @@ void rempro_cmd_process(void)
         case CMD_SETEQUALIZER:
             if (data) cmd_setequalizer(data, data_len);
             else hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0);
+            break;
+        case CMD_SETPLAYVOICE:
+            if (data) cmd_setplayvoice(data, data_len);
+            else hdlc_response(CMD_SETPLAYVOICE, 1, NULL, 0);
+            break;
+        case CMD_SETSTOPVOICE:
+            if (data) cmd_setstopvoice(data, data_len);
+            else hdlc_response(CMD_SETSTOPVOICE, 1, NULL, 0);
+            break;
+        case CMD_SETAUDIOMETRYSTATUS:
+            if (data) cmd_setaudiometrystatus(data, data_len);
+            else hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0);
             break;
         case CMD_GETCURRENTSCENE:
             cmd_getcurrentscene();

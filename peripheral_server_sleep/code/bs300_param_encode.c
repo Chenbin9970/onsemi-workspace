@@ -1940,6 +1940,36 @@ int bs300_encode_tc_dai(const bs300_calib_t *calib,
 }
 
 /* ================================================================
- *  Input Tone Generator (0x8001E2) — see bs300_ram_sync.c for write/clear
- *  bs300_encode_itg() declared in bs300_param_encode.h
- ================================================================ */
+ *  Input Tone Generator (0x8001E2)
+ *  itg_level reuses bs300_beep_frac24_table (same formula).
+ * ================================================================ */
+
+int bs300_encode_itg(uint8_t level_db, uint16_t freq_hz, uint8_t enable,
+                     const bs300_calib_t *calib, uint8_t *data)
+{
+    uint8_t cal_band;
+    uint32_t freq_idx;
+    int32_t x;
+    int32_t idx;
+
+    if (calib == NULL || data == NULL) return -1;
+    memset(data, 0, 48);
+
+    if (!enable) return 0;
+
+    freq_idx = freq_hz / 250;
+    if (freq_idx < 1) freq_idx = 1;
+    if (freq_idx > 0x1F) freq_idx = 0x1F;
+    set_word(data, 1, freq_idx);
+
+    cal_band = freq_to_cal_band(freq_hz);
+    x = (int32_t)level_db - (int32_t)calib->mic1_band[cal_band];
+    idx = x + BS300_BEEP_TABLE_OFFSET;
+    if (idx < 0) idx = 0;
+    if (idx >= BS300_BEEP_TABLE_SIZE) idx = BS300_BEEP_TABLE_SIZE - 1;
+    set_word(data, 0, bs300_beep_frac24_table[idx]);
+
+    set_word(data, 2, 0x000001);
+
+    return 0;
+}
