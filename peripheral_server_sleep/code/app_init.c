@@ -191,11 +191,10 @@ void App_sleep_Initialize(void)
     /* BLE not in sleep mode and ready for normal operations */
     BLE_Is_Awake_Flag_Set();
 
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_200);
-    Sys_ADC_InputSelectConfig(0, (ADC_NEG_INPUT_GND |
-                                  ADC_POS_INPUT_VBAT_DIV2));
+    /* Configure ADC channel 0 for DIO3 battery measurement */
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_200);
+    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL, (ADC_NEG_INPUT_GND | ADC_POS_INPUT_DIO3));
 
     /* Initialize environment */
     App_Env_Initialize();
@@ -280,12 +279,12 @@ void App_RM_BLE_Initialize(void)
 
     BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_6400);
-    Sys_ADC_InputSelectConfig(0,
+    /* Configure ADC channel 0 for DIO3 battery measurement */
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_6400);
+    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL,
                               (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_VBAT_DIV2));
+                               ADC_POS_INPUT_DIO3));
 
     Sys_Watchdog_Refresh();
 
@@ -474,12 +473,12 @@ void App_Initialize(void)
 
     BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_6400);
-    Sys_ADC_InputSelectConfig(0,
+    /* Configure ADC channel 0 for DIO3 battery measurement */
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_6400);
+    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL,
                               (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_VBAT_DIV2));
+                               ADC_POS_INPUT_DIO3));
 
     Sys_Watchdog_Refresh();
 

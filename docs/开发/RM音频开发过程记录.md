@@ -205,3 +205,44 @@ SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 | 切 BLE 死机 | 音频 DMA 运行时切 RF | 先 `Sys_DMA_ChannelDisable` 停 DMA |
 | 第二次启 RM 崩溃 | `RM_Disable` 后未重配 RM | 每次启前调 `APP_RM_Init` |
 | APP_RM_Init 误触发 | LINK_DISCONNECTED 在 RM 未运行时调 RM_Disable | 加 `audio_streaming` 保护 |
+
+---
+
+## RM 音频变音修复（2026-07-21）
+
+### 现象
+
+信号不好时 RM 音频变音/爆音/杂音。
+
+### 根因
+
+[rm_app.c](../peripheral_server_sleep/code/rm_app.c) `RM_Callback_TRX` 中 `GOODPKT` / `BADCRCPKT` / `NOPKT` 三种收包类型走同一分支，**CRC 校验失败的坏包直接送入 DSP 解码器**：
+
+```c
+// 修复前 — 三种类型无差别处理
+case RM_RX_TRANSFER_GOODPKT:
+case RM_RX_TRANSFER_BADCRCPKT:  // CRC 错误照样解码 → 爆音
+case RM_RX_TRANSFER_NOPKT:      // 丢包无隐藏
+{
+    memcpy(outTempBuff, ptr, *length);
+    Rendering_func(outTempBuff);  // → DSP G.722 解码 → DAC
+}
+```
+
+### 修复
+
+拆开三个 case，只有 `GOODPKT` 送解码，`BADCRCPKT` 和 `NOPKT` 直接丢弃：
+
+| 收包类型 | 处理 | 效果 |
+|----------|------|------|
+| `GOODPKT` | 送 DSP 解码（不变） | 正常音频 |
+| `BADCRCPKT` | **丢弃**，`app_err2++` | DSP 无新数据，输出重复上一好帧 |
+| `NOPKT` | **丢弃**，`app_err3++` | 同上 |
+
+丢包时 DSP 无新数据输入，音频输出自然重复上一好帧（帧重复 PLC），听感是短暂卡顿而非刺耳杂音。连续丢包会变成断续，但远比 CRC 坏包解码出的爆音可接受。
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| [rm_app.c](../peripheral_server_sleep/code/rm_app.c#L164-L184) | `RM_Callback_TRX` 三个 case 拆开处理 |

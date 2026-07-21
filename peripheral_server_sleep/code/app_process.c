@@ -320,11 +320,11 @@ void Continue_Application(void)
     /* Turn off pad retention */
     ACS_WAKEUP_CTRL->PADS_RETENTION_EN_BYTE = PADS_RETENTION_DISABLE_BYTE;
 
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_200);
-    Sys_ADC_InputSelectConfig(0, (ADC_NEG_INPUT_GND |
-                                  ADC_POS_INPUT_VBAT_DIV2));
+    /* Configure ADC channel 0 for DIO3 battery measurement */
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_200);
+    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL, (ADC_NEG_INPUT_GND |
+                                  ADC_POS_INPUT_DIO3));
 
     /* Configure clock dividers */
     CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
@@ -455,9 +455,9 @@ void Measure_Battery_Level(void)
     uint16_t level;
 
     /* Calculate the battery level as a percentage, scaling the battery
-     * voltage between 1.4V (max) and 1.1V (min) */
-    level = ((ADC->DATA_TRIM_CH[0] - VBAT_1P1V_MEASURED) * BAT_LVL_MAX
-             / (VBAT_1P4V_MEASURED - VBAT_1P1V_MEASURED));
+     * voltage between 3.0V (min) and 4.4V (max) via DIO3 divider */
+    level = ((ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL] - BAT_ADC_MIN) * BAT_LVL_MAX
+             / (BAT_ADC_MAX - BAT_ADC_MIN));
     level = ((level > BAT_LVL_MAX) ? BAT_LVL_MAX : level);
 
     /* Add to the current sum and increment the number of reads */

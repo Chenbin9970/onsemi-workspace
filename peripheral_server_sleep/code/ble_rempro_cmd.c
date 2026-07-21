@@ -399,10 +399,10 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
 static void cmd_getbatteryinfo(void)
 {
     uint8_t resp_data[2];
-    resp_data[0] = 100;  /* Left_Battery: hardcoded 100% */
-    resp_data[1] = 0;    /* Right_Battery: 0 (single device) */
+    resp_data[0] = app_env.batt_lvl;  /* Left_Battery: measured */
+    resp_data[1] = 0;                 /* Right_Battery: 0 (single device) */
 
-    PRINTF("[REMPRO] GetBatteryInfo: L=100 R=0\r\n");
+    PRINTF("[REMPRO] GetBatteryInfo: L=%u R=0\r\n", app_env.batt_lvl);
     hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
 }
 

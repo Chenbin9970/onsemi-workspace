@@ -162,20 +162,26 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
         break;
 
         case RM_RX_TRANSFER_GOODPKT:
-        case RM_RX_TRANSFER_BADCRCPKT:
-        case RM_RX_TRANSFER_NOPKT:
         {
-            if ((*length) == 0)
-            {
-                app_err1++;
-            }
-            else
+            if (*length > 0)
             {
                 memcpy(outTempBuff, ptr, *length);
                 Rendering_func(outTempBuff);
             }
+            else
+            {
+                app_err1++;
+            }
         }
         break;
+
+        case RM_RX_TRANSFER_BADCRCPKT:
+            app_err2++;
+            break;
+
+        case RM_RX_TRANSFER_NOPKT:
+            app_err3++;
+            break;
 
         case RM_SWPLL_SYNC:
         {
