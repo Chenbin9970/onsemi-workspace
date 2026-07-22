@@ -18,6 +18,9 @@ __pycache__/
 # PDOM index files (Eclipse CDT)
 *.pdom
 
+# IDE-generated RTE files
+**/RTE_Components.h
+
 # Object files
 *.o
 *.obj
