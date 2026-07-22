@@ -59,6 +59,25 @@ python updater.py COM6 peripheral_server_sleep.fota
 # 3. 之后可通过 BLE OTA 升级，写 0xFD 到 Custom Service RX 触发
 ```
 
+## Build ID 不匹配问题
+
+post-build 步骤 `mkfotaimg.py` 会检查 `fota.bin`（FOTA stack）和 `app.bin`（应用）的 Build ID 是否一致：
+
+```
+AssertionError: Build ID do not match
+```
+
+**原因**: 工作区 `RTE/Device/RSL10/fota.bin` 和 CMSIS Pack 的 `libfota.a` 不是同一批构建的。
+
+**修复**: 从 CMSIS Pack 复制匹配的 `fota.bin` 覆盖工作区版本：
+
+```powershell
+Copy-Item "$env:LOCALAPPDATA\Arm\Packs\ONSemiconductor\RSL10\3.9.1182\lib\Release\fota.bin" `
+    "RTE\Device\RSL10\fota.bin" -Force
+```
+
+> `fota.bin` 和 `libfota.a` 是 FOTA 构建流程的一对产物，Build ID 嵌入在 `.rodata.fota.build-id` 段中，必须同源。
+
 ## 依赖
 
 ```bash
