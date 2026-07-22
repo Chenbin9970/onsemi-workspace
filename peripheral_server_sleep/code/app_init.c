@@ -473,13 +473,6 @@ void App_Initialize(void)
 
     BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
-    /* Configure ADC channel 0 for DIO3 battery measurement */
-    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
-    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_6400);
-    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL,
-                              (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_DIO3));
-
     Sys_Watchdog_Refresh();
 
     /* Seed the random number generator */
@@ -580,6 +573,14 @@ void App_Initialize(void)
     SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 
     app_env.init_done = 1;
+
+    Sys_DIO_Config(3, DIO_MODE_DISABLE | DIO_NO_PULL);
+
+    /* Set the ADC configuration */
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
+
+    Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
+                              ADC_NEG_INPUT_GND);
 
     /* Stop masking interrupts */
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);

@@ -101,9 +101,6 @@ void Main_Loop(void)
     }
     (app_env.sleep_cycles)++;
 
-    /* Read the battery level and update the average value */
-    Measure_Battery_Level();
-
     while (true)
     {
         Kernel_Schedule();
@@ -176,7 +173,6 @@ void Main_Loop(void)
             if (++tick_cnt >= 10000)
             {
                 tick_cnt = 0;
-                /* DEBUG: tick print disabled */
             }
         }
 #endif
@@ -196,12 +192,6 @@ void Main_Loop(void)
                 }
             }
 #endif
-            if (app_env.send_batt_ntf && bass_support_env.enable)
-            {
-                app_env.send_batt_ntf = 0;
-
-                Batt_LevelUpdateSend(0, app_env.batt_lvl, 0);
-            }
 
             /* Handle BS300 commands from BLE RX characteristic */
             if (cs_env.rx_value_changed)

@@ -320,11 +320,13 @@ void Continue_Application(void)
     /* Turn off pad retention */
     ACS_WAKEUP_CTRL->PADS_RETENTION_EN_BYTE = PADS_RETENTION_DISABLE_BYTE;
 
-    /* Configure ADC channel 0 for DIO3 battery measurement */
-    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
-    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_200);
-    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL, (ADC_NEG_INPUT_GND |
-                                  ADC_POS_INPUT_DIO3));
+    Sys_DIO_Config(3, DIO_MODE_DISABLE | DIO_NO_PULL);
+
+    /* Set the ADC configuration */
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
+
+    Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
+                              ADC_NEG_INPUT_GND);
 
     /* Configure clock dividers */
     CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
@@ -436,48 +438,6 @@ void Enable_Audiosink_Measurement(void)
         {
             low_power_clk_param.low_power_enable = false;
         }
-    }
-}
-
-/* ----------------------------------------------------------------------------
- * Function      : void Measure_Battery_Level(void)
- * ----------------------------------------------------------------------------
- * Description   : - Read the battery level using ADC, calculate and update
- *                   its average value when applicable
- *                 - If the average value changes, set the notification flag
- *                   for battery service
- * Inputs        : None
- * Outputs       : None
- * Assumptions   : None
- * ------------------------------------------------------------------------- */
-void Measure_Battery_Level(void)
-{
-    uint16_t level;
-
-    /* Calculate the battery level as a percentage, scaling the battery
-     * voltage between 3.0V (min) and 4.4V (max) via DIO3 divider */
-    level = ((ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL] - BAT_ADC_MIN) * BAT_LVL_MAX
-             / (BAT_ADC_MAX - BAT_ADC_MIN));
-    level = ((level > BAT_LVL_MAX) ? BAT_LVL_MAX : level);
-
-    /* Add to the current sum and increment the number of reads */
-    app_env.sum_batt_lvl += level;
-    app_env.num_batt_read++;
-
-    /* Calculate the average over the past 16 voltage reads */
-    if (app_env.num_batt_read == 16)
-    {
-        if ((app_env.sum_batt_lvl >> 4) != app_env.batt_lvl)
-        {
-            app_env.send_batt_ntf = 1;
-
-            /* Update the average value of battery level */
-            app_env.batt_lvl = (app_env.sum_batt_lvl >> 4);
-        }
-
-        /* Reset parameters for the next round of battery measurement */
-        app_env.num_batt_read = 0;
-        app_env.sum_batt_lvl = 0;
     }
 }
 

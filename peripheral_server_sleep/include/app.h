@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-/* #define DEBUG_UART_ENABLE */
+//#define DEBUG_UART_ENABLE
 
 #ifdef CFG_FOTA
 #define VER_ID                  "BS300"
@@ -95,12 +95,12 @@ extern "C"
 #endif
 
 /* DIO3 ADC battery measurement: 4.4V battery, 1M+360k divider → DIO3
- * DIO3 voltage range: 0.794V (3.0V bat) ~ 1.165V (4.4V bat)
- * ADC calibration points — tune on actual hardware */
+ * DIO3 voltage: 0.794V (3.0V bat) ~ 1.165V (4.4V bat)
+ * ADC calibration — measured on actual hardware with prescale 1280H */
 #define BAT_ADC_DIO                     3
 #define BAT_ADC_CHANNEL                 0
-#define BAT_ADC_MIN                     0x0CC0  /* DIO3=0.794V → battery 3.0V (0%) */
-#define BAT_ADC_MAX                     0x12A0  /* DIO3=1.165V → battery 4.4V (100%) */
+#define BAT_ADC_MIN                     6950   /* raw=6950  → battery 3.0V (0%) */
+#define BAT_ADC_MAX                     9374   /* raw=9374  → battery 4.4V (100%) */
 
 /* Maximum battery level */
 #define BAT_LVL_MAX                     100
@@ -449,10 +449,6 @@ typedef void (*appm_enable_svc_func_t)(uint8_t);
 struct app_env_tag
 {
     /* Battery service */
-    uint8_t batt_lvl;
-    uint32_t sum_batt_lvl;
-    uint16_t num_batt_read;
-    uint8_t send_batt_ntf;
 
     uint32_t sleep_cycles;
 
@@ -520,7 +516,6 @@ extern void Main_Loop(void);
 extern void bs300_test_run(void);
 #endif
 
-extern void Measure_Battery_Level(void);
 
 extern uint8_t Emulate_CS_Val_Notif_Change(uint8_t val_notif);
 
