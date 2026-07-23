@@ -22,17 +22,30 @@
 
 ## 2. MAC 地址
 
+**获取路径** (`ble_std.c` `BLE_Initialize()`):
+
+```
+优先级:
+  1. NVR3 Flash (DEVICE_INFO_BLUETOOTH_ADDR) → 直接使用
+  2. Stack 默认值 (co_default_bdaddr) → NVR3 无有效值时回退
+```
+
 | 项目 | 值 |
 |------|-----|
-| 地址类型 | Public |
-| 当前值 | NVR3 Flash 中的值 |
-| 定义位置 | `ble_std.h:106` `APP_PUBLIC_BDADDR` |
+| 地址类型 | Public (`BD_TYPE_PUBLIC`) |
+| 来源 | NVR3 Flash 烧录值 |
+| 定义位置 | `ble_std.h:95-97` `BD_ADDRESS_TYPE` / `BDADDR_LENGTH` |
+| 全局变量 | `ble_std.c:52` `uint8_t bdaddr[6]` |
+
+> **注意**: 原代码在 `Device_Param_Read` 返回成功后会用 `PRIVATE_BDADDR` 覆盖 NVR3 值，属于 bug，已于 2026-07 修复。
 
 ## 3. 广播数据 (Advertising)
 
 **文件**: `ble_std.c` → `Advertising_Start()`
 
-3 字节 Flags 由 BLE 栈自动添加。广播数据区放设备名 `"cbtest"`。
+3 字节 Flags 由 BLE 栈自动添加。广告数据区依次放入：
+1. 设备名 `"cbtest"` (AD type 0x09)
+2. Manufacturer Specific Data (AD type 0xFF) — 18 字节，含 MAC 地址
 
 **配置文件**: `ble_std.h`
 ```c
@@ -41,31 +54,49 @@
 #define CFG_ADV_INTERVAL_MS    100             // 广播间隔
 ```
 
-## 4. 扫描响应 (Scan Response)
+## 4. Manufacturer Specific Data 格式
 
-**文件**: `ble_std.h:124-128`
+**文件**: `ble_std.h:124-127`
 
-31 字节 Manufacturer Specific Data：
+同时用于广播数据和扫描响应 (`APP_SCNRSP_DATA = APP_COMPANY_ID_DATA`)。
+
+18 字节 Manufacturer Specific Data（含 AD 头共 18 字节）：
 
 ```
-偏移  内容
-0     [0x1E]      长度 (30 字节跟随)
-1     [0xFF]      AD Type (Manufacturer Specific)
-2-3   [D6 05]     Magic
-4-8   [00×5]      Zero padding
-9-14  [MAC 6B]    设备 MAC 地址
-15-20 [00×6]      Zero padding
-21    [0x20]      设备类型
-22-30 [00×9]      Zero padding (C 自动补零)
+偏移   长度  内容                字段
+0      1     [0x11]             长度 (17 字节跟随)
+1      1     [0xFF]             AD Type (Manufacturer Specific)
+2-4    3     [58 29 01]         开头标识
+5      1     [63]               厂家
+6      1     [00]               保留
+7-8    2     [14 00]            产品类型 (小端, = 0x0014)
+9      1     [00]               保留
+10     1     [01]               左右耳 (00=双耳, 01=左, 02=右)
+11     1     [00]               保留
+12-17  6     [MAC 6B]           设备 MAC 地址 (运行时从 bdaddr 填充)
 ```
 
 ```c
+// 原 ON Semiconductor 格式 (保留备用):
+//#define APP_COMPANY_ID_DATA   { 0x1E,0xff,0xD6,0x05,0x00,0x00,0x00,0x00,0x00,... }
+//#define APP_COMPANY_ID_DATA_LEN  (0x1E + 1)
+
 #define APP_COMPANY_ID_DATA {
-    0x1E, 0xff, 0xD6, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x11, 0x11, 0x11, 0x11, 0x11, 0xC0,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20
+    0x11, 0xff, 0x58, 0x29, 0x01, 0x63, 0x00,
+    0x14, 0x00, 0x00, 0x01, 0x00,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 }
-#define APP_COMPANY_ID_DATA_LEN  (0x1E + 1)  // = 31
+#define APP_COMPANY_ID_DATA_LEN  (0x11 + 1)   // = 18
+```
+
+**MAC 地址动态填入** (`ble_std.c` `Advertising_Start()`):
+```c
+company_id[12] = bdaddr[5];   // MSB
+company_id[13] = bdaddr[4];
+company_id[14] = bdaddr[3];
+company_id[15] = bdaddr[2];
+company_id[16] = bdaddr[1];
+company_id[17] = bdaddr[0];   // LSB
 ```
 
 ## 5. GATT 服务详情

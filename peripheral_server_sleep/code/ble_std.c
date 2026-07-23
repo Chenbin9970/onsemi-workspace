@@ -142,7 +142,7 @@ void BLE_Initialize(void)
     bdaddr_type = GAPM_CFG_ADDR_PUBLIC;
     if (Device_Param_Read(PARAM_ID_PUBLIC_BLE_ADDRESS, (uint8_t *)&bdaddr))
     {
-        memcpy(bdaddr, default_addr, sizeof(uint8_t) * BDADDR_LENGTH);
+        /* Use app-provided or NVR3 public address */
     }
     else
     {
@@ -222,6 +222,14 @@ void Advertising_Start(void)
     uint8_t device_name_avail_space;
     uint8_t scan_rsp[SCAN_RSP_DATA_LEN] = APP_SCNRSP_DATA;
     uint8_t company_id[APP_COMPANY_ID_DATA_LEN] = APP_COMPANY_ID_DATA;
+
+    /* Fill device MAC into advertising data at offset 12 (after 1E FF header + 10 data bytes) */
+    company_id[12] = bdaddr[5];
+    company_id[13] = bdaddr[4];
+    company_id[14] = bdaddr[3];
+    company_id[15] = bdaddr[2];
+    company_id[16] = bdaddr[1];
+    company_id[17] = bdaddr[0];
 
     /* Prepare the GAPM_START_ADVERTISE_CMD message */
     struct gapm_start_advertise_cmd *cmd;
