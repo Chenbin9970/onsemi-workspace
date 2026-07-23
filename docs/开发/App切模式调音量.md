@@ -1096,3 +1096,47 @@ Byte 6-47:  零填充
 |------|------|
 | `include/ble_rempro_cmd.h` | 新增 `CMD_GETDEVICEONOFF (33)` |
 | `code/ble_rempro_cmd.c` | 新增 `s_device_on` + 重写 `cmd_setdeviceonoff()` + 新增 `cmd_getdeviceonoff()` + switch cases |
+
+---
+
+## 30. 输入方式强制前置麦 (2026-07-22)
+
+### 30.1 背景
+
+BS300 Flash 中的 `input_selection` 支持 7 种输入方式（FrontMic/RearMic/Telecoil/DAI/MM+/DDM2/DualMic）。产品需求：所有助听程序（0-2）统一使用前置麦，不暴露 Telecoil/DAI 等输入切换。
+
+### 30.2 设计决策
+
+| 决策 | 原因 |
+|------|------|
+| 程序 0-2 强制 FrontMic | 产品只有前置麦，不需要输入切换 |
+| 程序 3 保留原始配置 | 程序 3 是 RM 音频模式，需要独立输入配置 |
+| 在 `load_struct()` 和 `bs300_cache_boot_state()` 覆盖 | 只覆盖运行时，不修改 Flash 原始数据 |
+
+### 30.3 实现
+
+**`bs300_ram_sync.c` — `load_struct()`（切程序路径）：**
+
+```c
+/* Force FrontMic for programs 0-2 (program 3 = RM audio, keep original) */
+if (prog_idx != 3)
+    out->modules.input_selection = 0;
+```
+
+**`bs300_ram_sync.c` — `bs300_cache_boot_state()`（boot 路径）：**
+
+```c
+/* Force FrontMic for programs 0-2 (program 3 = RM audio, keep original) */
+if (s_cur_prog != 3)
+    s_dsp_state.modules.input_selection = 0;
+```
+
+### 30.4 覆盖位置选择
+
+最初在 `bs300_flash_to_struct()`（Flash 解码唯一入口）中全局强制，但该函数不感知程序号，会连程序 3 也一起改。改为在调用方（`load_struct` / `bs300_cache_boot_state`）按 `prog_idx` 判断，遵循了 denoise/feedback 覆盖的既有模式。
+
+### 30.5 相关文件
+
+| 文件 | 变更 |
+|------|------|
+| `code/bs300_ram_sync.c` | `load_struct()` + `bs300_cache_boot_state()` 各加一行覆盖 |

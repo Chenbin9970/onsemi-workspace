@@ -206,25 +206,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             if (app_env.init_done && app_env.audio_streaming)
             {
                 RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
-
-                /* Mute BS300 before tearing down audio pipeline */
-                bs300_mute();
-
-                RM_Disable();
-                Sys_Timers_Stop(SELECT_TIMER0);
-                Sys_Timers_Stop(SELECT_TIMER1);
-                NVIC_ClearPendingIRQ(TIMER0_IRQn);
-                NVIC_ClearPendingIRQ(TIMER1_IRQn);
-                RF_SwitchToBLEMode();
-
-                /* Restore pre-RM program for normal hearing aid operation */
-                if (app_env.saved_prog_before_rm != 3) {
-                    bs300_switch_program(app_env.saved_prog_before_rm);
-                    bs300_active();
-                }
-
-                low_power_clk_param.low_power_enable = true;
-                app_env.audio_streaming = 0;
+                app_env.rm_stop_requested = 1;
             }
             app_env.rm_lostLink_counter++;
         }

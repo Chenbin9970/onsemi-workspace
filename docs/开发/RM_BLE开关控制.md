@@ -147,27 +147,11 @@ case LINK_ESTABLISHED:
     asrc_stable = false;
     // ... ASRC reset + enable IRQs ...
 
-// 断开自停 — 先 mute 再停 RM，防止噗声
+// 断开 — 统一走 Main_Loop 的 rm_stop_requested 路径
 case LINK_DISCONNECTED:
     if (app_env.init_done && app_env.audio_streaming) {
         RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
-
-        bs300_mute();
-
-        RM_Disable();
-        Sys_Timers_Stop(SELECT_TIMER0);
-        Sys_Timers_Stop(SELECT_TIMER1);
-        NVIC_ClearPendingIRQ(TIMER0_IRQn);
-        NVIC_ClearPendingIRQ(TIMER1_IRQn);
-        RF_SwitchToBLEMode();
-
-        if (app_env.saved_prog_before_rm != 3) {
-            bs300_switch_program(app_env.saved_prog_before_rm);
-            bs300_active();
-        }
-
-        low_power_clk_param.low_power_enable = true;
-        app_env.audio_streaming = 0;
+        app_env.rm_stop_requested = 1;
     }
     app_env.rm_lostLink_counter++;
     break;
@@ -217,13 +201,13 @@ BLE 写 0x00 → rm_stop_requested=1
        → 恢复原程序 → bs300_active()
        → audio_streaming=0 → 回低功耗睡眠（助听正常）
 
-TX 断开 → LINK_DISCONNECTED 回调
-       → bs300_mute() → RM_Disable + 停定时器 + RF_SwitchToBLEMode
-       → 恢复原程序 → bs300_active()
-       → low_power_enable=true → audio_streaming=0 → 回低功耗睡眠
+TX 断开 → LINK_DISCONNECTED 回调 → rm_stop_requested=1
+       → （与主动关闭走同一路径，见上）
 
 写 0x01 → 重复上述流程
 ```
+
+> **2026-07-22 简化**：TX 断开不再在中断回调中自行拆管道，改为设 `rm_stop_requested=1` 由 Main_Loop 统一处理。避免两处维护相同的清理代码。
 
 ---
 
@@ -259,22 +243,19 @@ TX 断开 → LINK_DISCONNECTED 回调
   ... RM 搜索中 (BS300 muted, 无杂音) ...
   LINK_ESTABLISHED → active()         // I2C: 0x800010 — 链路就绪, 启动 DSP
 
-退出 RM (BLE 关断):
-  mute()                              // I2C: 0x800000 — 先停 DSP
-  停 IRQ/DMA → DSS_LPDSP32_PAUSE → BB_DEEP_SLEEP → RM_Disable
-  RF_SwitchToBLEMode
-  if saved != 3:
-    switch_program(saved)             // I2C diff → BS300 恢复原程序
-    active()                          // I2C: 0x800010 — 助听正常工作
-  audio_streaming = 0 → 低功耗
-
-退出 RM (TX 断连):
-  mute()                              // I2C: 0x800000 — 先停 DSP
-  RM_Disable + 停定时器 → RF_SwitchToBLEMode
-  if saved != 3:
-    switch_program(saved)             // I2C diff → BS300 恢复原程序
-    active()                          // I2C: 0x800010 — 助听正常工作
-  low_power_enable = true → 低功耗
+退出 RM（BLE 关断 / TX 断连统一路径）:
+  LINK_DISCONNECTED → rm_stop_requested=1  （仅设 flag）
+  BLE 写 0x00    → rm_stop_requested=1
+                       ↓
+              Main_Loop 统一处理：
+              mute()                   // I2C: 0x800000 — 先停 DSP
+              停 IRQ/DMA → DSS_LPDSP32_PAUSE → BB_DEEP_SLEEP → RM_Disable
+              RF_SwitchToBLEMode
+              if saved != 3:
+                switch_program(saved)  // I2C diff → BS300 恢复原程序
+                active()               // I2C: 0x800010 — 助听正常工作
+              audio_streaming = 0
+              low_power_enable = true  → 回低功耗睡眠
 ```
 
 > **防重启保护**：`persist_active_prog(saved)` 确保即使 RM 运行期间设备异常重启，开机后仍然加载的是进入 RM 前的程序，而非程序 3。

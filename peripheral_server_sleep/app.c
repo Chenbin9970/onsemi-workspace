@@ -162,6 +162,7 @@ void Main_Loop(void)
             }
 
             app_env.audio_streaming = 0;
+            low_power_clk_param.low_power_enable = true;
         }
 #endif
 

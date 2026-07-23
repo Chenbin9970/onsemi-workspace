@@ -455,6 +455,10 @@ void bs300_cache_boot_state(void)
         }
     }
 
+    /* Force FrontMic for programs 0-2 (program 3 = RM audio, keep original) */
+    if (s_cur_prog != 3)
+        s_dsp_state.modules.input_selection = 0;
+
     PRINTF("[BS300] boot cache: prog=%d vol=%d denoise=%d input=%d\r\n",
            s_cur_prog, s_dsp_state.modules.volume_level,
            s_denoise[s_cur_prog],
@@ -500,6 +504,11 @@ static int load_struct(uint8_t prog_idx, bs300_prog_struct_t *out)
             out->modules.dfbc_enable_mode = 0x00;
         }
     }
+
+    /* Force FrontMic for programs 0-2 (program 3 = RM audio, keep original) */
+    if (prog_idx != 3)
+        out->modules.input_selection = 0;
+
     return 0;
 }
 
