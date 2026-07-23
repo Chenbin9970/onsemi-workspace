@@ -27,7 +27,7 @@
 #include "app.h"
 
 /* Global variable definition */
-struct basc_support_env_tag basc_support_env;
+struct basc_support_env_tag basc_support_env[PEER_COUNT];
 
 /* ----------------------------------------------------------------------------
  * Function      : void Bass_Env_Initialize(void)
@@ -39,10 +39,7 @@ struct basc_support_env_tag basc_support_env;
  * ------------------------------------------------------------------------- */
 void Basc_Env_Initialize(void)
 {
-    memset(&basc_support_env, 0, sizeof(struct basc_support_env_tag));
-
-    basc_support_env.req_ntf_cfg[0] = ATT_CCC_START_NTF;
-    basc_support_env.req_ntf_cfg[1] = ATT_CCC_START_NTF;
+    memset(basc_support_env, 0, sizeof(basc_support_env));
 }
 
 /* ----------------------------------------------------------------------------
@@ -104,8 +101,8 @@ void Batt_ServiceEnable_Client(uint8_t conidx)
     req->con_type = PRF_CON_DISCOVERY;
 
     /*Should be filled according to the last discovery  */
-    memcpy(&req->bas, &basc_support_env.bas, sizeof(struct bas_content));
-    req->bas_nb = basc_support_env.bas_nb;
+    memcpy(&req->bas, &basc_support_env[ble_env.conidx].bas, sizeof(struct bas_content));
+    req->bas_nb = basc_support_env[ble_env.conidx].bas_nb;
 
     /* Send the message  */
     ke_msg_send(req);
@@ -137,15 +134,15 @@ int Batt_ReadInfoRsp(ke_msg_id_t const msg_id, struct
     {
         if (param->info == BASC_BATT_LVL_VAL)
         {
-            basc_support_env.batt_lvl[param->bas_nb] = param->data.batt_level;
+            basc_support_env[ble_env.conidx].batt_lvl[param->bas_nb] = param->data.batt_level;
         }
         else if (param->info == BASC_NTF_CFG)
         {
-            basc_support_env.ntf_cfg[param->bas_nb] = param->data.ntf_cfg;
+            basc_support_env[ble_env.conidx].ntf_cfg[param->bas_nb] = param->data.ntf_cfg;
         }
         else if (param->info == BASC_BATT_LVL_PRES_FORMAT)
         {
-            basc_support_env.char_pres_format[param->bas_nb] =
+            basc_support_env[ble_env.conidx].char_pres_format[param->bas_nb] =
                 param->data.char_pres_format;
         }
     }
@@ -175,7 +172,7 @@ int Batt_LevelInd(ke_msg_id_t const msg_id, struct
                   ke_task_id_t const dest_id, ke_task_id_t const
                   src_id)
 {
-    basc_support_env.batt_lvl[param->bas_nb] = param->batt_level;
+    basc_support_env[ble_env.conidx].batt_lvl[param->bas_nb] = param->batt_level;
 
     return (KE_MSG_CONSUMED);
 }
@@ -204,8 +201,8 @@ unsigned int Batt_LevelNtfCfgRsp(ke_msg_id_t const msg_id,
 {
     if (param->status == GAP_ERR_NO_ERROR)
     {
-        basc_support_env.ntf_cfg[param->bas_nb] =
-            basc_support_env.req_ntf_cfg[param->bas_nb];
+        basc_support_env[ble_env.conidx].ntf_cfg[param->bas_nb] =
+            basc_support_env[ble_env.conidx].req_ntf_cfg[param->bas_nb];
     }
 
     return (KE_MSG_CONSUMED);
@@ -235,17 +232,17 @@ int Batt_EnableRsp_Client(ke_msg_id_t const msg_id,
 {
     if (param->status == GAP_ERR_NO_ERROR)
     {
-        memcpy(&basc_support_env.bas, param->bas, sizeof(struct bas_content));
+        memcpy(&basc_support_env[ble_env.conidx].bas, param->bas, sizeof(struct bas_content));
 
-        basc_support_env.enable = true;
+        basc_support_env[ble_env.conidx].enable = true;
 
         Batt_SendLevelNtfCfgReq(ble_env.conidx, 0,
-                                basc_support_env.req_ntf_cfg[0]);
+                                basc_support_env[ble_env.conidx].req_ntf_cfg[0]);
 
-        if (basc_support_env.bas_nb == 2)
+        if (basc_support_env[ble_env.conidx].bas_nb == 2)
         {
             Batt_SendLevelNtfCfgReq(ble_env.conidx, 1,
-                                    basc_support_env.req_ntf_cfg[1]);
+                                    basc_support_env[ble_env.conidx].req_ntf_cfg[1]);
         }
     }
 
@@ -313,7 +310,7 @@ void Batt_SendLevelNtfCfgReq(uint8_t conidx, uint8_t bas_nb, uint8_t ntf_cfg)
                        TASK_APP, basc_batt_level_ntf_cfg_req);
 
     /* Save the value to be confirmed when notification response is received */
-    basc_support_env.req_ntf_cfg[bas_nb] = ntf_cfg;
+    basc_support_env[ble_env.conidx].req_ntf_cfg[bas_nb] = ntf_cfg;
 
     /* Fill in the parameter structure */
     req->bas_nb  = bas_nb;

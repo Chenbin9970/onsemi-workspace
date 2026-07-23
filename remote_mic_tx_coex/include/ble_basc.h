@@ -67,7 +67,7 @@ struct basc_support_env_tag
 };
 
 /* Support for the application manager and the application environment */
-extern struct basc_support_env_tag basc_support_env;
+extern struct basc_support_env_tag basc_support_env[PEER_COUNT];
 
 /* ----------------------------------------------------------------------------
  * Function prototype definitions

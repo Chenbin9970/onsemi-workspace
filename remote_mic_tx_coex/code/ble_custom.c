@@ -20,7 +20,7 @@
 #include "app.h"
 
 /* Global variable definition */
-struct cs_env_tag cs_env;
+struct cs_env_tag cs_env[PEER_COUNT];
 
 /* ----------------------------------------------------------------------------
  * Function      : void CustomService_Env_Initialize(void)
@@ -33,7 +33,7 @@ struct cs_env_tag cs_env;
 void CustomService_Env_Initialize(void)
 {
     /* Reset the application manager environment */
-    memset(&cs_env, 0, sizeof(cs_env));
+    memset(cs_env, 0, sizeof(cs_env));
 }
 
 /* ----------------------------------------------------------------------------
@@ -89,30 +89,28 @@ int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
                       ke_task_id_t const src_id)
 {
     uint8_t uuid[CS_IDX_NB][16] = CS_CHARACTERISTICS_LIST;
+    uint8_t conidx = KE_IDX_GET(src_id);
+    uint8_t idx = current_peer;
     uint8_t i;
 
-    /* Attr_hdl is for characteristic handle and pointer_hdl for value  */
-    if (param->attr_hdl != 0 && cs_env.disc_attnum < CS_IDX_NB)
+    if (param->attr_hdl != 0 && cs_env[idx].disc_attnum < CS_IDX_NB)
     {
         for (i = 0; i < CS_IDX_NB; i++)
         {
             if (param->uuid_len == ATT_UUID_128_LEN &&
                 !memcmp(param->uuid, &uuid[i][0], ATT_UUID_128_LEN))
             {
-                memcpy(&cs_env.disc_att[cs_env.disc_attnum], param,
-                       sizeof(struct discovered_char_att));
-
-                cs_env.disc_attnum++;
+                memcpy(&cs_env[idx].disc_att[cs_env[idx].disc_attnum],
+                       param, sizeof(struct discovered_char_att));
+                cs_env[idx].disc_attnum++;
                 break;
             }
         }
 
-        if (cs_env.disc_attnum == CS_IDX_NB)
+        if (cs_env[idx].disc_attnum == CS_IDX_NB)
         {
-            cs_env.state = CS_ALL_ATTS_DISCOVERED;
-
-            /* Enable pending client services to be enable */
-            ServiceEnable(ble_env.conidx);
+            cs_env[idx].state = CS_ALL_ATTS_DISCOVERED;
+            ServiceEnable(conidx);
         }
     }
     return (KE_MSG_CONSUMED);
@@ -139,36 +137,32 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id, struct gattc_cmp_evt
                  const *param,
                  ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    /* Check application state and status of service and characteristic
-     * discovery for custom service and if it is unsuccessful we can disconnect
-     * the link although it is possible to go to enable state and let the
-     * battery service works */
+    uint8_t conidx = KE_IDX_GET(src_id);
+    uint8_t idx = current_peer;
+
     if (param->status != GAP_ERR_NO_ERROR)
     {
         if (param->operation == GATTC_DISC_BY_UUID_SVC &&
             param->status == ATT_ERR_ATTRIBUTE_NOT_FOUND &&
-            cs_env.state != CS_SERVICE_DISCOVERD
+            cs_env[idx].state != CS_SERVICE_DISCOVERD
             && ble_env.state != APPM_CONNECTED)
         {
-            /* Enable pending client services to be enable */
-            ServiceEnable(ble_env.conidx);
+            ServiceEnable(conidx);
         }
         else if (param->operation == GATTC_DISC_ALL_CHAR &&
                  param->status == ATT_ERR_ATTRIBUTE_NOT_FOUND &&
-                 cs_env.state == CS_SERVICE_DISCOVERD)
+                 cs_env[idx].state == CS_SERVICE_DISCOVERD)
         {
-            /* Enable pending client services to be enable */
-            ServiceEnable(ble_env.conidx);
+            ServiceEnable(conidx);
         }
     }
     else
     {
         if (param->operation == GATTC_WRITE)
         {
-            if (cs_env.state == CS_CONFIGURING)
+            if (cs_env[idx].state == CS_CONFIGURING)
             {
-                /* Mark RM switch pending — timer will handle the switch */
-                cs_env.state = CS_PEER_CONFIGURED;
+                cs_env[idx].state = CS_PEER_CONFIGURED;
             }
         }
     }
@@ -195,39 +189,33 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id, struct gattc_cmp_evt
  * ------------------------------------------------------------------------- */
 int GATTC_DiscSvcInd(ke_msg_id_t const msg_id,
                      struct gattc_disc_svc_ind const *param,
-                     ke_task_id_t const
-                     dest_id,
+                     ke_task_id_t const dest_id,
                      ke_task_id_t const src_id)
 {
+    uint8_t conidx = KE_IDX_GET(src_id);
+    uint8_t idx = current_peer;
     struct gattc_disc_cmd *cmd;
 
-    /* We accepts only discovered attributes with 128-bit UUID according to the defined
-     * characteristics in this custom service */
     if (param->uuid_len == ATT_UUID_128_LEN)
     {
-        cs_env.state       = CS_SERVICE_DISCOVERD;
+        cs_env[idx].state       = CS_SERVICE_DISCOVERD;
+        cs_env[idx].start_hdl   = param->start_hdl;
+        cs_env[idx].end_hdl     = param->end_hdl;
+        cs_env[idx].disc_attnum = 0;
 
-        cs_env.start_hdl   = param->start_hdl;
-        cs_env.end_hdl     = param->end_hdl;
-
-        cs_env.disc_attnum = 0;
-
-        /* Allocate and send GATTC discovery command to discover
-         * characteristic declarations */
         cmd = KE_MSG_ALLOC_DYN(GATTC_DISC_CMD,
-                               KE_BUILD_ID(TASK_GATTC, ble_env.conidx),
+                               KE_BUILD_ID(TASK_GATTC, conidx),
                                TASK_APP, gattc_disc_cmd,
                                2 * sizeof(uint8_t));
 
         cmd->operation = GATTC_DISC_ALL_CHAR;
         cmd->uuid_len  = 2;
         cmd->seq_num   = 0x0000;
-        cmd->start_hdl = cs_env.start_hdl;
-        cmd->end_hdl   = cs_env.end_hdl;
+        cmd->start_hdl = cs_env[idx].start_hdl;
+        cmd->end_hdl   = cs_env[idx].end_hdl;
         cmd->uuid[0]   = 0;
         cmd->uuid[1]   = 0;
 
-        /* Send the message */
         ke_msg_send(cmd);
     }
 

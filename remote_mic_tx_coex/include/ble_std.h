@@ -57,8 +57,12 @@ extern "C"
 #define APP_COMPANY_ID_DATA             { 0x4, 0xff, 0x62, 0x3, 0x3 }
 #define APP_COMPANY_ID_DATA_LEN         (0x4 + 1)
 
-/* Hardcoded sleep device MAC address */
-#define SLEEP_BD_ADDRESS                { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }
+/* Number of peer devices to connect */
+#define PEER_COUNT                      2
+
+/* Hardcoded sleep device MAC addresses (BLE little-endian) */
+#define SLEEP_BD_ADDRESS_0              { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }
+#define SLEEP_BD_ADDRESS_1              { 0x07, 0x7b, 0x00, 0xbf, 0xc0, 0x60 }
 #define SLEEP_BD_ADDRESS_TYPE           BD_TYPE_PUBLIC
 
 /* Set scan interval to 62.5ms and scan window to 50% of the interval */
@@ -172,6 +176,9 @@ struct ble_env_tag
 /* Support for the application manager and the application environment */
 extern struct ble_env_tag ble_env;
 
+/* Current peer being connected (0 or 1) */
+extern uint8_t current_peer;
+
 /* Bluetooth Device Address */
 extern uint8_t bdaddr[BDADDR_LENGTH];
 
@@ -184,7 +191,7 @@ extern void BLE_Initialize(void);
 
 extern bool Service_Add(void);
 
-extern void DirectConnect(void);
+extern void DirectConnect(uint8_t peer_idx);
 
 extern void Connection_SendStartCmd(struct gap_bdaddr *peer);
 

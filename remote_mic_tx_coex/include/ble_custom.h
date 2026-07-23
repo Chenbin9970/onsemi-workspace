@@ -140,7 +140,7 @@ struct cs_env_tag
     struct discovered_char_att disc_att[CS_IDX_NB];
 };
 
-extern struct cs_env_tag cs_env;
+extern struct cs_env_tag cs_env[PEER_COUNT];
 
 /* ----------------------------------------------------------------------------
  * Function prototype definitions

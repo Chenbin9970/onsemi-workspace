@@ -35,7 +35,7 @@ int main()
         Kernel_Schedule();
 
         if ((ble_env.state == APPM_CONNECTED) &&
-            (basc_support_env.enable == true) && (app_env.send_batt_req >= 25))
+            (basc_support_env[ble_env.conidx].enable == true) && (app_env.send_batt_req >= 25))
         {
             app_env.send_batt_req = 0;
             Batt_SendReadInfoReq(ble_env.conidx, 0, BASC_BATT_LVL_VAL);

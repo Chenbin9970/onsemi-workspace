@@ -29,6 +29,13 @@
 
 /* Bluetooth Environment Structure */
 struct ble_env_tag ble_env;
+uint8_t current_peer;
+
+/* Peer MAC addresses */
+static const uint8_t peer_macs[PEER_COUNT][BDADDR_LENGTH] = {
+    SLEEP_BD_ADDRESS_0,
+    SLEEP_BD_ADDRESS_1
+};
 
 /* List of functions used to create the database */
 const appm_add_svc_func_t appm_add_svc_func_list[] = {
@@ -210,7 +217,7 @@ int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
             ble_env.state = APPM_READY;
 
             /* No more service to add, start scanning */
-            DirectConnect();
+            DirectConnect(0);
         }
     }
 
@@ -278,7 +285,7 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
                 ble_env.state = APPM_READY;
 
                 /* No services to add — start scanning */
-                DirectConnect();
+                DirectConnect(0);
             }
         }
         break;
@@ -417,8 +424,8 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
 
     BLE_SetServiceState(false, ble_env.conidx);
 
-    /* Don't reconnect immediately — let the 200ms timer handle it
-     * with a 10s delay (see APP_Timer in app_process.c) */
+    /* Connect next peer after 1s delay */
+    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
     return (KE_MSG_CONSUMED);
 }
@@ -489,12 +496,12 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
  * Inputs        : None
  * Outputs       : None
  * ------------------------------------------------------------------------- */
-void DirectConnect(void)
+void DirectConnect(uint8_t peer_idx)
 {
-    uint8_t peer_addr[BDADDR_LENGTH] = SLEEP_BD_ADDRESS;
     struct gapm_start_connection_cmd *cmd;
 
-    PRINTF("__DIRECT CONNECT\n");
+    current_peer = peer_idx;
+    PRINTF("__DIRECT CONNECT peer=%d\n", peer_idx);
     cmd = KE_MSG_ALLOC_DYN(GAPM_START_CONNECTION_CMD, TASK_GAPM, TASK_APP,
                            gapm_start_connection_cmd,
                            (sizeof(struct gap_bdaddr)));
@@ -510,7 +517,7 @@ void DirectConnect(void)
     cmd->superv_to     = CON_SUP_TIMEOUT;
     cmd->nb_peers      = 1;
     cmd->peers[0].addr_type = SLEEP_BD_ADDRESS_TYPE;
-    memcpy(&cmd->peers[0].addr.addr[0], peer_addr, BDADDR_LENGTH);
+    memcpy(&cmd->peers[0].addr.addr[0], peer_macs[peer_idx], BDADDR_LENGTH);
 
     ke_msg_send(cmd);
 
@@ -682,11 +689,11 @@ void BLE_SetServiceState(bool enable, uint8_t conidx)
     }
     else
     {
-        basc_support_env.enable = false;
+        basc_support_env[conidx].enable = false;
         /* Preserve CS_PEER_CONFIGURED so timer can trigger RM switch */
-        if (cs_env.state != CS_PEER_CONFIGURED)
+        if (cs_env[conidx].state != CS_PEER_CONFIGURED)
         {
-            cs_env.state = CS_INIT;
+            cs_env[conidx].state = CS_INIT;
         }
     }
 }

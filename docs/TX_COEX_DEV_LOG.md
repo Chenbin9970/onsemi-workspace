@@ -147,3 +147,70 @@ RM 运行中
 3. **radio 不能同时跑 BLE 和 RM** — 顺序切换，RM 跑起来后禁止 BLE 重连
 4. **DMIC DMA 必须显式 enable** — `DMA_RX_CONFIG` 中的 `DMA_ENABLE` 位不够
 5. **RM 回调的输入保护要覆盖所有 input 类型** — `#if` 条件漏了 DMIC 导致无声
+
+---
+
+## 第四阶段：双设备连接
+
+### 目标
+
+TX 先后连接两个 Sleep 设备，分别发 RM_ONOFF，都就绪后切 RM。
+
+### 参考
+
+`ble_central_client_bond` 多连接 demo：所有连接状态用数组 `[conidx]` 索引，`KE_IDX_GET(src_id)` 路由 GATT 事件。
+
+### 架构设计
+
+**顺序连接**：先连 peer 0 走完完整流程，断连后再连 peer 1。两个都 CS_PEER_CONFIGURED 后切 RM。
+
+**环境结构**：
+- `ble_env` — 保持单实例（GAPM 层全局状态）
+- `cs_env[PEER_COUNT]` — 每个 peer 独立的状态机
+- `basc_support_env[PEER_COUNT]` — 每个 peer 独立的电池服务
+- `current_peer` — 当前正在连接的 peer 索引（0 或 1）
+
+### MAC 地址
+
+```c
+#define PEER_COUNT 2
+#define SLEEP_BD_ADDRESS_0  { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  // 00 12 09 00 80 09
+#define SLEEP_BD_ADDRESS_1  { 0x07, 0x7b, 0x00, 0xbf, 0xc0, 0x60 }  // 60 c0 bf 00 7b 07
+```
+
+### 关键 Bug：conidx 复用
+
+BLE 栈顺序连接时复用 `conidx`（peer 0 断开后 peer 1 也用 conidx=0）。GATT handler 里不能用 `KE_IDX_GET(src_id)` 作为 `cs_env[]` 索引——两个 peer 的 GATT 事件路由到同一个 `cs_env[0]`。
+
+**修复**：GATT handler 里用 `current_peer` 索引 `cs_env[]`：
+```c
+uint8_t conidx = KE_IDX_GET(src_id);  // BLE API 调用用
+uint8_t idx = current_peer;            // cs_env 索引用
+cs_env[idx].state = CS_ALL_ATTS_DISCOVERED;
+...
+GATTC_DiscAllChar(conidx, ...);        // BLE API 用 conidx
+```
+
+### 完整流程
+
+```
+DirectConnect(0) → 连 MAC0 → 服务发现 → 1s → 写01
+  → GATTC_CmpEvt: cs_env[0].state = CS_PEER_CONFIGURED
+  → Timer: configured_count=1 → 主动断开 peer 0
+  → GAPC_DisconnectInd → 1s → DirectConnect(1)
+
+DirectConnect(1) → 连 MAC1 → 服务发现 → 1s → 写01
+  → GATTC_CmpEvt: cs_env[1].state = CS_PEER_CONFIGURED
+  → Timer: configured_count=2 → 1s → 切 RM
+```
+
+### 涉及文件
+
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — `PEER_COUNT 2`、两个 MAC、`current_peer` extern
+- [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — `DirectConnect(idx)`、`BLE_SetServiceState` 用 `cs_env[conidx]`
+- [ble_custom.h](../remote_mic_tx_coex/include/ble_custom.h) — `cs_env[PEER_COUNT]`
+- [ble_custom.c](../remote_mic_tx_coex/code/ble_custom.c) — GATT handler 用 `current_peer` 索引
+- [ble_basc.h](../remote_mic_tx_coex/include/ble_basc.h) — `basc_support_env[PEER_COUNT]`
+- [ble_basc.c](../remote_mic_tx_coex/code/ble_basc.c) — 所有引用加 `[ble_env.conidx]`
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — timer 遍历双 slot、计数 `configured_count`
+- [app.c](../remote_mic_tx_coex/app.c) — 电池读加 `[ble_env.conidx]`

@@ -71,71 +71,96 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
+    uint8_t onoff_val = 1;
+    static uint8_t delay_cnt[PEER_COUNT];
+    static uint8_t configured_count;
+    static uint8_t rm_delay;
+
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    /* Turn on LED of EVB if the link is established */
+    /* LED */
     if (ble_env.state >= APPM_CONNECTED)
-    {
         Sys_GPIO_Set_High(LED_DIO_NUM);
-    }
     else if (ble_env.state == APPM_CONNECTING)
-    {
         Sys_GPIO_Toggle(LED_DIO_NUM);
-    }
     else
-    {
         Sys_GPIO_Set_Low(LED_DIO_NUM);
-    }
 
-    uint8_t onoff_val = 1;
-    static uint8_t delay_cnt = 0;
-
-    if ((ble_env.state == APPM_CONNECTED) && (cs_env.state ==
-                                              CS_ALL_ATTS_DISCOVERED))
+    /* Step 1: For each peer, write RM_ONOFF 1s after discovery */
+    if (ble_env.state == APPM_CONNECTED)
     {
-        if (++delay_cnt >= 5)    /* 1s */
+        uint8_t i;
+        for (i = 0; i < PEER_COUNT; i++)
         {
-            delay_cnt = 0;
-            cs_env.state = CS_CONFIGURING;
-            cs_env.config_num = 0;
-            CustomSrvice_SendWrite(ble_env.conidx, &onoff_val,
-                                   cs_env.disc_att[CS_REMPRO_IDX_RM_ONOFF].pointer_hdl,
-                                   0, 1, GATTC_WRITE);
-        }
-    }
-    else
-    {
-        delay_cnt = 0;
-    }
-
-    /* RM switch with 1s delay after write ack */
-    {
-        static uint8_t rm_delay = 0;
-
-        if (cs_env.state == CS_PEER_CONFIGURED && !app_env.audio_streaming)
-        {
-            if (++rm_delay >= 5)
+            if (cs_env[i].state == CS_ALL_ATTS_DISCOVERED)
             {
-                rm_delay = 0;
-                APP_RM_Init(ear_side);
-                RF_SwitchToCPMode();
-                NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
-                RM_Enable(1000);
-                app_env.audio_streaming = 1;
+                if (++delay_cnt[i] >= 5)    /* 1s */
+                {
+                    delay_cnt[i] = 0;
+                    cs_env[i].state = CS_CONFIGURING;
+                    cs_env[i].config_num = 0;
+                    CustomSrvice_SendWrite(ble_env.conidx, &onoff_val,
+                                           cs_env[i].disc_att[CS_REMPRO_IDX_RM_ONOFF].pointer_hdl,
+                                           0, 1, GATTC_WRITE);
+                }
             }
         }
-        else
+    }
+
+    /* Step 2: Count configured peers, start next connection or RM switch */
+    {
+        uint8_t i;
+        configured_count = 0;
+        for (i = 0; i < PEER_COUNT; i++)
         {
-            rm_delay = 0;
+            if (cs_env[i].state == CS_PEER_CONFIGURED)
+                configured_count++;
         }
     }
 
-    /* Don't send battery reads after write starts */
-    if (cs_env.state < CS_CONFIGURING)
+    if (configured_count >= PEER_COUNT && !app_env.audio_streaming)
     {
-        app_env.send_batt_req++;
+        /* All peers configured — switch to RM after 1s */
+        if (++rm_delay >= 5)
+        {
+            rm_delay = 0;
+            APP_RM_Init(ear_side);
+            RF_SwitchToCPMode();
+            NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
+            RM_Enable(1000);
+            app_env.audio_streaming = 1;
+        }
     }
+    else if (configured_count == 1 && current_peer == 0
+             && ble_env.state == APPM_CONNECTED)
+    {
+        /* Peer 0 configured — disconnect and start peer 1 */
+        struct gapc_disconnect_cmd *disc_cmd;
+        disc_cmd = KE_MSG_ALLOC(GAPC_DISCONNECT_CMD,
+                                KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
+                                TASK_APP, gapc_disconnect_cmd);
+        disc_cmd->operation = GAPC_DISCONNECT;
+        disc_cmd->reason = CO_ERROR_REMOTE_USER_TERM_CON;
+        ke_msg_send(disc_cmd);
+        current_peer = 1;
+    }
+
+    /* Reconnect: after disconnect, connect next peer after 1s */
+    if (ble_env.state == APPM_READY && !app_env.audio_streaming
+        && configured_count < PEER_COUNT)
+    {
+        static uint8_t reconnect_cnt = 0;
+        if (++reconnect_cnt >= 5)
+        {
+            reconnect_cnt = 0;
+            DirectConnect(current_peer);
+        }
+    }
+
+    /* Battery: only on peer 0 before any writes */
+    if (configured_count == 0 && cs_env[0].state < CS_CONFIGURING)
+        app_env.send_batt_req++;
 
     return (KE_MSG_CONSUMED);
 }
