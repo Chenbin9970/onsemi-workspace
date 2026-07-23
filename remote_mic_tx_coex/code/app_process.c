@@ -71,9 +71,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
-    uint8_t length;
-    uint8_t * *value;
-
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
@@ -91,35 +88,54 @@ int APP_Timer(ke_msg_id_t const msg_id,
         Sys_GPIO_Set_Low(LED_DIO_NUM);
     }
 
+    uint8_t onoff_val = 1;
+    static uint8_t delay_cnt = 0;
+
     if ((ble_env.state == APPM_CONNECTED) && (cs_env.state ==
                                               CS_ALL_ATTS_DISCOVERED))
     {
-        cs_env.state = CS_CONFIGURING;
-
-        cs_env.config_num = 0;
-
-        /* The first parameter */
-        length = CustomProtocol_SelectAttributeValue(cs_env.config_num,
-                                                     (uint8_t * *)&value);
-
-        CustomSrvice_SendWrite(ble_env.conidx, (uint8_t *)value,
-                               cs_env.disc_att[cs_env.config_num].pointer_hdl,
-                               0,
-                               length,
-                               GATTC_WRITE);
+        if (++delay_cnt >= 5)    /* 1s */
+        {
+            delay_cnt = 0;
+            cs_env.state = CS_CONFIGURING;
+            cs_env.config_num = 0;
+            CustomSrvice_SendWrite(ble_env.conidx, &onoff_val,
+                                   cs_env.disc_att[CS_REMPRO_IDX_RM_ONOFF].pointer_hdl,
+                                   0, 1, GATTC_WRITE);
+        }
     }
-
-    if ((ble_env.state == APPM_CONNECTED) && (cs_env.state ==
-                                              CS_PEER_CONFIGURED))
+    else
     {
-        app_env.RM_on_off = 1;
-        CustomSrvice_SendWrite(ble_env.conidx, &app_env.RM_on_off,
-                               cs_env.disc_att[CS_REMPRO_IDX_ONOFF].pointer_hdl,
-                               0,
-                               1, GATTC_WRITE);
+        delay_cnt = 0;
     }
 
-    app_env.send_batt_req++;
+    /* RM switch with 1s delay after write ack */
+    {
+        static uint8_t rm_delay = 0;
+
+        if (cs_env.state == CS_PEER_CONFIGURED && !app_env.audio_streaming)
+        {
+            if (++rm_delay >= 5)
+            {
+                rm_delay = 0;
+                APP_RM_Init(ear_side);
+                RF_SwitchToCPMode();
+                NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
+                RM_Enable(1000);
+                app_env.audio_streaming = 1;
+            }
+        }
+        else
+        {
+            rm_delay = 0;
+        }
+    }
+
+    /* Don't send battery reads after write starts */
+    if (cs_env.state < CS_CONFIGURING)
+    {
+        app_env.send_batt_req++;
+    }
 
     return (KE_MSG_CONSUMED);
 }

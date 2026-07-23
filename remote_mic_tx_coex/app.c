@@ -27,7 +27,7 @@ int main()
     App_Initialize();
     /* Debug/trace initialization. In order to enable UART or RTT trace,
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
-    printf_init();
+
     PRINTF("__remote_mic_tx_coex has started!\r\n");
 
     while (1)

@@ -139,9 +139,6 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id, struct gattc_cmp_evt
                  const *param,
                  ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    uint8_t length;
-    uint8_t * *value;
-
     /* Check application state and status of service and characteristic
      * discovery for custom service and if it is unsuccessful we can disconnect
      * the link although it is possible to go to enable state and let the
@@ -170,29 +167,8 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id, struct gattc_cmp_evt
         {
             if (cs_env.state == CS_CONFIGURING)
             {
-                cs_env.config_num++;
-
-                if (cs_env.config_num < CS_IDX_NB)
-                {
-                    length = CustomProtocol_SelectAttributeValue(
-                        cs_env.config_num, (uint8_t * *)&value);
-
-                    CustomSrvice_SendWrite(ble_env.conidx, (uint8_t *)value,
-                                           cs_env.disc_att[cs_env.config_num].
-                                           pointer_hdl, 0,
-                                           length, GATTC_WRITE);
-                }
-                else
-                {
-                    cs_env.state = CS_PEER_CONFIGURED;
-                }
-            }
-            else if (cs_env.state == CS_PEER_CONFIGURED)
-            {
-                APP_RM_Init(ear_side);
-                RF_SwitchToCPMode();
-                NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
-                RM_Enable(1000);
+                /* Mark RM switch pending — timer will handle the switch */
+                cs_env.state = CS_PEER_CONFIGURED;
             }
         }
     }
@@ -355,74 +331,3 @@ void CustomSrvice_SendWrite(uint8_t conidx, uint8_t *value, uint16_t handle,
     ke_msg_send(cmd);
 }
 
-/* ----------------------------------------------------------------------------
- * Function      : uint8_t CustomProtocol_SelectAttributeValue(uint8_t att_num,
- *                                                             uint8_t **value)
- * ----------------------------------------------------------------------------
- * Description   :
- * Inputs        : - att_num      - Attribute number
- *                 - value        - Pointer to the attribute value
- * Outputs       : return value   - Length of attribute value
- * Assumptions   : None
- * ------------------------------------------------------------------------- */
-uint8_t CustomProtocol_SelectAttributeValue(uint8_t att_num, uint8_t * *value)
-{
-    uint8_t length = 0;
-    switch (att_num)
-    {
-        case CS_REMPRO_IDX_ROLE:
-        {
-            *value = RM_SLAVE_ROLE;
-            length = CS_REMPRO_ROLE_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_ONOFF:
-        {
-            *value = (uint8_t *)&app_env.RM_on_off;
-            length = CS_REMPRO_ONOFF_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_CHNLSIDE:
-        {
-            *value = (uint8_t *)&app_env.rm_param.audioChnl;
-            length = CS_REMPRO_CHNLSIDE_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_MODIDX:
-        {
-            *value = (uint8_t *)&app_env.rm_param.mod_idx;
-            length = CS_REMPRO_MODIDX_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_VOLUME:
-        {
-            *value = (uint8_t *)&app_env.volume;
-            length = CS_REMPRO_VOLUME_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_HOPLIST:
-        {
-            *value = (uint8_t *)&app_env.rm_param.hopList;
-            length = CS_REMPRO_HOPLIST_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        case CS_REMPRO_IDX_HOPSIZE:
-        {
-            *value = (uint8_t *)&app_env.rm_param.numChnlInHopList;
-            length = CS_REMPRO_HOPSIZE_VALUE_MAX_LENGTH;
-        }
-        break;
-
-        default:
-        {
-        }
-        break;
-    }
-    return (length);
-}

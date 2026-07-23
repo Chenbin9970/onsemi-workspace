@@ -19,9 +19,10 @@
 
 #include "app.h"
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
 #include "dsp_pm_dm_enc.h"
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 
 uint8_t buff_test[100] = {
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x11, 0x12, 0x13, 0x14,
@@ -101,6 +102,7 @@ void App_Initialize(void)
 
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
 
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();
     Sys_Audiosink_InputClock(0,
@@ -110,19 +112,22 @@ void App_Initialize(void)
 
     AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
     AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
 
     uint32_t i = 0;
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
 
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
     /* ASCC interrupts */
     NVIC_ClearPendingIRQ(AUDIOSINK_PHASE_IRQn);
     NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
     NVIC_ClearPendingIRQ(AUDIOSINK_PERIOD_IRQn);
     NVIC_EnableIRQ(AUDIOSINK_PERIOD_IRQn);
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
 
     SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
     Sys_Flash_Copy((uint32_t)&LPDSP32_Prog_40bit_PM_enc[0], DSP_PRAM0_BASE,
                    MEM_PM_SIZE, COPY_TO_MEM_BITBAND);
     Sys_Flash_Copy((uint32_t)&LPDSP32_Data_low_DM_enc[0], DSP_DRAM01_BASE,
@@ -133,7 +138,6 @@ void App_Initialize(void)
                                                        8001)],
                    (DSP_DRAM4_BASE + 0x1F41), (MEM_DMB_SIZE - 8000),
                    COPY_TO_MEM_BITBAND);
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
     while (FLASH_COPY_CTRL->BUSY_ALIAS != COPY_IDLE_BITBAND)
     {
         Sys_Watchdog_Refresh();
@@ -168,10 +172,10 @@ void App_Initialize(void)
 
     /* Codec Mode */
     *(message + 4) = CODEC_MODE;
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 
-/*-------------------------  Ezairo side ------------------ */
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+/*------------------------- ASRC / interface init ------------------ */
     NVIC_SetPriority(DSP0_IRQn, 0);
     NVIC_EnableIRQ(DSP0_IRQn);
     NVIC_SetPriority(DSP1_IRQn, 0);
@@ -272,6 +276,36 @@ void App_Initialize(void)
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT) */
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
 
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+    /* DMIC AUDIOCLK prescale: 16 MHz / 5 = 3.2 MHz */
+    Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
+
+    /* Configure DMIC DIO: DIO0 = clock output (AUDIOCLK), DIO1 = data input */
+    Sys_Audio_DMICDIOConfig(DIO_WEAK_PULL_UP, DMIC_CLK_PIN, DMIC_DATA_PIN,
+                            DIO_MODE_AUDIOCLK);
+
+    /* Configure DMIC audio block */
+    Sys_Audio_Set_Config(DMIC_AUDIO_CFG);
+    Sys_Audio_Set_DMICConfig(DMIC_CFG, DMIC_MAX_GAIN);
+
+    /* DSP interrupts for LPDSP32 encoder */
+    NVIC_SetPriority(DSP0_IRQn, 0);
+    NVIC_EnableIRQ(DSP0_IRQn);
+    NVIC_SetPriority(DSP1_IRQn, 0);
+    NVIC_EnableIRQ(DSP1_IRQn);
+
+    /* DMIC DMA: 32-bit words, circular, SUBFRAME_LENGTH = 64 samples */
+    Sys_DMA_ChannelConfig(RX_DMA_NUM, DMA_RX_CONFIG, SUBFRAME_LENGTH, 0,
+                          (uint32_t)&(AUDIO->DMIC_DATA),
+                          (uint32_t)dmic_buffer_in);
+    Sys_DMA_ClearChannelStatus(RX_DMA_NUM);
+    Sys_DMA_ChannelEnable(RX_DMA_NUM);
+
+    NVIC_ClearPendingIRQ(DMA_IRQn(RX_DMA_NUM));
+    NVIC_SetPriority(DMA_IRQn(RX_DMA_NUM), 2);
+    NVIC_EnableIRQ(DMA_IRQn(RX_DMA_NUM));
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
+
 #if (INPUT_INTRF == SPI_RX_CODED_INPUT)
 
     /* Initialize SPI interface */
@@ -296,12 +330,14 @@ void App_Initialize(void)
         (uint32_t)&spi_buf[0]);
 #endif    /* if (INPUT_INTRF == SPI_RX_CODED_INPUT) */
 
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
     Sys_DMA_ClearChannelStatus(RX_DMA_NUM);
     Sys_DMA_ChannelEnable(RX_DMA_NUM);
 
     NVIC_ClearPendingIRQ(DMA_IRQn(RX_DMA_NUM));
     NVIC_SetPriority(DMA_IRQn(RX_DMA_NUM), 2);
     NVIC_EnableIRQ(DMA_IRQn(RX_DMA_NUM));
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
 
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
     Sys_DMA_ChannelConfig(
@@ -347,7 +383,7 @@ void App_Initialize(void)
 
     /* Initialize environment */
     App_Env_Initialize();
-
+    printf_init();
 #if (SIMUL != 1)
     APP_RM_Init(ear_side);
 #endif    /* if (SIMUL != 1) */
@@ -384,38 +420,8 @@ void App_Initialize(void)
 
     Sys_DIO_Config(LED_DIO_NUM, DIO_MODE_GPIO_OUT_0);
 
-    Sys_DIO_Config(BUTTON_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
-                   DIO_LPF_DISABLE);
-    Sys_DIO_IntConfig(0, DIO_EVENT_TRANSITION | DIO_SRC(BUTTON_DIO) |
-                      DIO_DEBOUNCE_ENABLE,
-                      DIO_DEBOUNCE_SLOWCLK_DIV1024, 49);
-
-#if (DEBUG_UART_LOG)
-    UartLogInit();
-#endif    /* if (DEBUG_UART_LOG) */
-
-    NVIC_EnableIRQ(DIO0_IRQn);
-
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);
-
-#if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD)
-
-    /* Setup the audio codec shield */
-    for (i = 0; i < WM8731_I2C_MESSAGE_BUFFER_SIZE; i++)
-    {
-        while ((Sys_I2C_Get_Status() & (1 << I2C_STATUS_BUS_FREE_Pos)) !=
-               I2C_BUS_FREE)
-        {
-            Sys_Watchdog_Refresh();
-        }
-
-        i2c_tx_buffer_index   = 0;
-        i2c_tx_buffer_data[0] = wm8731_i2c_message_buffer[i].register_address;
-        i2c_tx_buffer_data[1] = wm8731_i2c_message_buffer[i].register_data;
-        Sys_I2C_StartWrite(WM8731_I2C_SLAVE_ADDRESS);
-    }
-#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
 }
 
 /* ----------------------------------------------------------------------------

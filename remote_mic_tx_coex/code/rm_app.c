@@ -93,7 +93,7 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0x0d << 24));
+    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;
@@ -145,23 +145,19 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
     {
         case RM_TX_PAYLOAD_READY_LEFT:
         {
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
             memcpy(ptr, Read_buffer(PKT_LEFT), *length);
-
-            /* memcpy(ptr, &coded_sample[cntr_enc_rm0], *length);
-            * cntr_enc_rm0 = (cntr_enc_rm0 + *length) % (240); */
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
         }
         break;
 
         case RM_TX_PAYLOAD_READY_RIGHT:
         {
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
             memcpy(ptr, Read_buffer(PKT_RIGHT), *length);
-
-            /* memcpy(ptr, &coded_sample[cntr_enc_rm1], *length);
-            * cntr_enc_rm1 = (cntr_enc_rm1 + *length) % (240); */
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
         }
         break;
 
@@ -240,8 +236,6 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
     {
         case LINK_DISCONNECTED:
         {
-            /* Stop audio transmission to avoid having annoying noise
-             * decide if the number of lost links is large, do an action */
             app_env.rm_lostLink_counter++;
         }
         break;

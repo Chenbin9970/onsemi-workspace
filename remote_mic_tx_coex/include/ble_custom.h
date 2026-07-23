@@ -37,36 +37,20 @@ extern "C"
  * Defines
  * --------------------------------------------------------------------------*/
 
-/* Custom service UUIDs */
-#define CS_SVC_UUID                              { 0xaa, 0xbb, 0x0e, 0x6e, 0x01, \
+/* Custom service UUID — matches peripheral_server_sleep */
+#define CS_SVC_UUID                              { 0x24, 0xdc, 0x0e, 0x6e, 0x01, \
                                                    0x40, 0xca, 0x9e, 0xe5, 0xa9, \
                                                    0xa3, 0x00, 0xb5, 0xf3, 0x93, \
                                                    0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_ROLE_UUID       { 0xaa, 0xbb, 0x0e, 0x6e, 0x02, \
+#define CS_CHARACTERISTIC_TX_UUID                { 0x24, 0xdc, 0x0e, 0x6e, 0x02, \
                                                    0x40, 0xca, 0x9e, 0xe5, 0xa9, \
                                                    0xa3, 0x00, 0xb5, 0xf3, 0x93, \
                                                    0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_ONOFF_UUID      { 0xaa, 0xbb, 0x0e, 0x6e, 0x03, \
+#define CS_CHARACTERISTIC_RX_UUID                { 0x24, 0xdc, 0x0e, 0x6e, 0x03, \
                                                    0x40, 0xca, 0x9e, 0xe5, 0xa9, \
                                                    0xa3, 0x00, 0xb5, 0xf3, 0x93, \
                                                    0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_CHNLSIDE_UUID   { 0xaa, 0xbb, 0x0e, 0x6e, 0x04, \
-                                                   0x40, 0xca, 0x9e, 0xe5, 0xa9, \
-                                                   0xa3, 0x00, 0xb5, 0xf3, 0x93, \
-                                                   0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_MODIDX_UUID     { 0xaa, 0xbb, 0x0e, 0x6e, 0x05, \
-                                                   0x40, 0xca, 0x9e, 0xe5, 0xa9, \
-                                                   0xa3, 0x00, 0xb5, 0xf3, 0x93, \
-                                                   0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_VOLUME_UUID     { 0xaa, 0xbb, 0x0e, 0x6e, 0x06, \
-                                                   0x40, 0xca, 0x9e, 0xe5, 0xa9, \
-                                                   0xa3, 0x00, 0xb5, 0xf3, 0x93, \
-                                                   0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_HOPLIST_UUID    { 0xaa, 0xbb, 0x0e, 0x6e, 0x07, \
-                                                   0x40, 0xca, 0x9e, 0xe5, 0xa9, \
-                                                   0xa3, 0x00, 0xb5, 0xf3, 0x93, \
-                                                   0xe0 }
-#define CS_REMPRO_CHARACTERISTIC_HOPSIZE_UUID    { 0xaa, 0xbb, 0x0e, 0x6e, 0x08, \
+#define CS_CHARACTERISTIC_RM_ONOFF_UUID          { 0x24, 0xdc, 0x0e, 0x6e, 0x04, \
                                                    0x40, 0xca, 0x9e, 0xe5, 0xa9, \
                                                    0xa3, 0x00, 0xb5, 0xf3, 0x93, \
                                                    0xe0 }
@@ -96,35 +80,18 @@ enum cs_state
     CS_PEER_CONFIGURED,
 };
 
-#define CS_CHARACTERISTICS_LIST { CS_REMPRO_CHARACTERISTIC_ROLE_UUID,     \
-                                  CS_REMPRO_CHARACTERISTIC_ONOFF_UUID,    \
-                                  CS_REMPRO_CHARACTERISTIC_CHNLSIDE_UUID, \
-                                  CS_REMPRO_CHARACTERISTIC_MODIDX_UUID,   \
-                                  CS_REMPRO_CHARACTERISTIC_VOLUME_UUID,   \
-                                  CS_REMPRO_CHARACTERISTIC_HOPLIST_UUID,  \
-                                  CS_REMPRO_CHARACTERISTIC_HOPSIZE_UUID };
+/* Only need RM_ONOFF characteristic — TX just triggers RM start */
+#define CS_CHARACTERISTICS_LIST { CS_CHARACTERISTIC_RM_ONOFF_UUID }
 
 enum cs_idx_att
 {
-    CS_REMPRO_IDX_ROLE,
-    CS_REMPRO_IDX_ONOFF,
-    CS_REMPRO_IDX_CHNLSIDE,
-    CS_REMPRO_IDX_MODIDX,
-    CS_REMPRO_IDX_VOLUME,
-    CS_REMPRO_IDX_HOPLIST,
-    CS_REMPRO_IDX_HOPSIZE,
+    CS_REMPRO_IDX_RM_ONOFF,
 
     /* Max number of characteristics */
     CS_IDX_NB,
 };
 
-#define CS_REMPRO_ROLE_VALUE_MAX_LENGTH     1
-#define CS_REMPRO_ONOFF_VALUE_MAX_LENGTH    1
-#define CS_REMPRO_CHNLSIDE_VALUE_MAX_LENGTH 1
-#define CS_REMPRO_MODIDX_VALUE_MAX_LENGTH   1
-#define CS_REMPRO_VOLUME_VALUE_MAX_LENGTH   1
-#define CS_REMPRO_HOPLIST_VALUE_MAX_LENGTH  16
-#define CS_REMPRO_HOPSIZE_VALUE_MAX_LENGTH  1
+#define CS_RM_ONOFF_VALUE_MAX_LENGTH    1
 
 /* List of message handlers that are used by the custom service application manager */
 #define CS_MESSAGE_HANDLER_LIST                                            \
@@ -218,9 +185,6 @@ extern int GATTC_CmpEvt(ke_msg_id_t const msgid,
                         struct gattc_cmp_evt const *param,
                         ke_task_id_t const dest_id,
                         ke_task_id_t const src_id);
-
-extern uint8_t CustomProtocol_SelectAttributeValue(uint8_t att_num,
-                                                   uint8_t * *value);
 
 /* ----------------------------------------------------------------------------
  *

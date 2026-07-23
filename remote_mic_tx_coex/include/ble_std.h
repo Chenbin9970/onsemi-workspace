@@ -53,25 +53,25 @@ extern "C"
 #define BD_TYPE_PUBLIC                  0
 #define BD_TYPE_PRIVATE                 1
 
-/* Peer Bluetooth device address (1)*/
-#define DIRECT_PEER_BD_ADDRESS          { 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0 }
-#define DIRECT_PEER_BD_ADDRESS_TYPE     BD_TYPE_PRIVATE
-
 /* ON SEMICONDUCTOR Company ID */
 #define APP_COMPANY_ID_DATA             { 0x4, 0xff, 0x62, 0x3, 0x3 }
 #define APP_COMPANY_ID_DATA_LEN         (0x4 + 1)
+
+/* Hardcoded sleep device MAC address */
+#define SLEEP_BD_ADDRESS                { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }
+#define SLEEP_BD_ADDRESS_TYPE           BD_TYPE_PUBLIC
 
 /* Set scan interval to 62.5ms and scan window to 50% of the interval */
 #define SCAN_INERVAL                    100
 #define SCAN_WINDOW                     50
 
-/* Set the connection interval to 7.5ms and slave latency to zero */
-#define CON_INTERVAL_MIN                6
-#define CON_INTERVAL_MAX                6
+/* Set the connection interval to 30ms */
+#define CON_INTERVAL_MIN                24
+#define CON_INTERVAL_MAX                32
 #define CON_SLAVE_LATENCY               0
 
-/* Set supervisory timeout to 3s */
-#define CON_SUP_TIMEOUT                 300
+/* Set supervisory timeout to 720ms (matching BLE debug assistant) */
+#define CON_SUP_TIMEOUT                 72
 
 /* GAPM configuration definitions */
 #define RENEW_DUR                       15000
@@ -96,6 +96,9 @@ enum appm_state
     /* Advertising state */
     APPM_ADVERTISING,
 
+    /* Scanning state */
+    APPM_SCANNING,
+
     /* Connecting state */
     APPM_CONNECTING,
 
@@ -110,6 +113,7 @@ enum appm_state
 #define BLE_MESSAGE_HANDLER_LIST                                            \
     DEFINE_MESSAGE_HANDLER(GAPM_CMP_EVT, GAPM_CmpEvt),                      \
     DEFINE_MESSAGE_HANDLER(GAPM_PROFILE_ADDED_IND, GAPM_ProfileAddedInd),   \
+    DEFINE_MESSAGE_HANDLER(GAPM_ADV_REPORT_IND, GAPM_AdvReportInd),         \
     DEFINE_MESSAGE_HANDLER(GAPC_CONNECTION_REQ_IND, GAPC_ConnectionReqInd), \
     DEFINE_MESSAGE_HANDLER(GAPC_CMP_EVT, GAPC_CmpEvt),                      \
     DEFINE_MESSAGE_HANDLER(GAPC_DISCONNECT_IND, GAPC_DisconnectInd),        \
@@ -180,7 +184,9 @@ extern void BLE_Initialize(void);
 
 extern bool Service_Add(void);
 
-extern void Connection_SendStartCmd(void);
+extern void DirectConnect(void);
+
+extern void Connection_SendStartCmd(struct gap_bdaddr *peer);
 
 extern void BLE_SetServiceState(bool enable, uint8_t conidx);
 
@@ -196,6 +202,11 @@ extern int GAPM_CmpEvt(ke_msg_id_t const msgid,
                        struct gapm_cmp_evt const *param,
                        ke_task_id_t const dest_id,
                        ke_task_id_t const src_id);
+
+extern int GAPM_AdvReportInd(ke_msg_id_t const msgid,
+                             struct gapm_adv_report_ind const *param,
+                             ke_task_id_t const dest_id,
+                             ke_task_id_t const src_id);
 
 extern int GAPC_CmpEvt(ke_msg_id_t const msgid,
                        struct gapc_cmp_evt const *param,

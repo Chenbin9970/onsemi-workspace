@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 
 #ifdef CFG_FOTA
 #define VER_ID                  "BS300"

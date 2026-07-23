@@ -53,7 +53,7 @@ extern "C"
  *  {2, 8, 14, 20, 26, 35, 38}
  *  {3, 9, 15, 21, 24, 33, 36}
  */
-#define RM_HOPLIST                      { 37, 9, 16, 20, 29, 32, 17 }
+#define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
@@ -68,20 +68,22 @@ extern "C"
 #define SPI_RX_CODED_INPUT              1    /*with bi_directional_master in E7100 */
 #define SPI_RX_RAW_INPUT                2    /*with RSL10_RemoteDongle in E7100 */
 #define PCM_RX_RAW_INPUT                3
+#define DMIC_RX_RAW_INPUT               4
 
 #define NO_TX_OUTPUT                    2
 #define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
 
-#define INPUT_INTRF                     SPI_RX_CODED_INPUT    /*PCM_RX_RAW_INPUT//SPI_RX_CODED_INPUT// */
+#define INPUT_INTRF                     DMIC_RX_RAW_INPUT
 #define OUTPUT_INTRF                    NO_TX_OUTPUT    /*Fixed */
 #define SIMUL                           0    /*Fixed */
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
 #define APP_RM_DATA_REQUEST_TYPE        RM_PRO_REQUEST
-#else    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#else    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define EZAIRO_7100                     0
@@ -203,6 +205,22 @@ extern "C"
                                          DMA_TRANSFER_P_TO_M |     \
                                          DMA_DEST_ADDR_INC |       \
                                          DMA_SRC_ADDR_STATIC |     \
+                                         DMA_ADDR_CIRC)
+#elif (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+#define DMA_RX_CONFIG                   (DMA_LITTLE_ENDIAN |       \
+                                         DMA_ENABLE |              \
+                                         DMA_DISABLE_INT_DISABLE | \
+                                         DMA_ERROR_INT_DISABLE |   \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE |   \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
+                                         DMA_DEST_ADDR_INC |       \
+                                         DMA_PRIORITY_0 |          \
+                                         DMA_TRANSFER_P_TO_M |     \
+                                         DMA_SRC_ADDR_STATIC |     \
+                                         DMA_SRC_DMIC |            \
                                          DMA_ADDR_CIRC)
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT) */
 
@@ -338,6 +356,29 @@ extern "C"
 /* DIO number that is used for easy re-flashing (recovery mode) */
 #define RECOVERY_DIO                    13
 
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+/* DMIC pins */
+#define DMIC_CLK_PIN                    0
+#define DMIC_DATA_PIN                   1
+
+/* DMIC hardware configuration */
+#define DMIC_CFG                        (DMIC0_DCRM_CUTOFF_20HZ | \
+                                         DMIC1_DCRM_CUTOFF_20HZ | \
+                                         DMIC1_DELAY_DISABLE |    \
+                                         DMIC0_FALLING_EDGE |     \
+                                         DMIC1_RISING_EDGE)
+
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << AUDIO_CFG_DEC_RATE_Pos))
+
+#define DMIC_AUDIO_CFG                  (DMIC0_ENABLE |    \
+                                         DMIC1_ENABLE |    \
+                                         DECIMATE_BY_200 | \
+                                         DMIC_AUDIOCLK |   \
+                                         DMIC0_DMA_REQ_ENABLE)
+
+#define DMIC_MAX_GAIN                   0xFFF
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
+
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
                                         CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
@@ -362,11 +403,13 @@ extern "C"
 #define CODEC_MODE                      3
 
 /* Subframe length in uint16_t */
-#if (INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+#define SUBFRAME_LENGTH                 64
+#elif (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define SUBFRAME_LENGTH                 16
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
 #define SUBFRAME_LENGTH                 8
-#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
 
 /* Total subframe length accounting for left and right channel samples in uint16_t */
 #define SUBFRAME_LENGTH_LEFT_AND_RIGHT  (SUBFRAME_LENGTH * 2)
@@ -517,7 +560,12 @@ extern uint8_t audio_right[120];
 
 extern uint8_t ear_side;
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
+
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+extern int32_t dmic_buffer_in[];
+#else    /* SPI_RX_RAW_INPUT || PCM_RX_RAW_INPUT */
 extern int16_t spi_buf[];
 extern int32_t pcm_buf[];
 extern int16_t asrc_in_buf[];
@@ -537,12 +585,13 @@ extern struct wm8731_i2c_message wm8731_i2c_message_buffer[];
 extern volatile uint8_t i2c_tx_buffer_data[];
 extern volatile uint8_t i2c_tx_buffer_index;
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
 
-#else    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#else    /* SPI_RX_CODED_INPUT */
 extern int8_t spi_buf[];
 void port_rx_coded_dma_isr(void);
 
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 
 extern const struct ke_task_desc TASK_DESC_APP;
 

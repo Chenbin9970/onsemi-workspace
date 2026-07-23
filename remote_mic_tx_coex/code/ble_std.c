@@ -44,6 +44,9 @@ const appm_enable_svc_func_t appm_enable_svc_func_list[] = {
 uint8_t bdaddr[BDADDR_LENGTH];
 uint8_t bdaddr_type;
 
+/* Peer address discovered during scanning — saved for connection */
+static struct gap_bdaddr scanned_peer;
+
 static struct gapm_set_dev_config_cmd *gapmConfigCmd;
 
 /* ----------------------------------------------------------------------------
@@ -206,8 +209,8 @@ int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
             /* If there are no more services to add, go to the ready state */
             ble_env.state = APPM_READY;
 
-            /* No more service to add, send start connection */
-            Connection_SendStartCmd();
+            /* No more service to add, start scanning */
+            DirectConnect();
         }
     }
 
@@ -274,10 +277,16 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
                 /* Go to the ready state */
                 ble_env.state = APPM_READY;
 
-                /* Send start connection command since there are no services to
-                 * add to the attribute database */
-                Connection_SendStartCmd();
+                /* No services to add — start scanning */
+                DirectConnect();
             }
+        }
+        break;
+
+        /* Scan cancelled — now connect to the saved peer */
+        case (GAPM_CANCEL):
+        {
+            Connection_SendStartCmd(&scanned_peer);
         }
         break;
 
@@ -350,7 +359,7 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
     }
     else
     {
-        Connection_SendStartCmd();
+        ble_env.state = APPM_READY;
     }
 
     return (KE_MSG_CONSUMED);
@@ -408,10 +417,8 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
 
     BLE_SetServiceState(false, ble_env.conidx);
 
-    /* When the link is lost, it sends connection start command again to put
-     * it in the state that accepts advertisements from peer device
-     * and can connect to it */
-    Connection_SendStartCmd();
+    /* Don't reconnect immediately — let the 200ms timer handle it
+     * with a 10s delay (see APP_Timer in app_process.c) */
 
     return (KE_MSG_CONSUMED);
 }
@@ -476,21 +483,18 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
 }
 
 /* ----------------------------------------------------------------------------
- * Function      : void Connection_SendStartCmd(void)
+ * Function      : void DirectConnect(void)
  * ----------------------------------------------------------------------------
- * Description   : Send a command to establish a connection with peer device
+ * Description   : Directly connect to the sleep device using hardcoded MAC
  * Inputs        : None
  * Outputs       : None
- * Assumptions   : Application knows the peer Bluetooth device address,
- *                 so it uses direct connection method
  * ------------------------------------------------------------------------- */
-void Connection_SendStartCmd(void)
+void DirectConnect(void)
 {
-    uint8_t peerAddress0[BD_ADDR_LEN] = DIRECT_PEER_BD_ADDRESS;
+    uint8_t peer_addr[BDADDR_LENGTH] = SLEEP_BD_ADDRESS;
     struct gapm_start_connection_cmd *cmd;
 
-    PRINTF("__START CONNECTION\n");
-    /* Prepare the GAPM_START_CONNECTION_CMD message  */
+    PRINTF("__DIRECT CONNECT\n");
     cmd = KE_MSG_ALLOC_DYN(GAPM_START_CONNECTION_CMD, TASK_GAPM, TASK_APP,
                            gapm_start_connection_cmd,
                            (sizeof(struct gap_bdaddr)));
@@ -498,30 +502,151 @@ void Connection_SendStartCmd(void)
     cmd->op.code       = GAPM_CONNECTION_DIRECT;
     cmd->op.addr_src   = GAPM_STATIC_ADDR;
     cmd->op.state      = 0;
-
-    /* Set scan interval to 62.5ms and scan window to 50% of the interval */
     cmd->scan_interval = SCAN_INERVAL;
     cmd->scan_window   = SCAN_WINDOW;
-
-    /* Set the connection interval to 7.5ms */
     cmd->con_intv_min  = CON_INTERVAL_MIN;
     cmd->con_intv_max  = CON_INTERVAL_MAX;
     cmd->con_latency   = CON_SLAVE_LATENCY;
-
-    /* Set supervisory timeout to 3s */
     cmd->superv_to     = CON_SUP_TIMEOUT;
-
     cmd->nb_peers      = 1;
+    cmd->peers[0].addr_type = SLEEP_BD_ADDRESS_TYPE;
+    memcpy(&cmd->peers[0].addr.addr[0], peer_addr, BDADDR_LENGTH);
 
-    /* Address Type: Private Address */
-    cmd->peers[0].addr_type = DIRECT_PEER_BD_ADDRESS_TYPE;
-
-    memcpy(&cmd->peers[0].addr.addr[0], &peerAddress0[0], BD_ADDR_LEN);
-
-    /* Send the message */
     ke_msg_send(cmd);
 
     ble_env.state = APPM_CONNECTING;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Scan_SendStartCmd(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Start scanning for the sleep device (peripheral_server_sleep)
+ *                by looking for its custom service UUID in advertising data
+ * Inputs        : None
+ * Outputs       : None
+ * ------------------------------------------------------------------------- */
+void Scan_SendStartCmd(void)
+{
+    struct gapm_start_scan_cmd *cmd;
+
+    PRINTF("__START SCANNING\n");
+    cmd = KE_MSG_ALLOC(GAPM_START_SCAN_CMD, TASK_GAPM, TASK_APP,
+                       gapm_start_scan_cmd);
+
+    cmd->op.code     = GAPM_SCAN_ACTIVE;
+    cmd->op.addr_src = GAPM_STATIC_ADDR;
+    cmd->op.state    = 0;
+    cmd->interval    = SCAN_INERVAL;
+    cmd->window      = SCAN_WINDOW;
+    cmd->mode        = GAP_GEN_DISCOVERY;
+
+    ke_msg_send(cmd);
+
+    ble_env.state = APPM_SCANNING;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Connection_SendStartCmd(struct gap_bdaddr *peer)
+ * ----------------------------------------------------------------------------
+ * Description   : Send a command to directly connect to a discovered peer
+ * Inputs        : - peer       - Pointer to peer address struct
+ * Outputs       : None
+ * ------------------------------------------------------------------------- */
+void Connection_SendStartCmd(struct gap_bdaddr *peer)
+{
+    struct gapm_start_connection_cmd *cmd;
+
+    PRINTF("__START CONNECTION\n");
+    cmd = KE_MSG_ALLOC_DYN(GAPM_START_CONNECTION_CMD, TASK_GAPM, TASK_APP,
+                           gapm_start_connection_cmd,
+                           (sizeof(struct gap_bdaddr)));
+
+    cmd->op.code       = GAPM_CONNECTION_DIRECT;
+    cmd->op.addr_src   = GAPM_STATIC_ADDR;
+    cmd->op.state      = 0;
+    cmd->scan_interval = SCAN_INERVAL;
+    cmd->scan_window   = SCAN_WINDOW;
+    cmd->con_intv_min  = CON_INTERVAL_MIN;
+    cmd->con_intv_max  = CON_INTERVAL_MAX;
+    cmd->con_latency   = CON_SLAVE_LATENCY;
+    cmd->superv_to     = CON_SUP_TIMEOUT;
+    cmd->nb_peers      = 1;
+    cmd->peers[0].addr_type = peer->addr_type;
+    memcpy(&cmd->peers[0].addr.addr[0], &peer->addr.addr[0], BD_ADDR_LEN);
+
+    ke_msg_send(cmd);
+
+    ble_env.state = APPM_CONNECTING;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPM_AdvReportInd(ke_msg_id_t const msgid,
+ *                                       struct gapm_adv_report_ind const *param,
+ *                                       ke_task_id_t const dest_id,
+ *                                       ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle advertising report — filter for sleep device by
+ *                 matching the custom service UUID in advertising data
+ * ------------------------------------------------------------------------- */
+int GAPM_AdvReportInd(ke_msg_id_t const msgid,
+                      struct gapm_adv_report_ind const *param,
+                      ke_task_id_t const dest_id,
+                      ke_task_id_t const src_id)
+{
+    struct gapm_cancel_cmd *cancel_cmd;
+    uint8_t *ad_data = (uint8_t *)param->report.data;
+    uint8_t ad_len = param->report.data_len;
+    uint8_t pos = 0;
+
+    if (ble_env.state != APPM_SCANNING)
+    {
+        return (KE_MSG_CONSUMED);
+    }
+
+    /* Parse advertising data looking for device name "cbtest"
+     * (peripheral_server_sleep device) */
+    while (pos + 1 < ad_len)
+    {
+        uint8_t field_len = ad_data[pos];
+        uint8_t field_type = ad_data[pos + 1];
+
+        if (field_len == 0 || pos + 1 + field_len > ad_len)
+        {
+            break;
+        }
+
+        /* AD Type 0x09 = Complete Local Name, 0x08 = Shortened Local Name */
+        if (field_type == 0x09 || field_type == 0x08)
+        {
+            if (field_len - 1 == 6 &&
+                ad_data[pos + 2 + 0] == 'c' &&
+                ad_data[pos + 2 + 1] == 'b' &&
+                ad_data[pos + 2 + 2] == 't' &&
+                ad_data[pos + 2 + 3] == 'e' &&
+                ad_data[pos + 2 + 4] == 's' &&
+                ad_data[pos + 2 + 5] == 't')
+            {
+                PRINTF("__SLEEP DEVICE FOUND\n");
+
+                /* Save peer address for connection */
+                memcpy(&scanned_peer.addr, &param->report.adv_addr,
+                       BDADDR_LENGTH);
+                scanned_peer.addr_type = param->report.adv_addr_type;
+
+                /* Stop scanning */
+                cancel_cmd = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM,
+                                          TASK_APP, gapm_cancel_cmd);
+                cancel_cmd->operation = GAPM_CANCEL;
+                ke_msg_send(cancel_cmd);
+
+                return (KE_MSG_CONSUMED);
+            }
+        }
+
+        pos += field_len + 1;
+    }
+
+    return (KE_MSG_CONSUMED);
 }
 
 /* ----------------------------------------------------------------------------
@@ -558,7 +683,11 @@ void BLE_SetServiceState(bool enable, uint8_t conidx)
     else
     {
         basc_support_env.enable = false;
-        cs_env.state = CS_INIT;
+        /* Preserve CS_PEER_CONFIGURED so timer can trigger RM switch */
+        if (cs_env.state != CS_PEER_CONFIGURED)
+        {
+            cs_env.state = CS_INIT;
+        }
     }
 }
 

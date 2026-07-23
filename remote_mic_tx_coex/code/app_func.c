@@ -23,7 +23,8 @@
 
 uint8_t ear_side = APP_RM_AUDIO_CHANNEL;
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
 int16_t *Cm2DspBuff0enc = (int16_t *)MEM_CM2DSP_ADDR0_ENC;
 int16_t *Cm2DspBuff1enc = (int16_t *)MEM_CM2DSP_ADDR1_ENC;
 uint8_t *Dsp2CmBuff0enc = MEM_DSP2CM_ADDR0_ENC;
@@ -32,6 +33,8 @@ uint8_t *Cm2DspBuff0dec = MEM_CM2DSP_ADDR0_DEC;
 uint8_t *Cm2DspBuff1dec = MEM_CM2DSP_ADDR1_DEC;
 uint8_t *Dsp2CmBuff0dec = MEM_DSP2CM_ADDR0_DEC;
 uint8_t *Dsp2CmBuff1dec = MEM_DSP2CM_ADDR1_DEC;
+
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
 
 int64_t Cr = 0;
 int64_t Ck = 0;
@@ -127,43 +130,56 @@ AUDIOSINK_PHASE_IRQHandler(void);
 void __attribute__ ((alias("Ascc_period_isr")))
 AUDIOSINK_PERIOD_IRQHandler(void);
 
-#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
 
-#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
-void __attribute__ ((alias("Asrc_out_dma_isr"))) DMA_IRQ_FUNC(ASRC_OUT_IDX)(
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+/* DMIC input buffer — each 32-bit word packs DMIC0 (low 16) + DMIC1 (high 16) */
+int32_t dmic_buffer_in[SUBFRAME_LENGTH];
+
+void __attribute__ ((alias("Port_rx_dmic_dma_isr"))) DMA_IRQ_FUNC(RX_DMA_NUM)(
     void);
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
 
-void __attribute__ ((alias("DspEnc0_isr"))) DSP0_IRQHandler(void);
+#endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || ...) */
 
-void __attribute__ ((alias("DspEnc1_isr"))) DSP1_IRQHandler(void);
+#if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT || \
+     INPUT_INTRF == DMIC_RX_RAW_INPUT)
 
-void __attribute__ ((alias("Port_rx_raw_dma_isr"))) DMA_IRQ_FUNC(RX_DMA_NUM)(
-    void);
-
+/* --- Shared: encoder pipeline variables --- */
 bool lpdsp_rdy = true;
-int32_t data_fifo_rec;
-int16_t asrc_out_buf[2][FRAME_LENGTH];
-int16_t asrc_in_buf[SUBFRAME_LENGTH_LEFT_AND_RIGHT];
-uint8_t ptr_rst_cnt = 0;
-uint8_t error = 0;
-
 uint8_t tx_data_fifo[2][TX_DATA_FIFO_LENGTH];
 int16_t data_wr_idx[2]   = { 0, 0 };
 int16_t data_rd_idx[2]   = { 0, 0 };
 int16_t w2r[2] = { 0, 0 };
 int16_t r2w[2] = { 0, 0 };
-uint16_t cntr_asrc_out[2] = { 0, 0 };
+uint8_t ptr_rst_cnt = 0;
+struct queue_t queue_tx[2] = { { NULL, NULL }, { NULL, NULL } };
+int16_t left_data[SUBFRAME_LENGTH];
+int16_t right_data[SUBFRAME_LENGTH];
+uint8_t cntr_enc0 = 0, cntr_enc1 = 0;
+
+/* --- Shared: DSP encoder ISR aliases --- */
+void __attribute__ ((alias("DspEnc0_isr"))) DSP0_IRQHandler(void);
+void __attribute__ ((alias("DspEnc1_isr"))) DSP1_IRQHandler(void);
+
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
+/* --- SPI/PCM only: ASRC + interface variables --- */
+void __attribute__ ((alias("Asrc_out_dma_isr"))) DMA_IRQ_FUNC(ASRC_OUT_IDX)(
+    void);
+
+void __attribute__ ((alias("Port_rx_raw_dma_isr"))) DMA_IRQ_FUNC(RX_DMA_NUM)(
+    void);
+
+int32_t data_fifo_rec;
+int16_t asrc_out_buf[2][FRAME_LENGTH];
+int16_t asrc_in_buf[SUBFRAME_LENGTH_LEFT_AND_RIGHT];
+uint32_t cntr_asrc_out[2] = { 0, 0 };
 uint32_t asrc_state_mem_rx[2][31];
-uint32_t cntr_sample = 0;
 PacketSide flag_packet_side = PKT_LEFT;
 int16_t spi_buf[2 * SUBFRAME_LENGTH];
 int32_t pcm_buf[4 * SUBFRAME_LENGTH];
-struct queue_t queue_tx[2] = { { NULL, NULL }, { NULL, NULL } };
 uint8_t cntr_wav    = 0;
-int16_t left_data[SUBFRAME_LENGTH];
-int16_t right_data[SUBFRAME_LENGTH];
 extern const uint8_t coded_sample[60];
-uint8_t cntr_enc0 = 0, cntr_enc1 = 0;
 
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD)
 struct wm8731_i2c_message
@@ -184,6 +200,8 @@ struct wm8731_i2c_message
 volatile uint8_t i2c_tx_buffer_data[I2C_BUFFER_SIZE];
 volatile uint8_t i2c_tx_buffer_index;
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
+
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
 
 /* ----------------------------------------------------------------------------
  * Function      : uint32_t * Read_buffer(uint8_t side)
@@ -234,6 +252,7 @@ uint32_t * Read_buffer(uint8_t side)
     return (temp);
 }
 
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
 /* ----------------------------------------------------------------------------
  * Function      : void DMA_IRQ_FUNC(MEMCPY_SAVE_STATE_MEM)(void)
  * ----------------------------------------------------------------------------
@@ -284,6 +303,11 @@ void DMA_IRQ_FUNC(MEMCPY_RESTORE_STATE_MEM)(void)
         Sys_ASRC_StatusConfig(ASRC_ENABLE);
     }
 }
+
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
+
+/* Forward declaration */
+static void Start_Enc_Lpdsp32(uint32_t src_addr, PacketSide side);
 
 /* ----------------------------------------------------------------------------
  * Function      : void Start_Enc_Lpdsp32_Channel (PacketSide side)
@@ -397,6 +421,7 @@ void Start_Enc_Lpdsp32(uint32_t src_addr, PacketSide side)
     }
 }
 
+#if (INPUT_INTRF != DMIC_RX_RAW_INPUT)
 /* ----------------------------------------------------------------------------
  * Function      : void Ascc_phase_isr(void)
  * ----------------------------------------------------------------------------
@@ -716,6 +741,36 @@ void I2C_IRQHandler(void)
 }
 
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
+
+#endif    /* if (INPUT_INTRF != DMIC_RX_RAW_INPUT) */
+
+#if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
+/* ----------------------------------------------------------------------------
+ * Function      : void Port_rx_dmic_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : DMIC DMA completion ISR — unpack 32-bit DMIC data into
+ *                 left/right 16-bit samples and feed to encoder queue
+ * ------------------------------------------------------------------------- */
+void Port_rx_dmic_dma_isr(void)
+{
+    uint8_t i;
+
+    /* Unpack DMIC 32-bit words: low 16 = DMIC0 (left), high 16 = DMIC1 (right) */
+    for (i = 0; i < SUBFRAME_LENGTH; i++)
+    {
+        left_data[i]  = dmic_buffer_in[i] & 0xFFFF;
+        right_data[i] = dmic_buffer_in[i] >> 16;
+    }
+
+    /* Feed left channel to encoder queue */
+    QueueInsert(&queue_tx[PKT_LEFT], (uint16_t *)&left_data[0]);
+    Start_Enc_Lpdsp32_Channel(PKT_LEFT);
+
+    /* Feed right channel to encoder queue */
+    QueueInsert(&queue_tx[PKT_RIGHT], (uint16_t *)&right_data[0]);
+    Start_Enc_Lpdsp32_Channel(PKT_RIGHT);
+}
+#endif    /* if (INPUT_INTRF == DMIC_RX_RAW_INPUT) */
 
 #elif (INPUT_INTRF == SPI_RX_CODED_INPUT)
 
