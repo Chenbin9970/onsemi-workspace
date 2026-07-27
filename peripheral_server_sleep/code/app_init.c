@@ -551,6 +551,8 @@ void App_Initialize(void)
 
 #ifdef APP_RM_ENABLE
     APP_RM_Init(ear_side);
+    /* Boot default is BLE low-power mode.
+     * On cold boot, Main_Loop will switch to RM mode immediately. */
     RF_SwitchToBLEMode();
     app_env.audio_streaming = 0;
 #endif

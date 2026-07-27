@@ -485,7 +485,8 @@ uint8_t Emulate_CS_Val_Notif_Change(uint8_t val_notif)
 int APP_Timer(ke_msg_id_t const msg_id, void const *param,
               ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+    /* Re-arm is done in Main_Loop — just set flag here */
+    app_env.timer_200ms = 1;
 
     if (ble_env.state == APPM_CONNECTED)
         Sys_GPIO_Set_High(LED_DIO);

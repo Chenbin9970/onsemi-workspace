@@ -101,6 +101,24 @@ void Main_Loop(void)
     }
     (app_env.sleep_cycles)++;
 
+#ifdef APP_RM_ENABLE
+    /* Cold-boot RM init: BS300 driver is ready (bs300_test_run done),
+     * switch from BLE to RM mode immediately. Skip on wakeup. */
+    {
+        static uint8_t rm_cold_boot_done = 0;
+        if (!rm_cold_boot_done) {
+            rm_cold_boot_done = 1;
+            app_env.saved_prog_before_rm = bs300_get_active_prog();
+            Audio_Init();
+            RF_SwitchToCPMode();
+            RM_Enable(1000);
+            app_env.audio_streaming = 1;
+            app_env.rm_disc_state = RM_DISC_HEARING_AID;
+            app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+        }
+    }
+#endif
+
     while (true)
     {
         Kernel_Schedule();
@@ -112,27 +130,37 @@ void Main_Loop(void)
         {
             app_env.rm_start_requested = 0;
 
-            /* Switch to program 3 (audio mode) before entering RM.
-             * Mute first to prevent noise during RM search phase.
-             * active() is deferred to LINK_ESTABLISHED callback. */
-            app_env.saved_prog_before_rm = bs300_get_active_prog();
-            bs300_mute();
-            if (app_env.saved_prog_before_rm != 3) {
-                bs300_set_prog_volume(3, 9);
-                bs300_switch_program(3);
-                bs300_persist_active_prog(app_env.saved_prog_before_rm);
-            }
+            /* Only start if RM is completely off (audio_streaming=0).
+             * Skip when already connected, searching, or debouncing. */
+            if (!app_env.audio_streaming)
+            {
+                app_env.rm_disc_state = RM_DISC_NONE;
+                app_env.rm_timeout_ticks = 0;
 
-            APP_RM_Init(ear_side);
-            Audio_Init();
-            RF_SwitchToCPMode();
-            RM_Enable(1000);
-            app_env.audio_streaming = 1;
+                /* Switch to program 3 (audio mode) before entering RM.
+                 * Mute first to prevent noise during RM search phase.
+                 * active() is deferred to LINK_ESTABLISHED callback. */
+                app_env.saved_prog_before_rm = bs300_get_active_prog();
+                bs300_mute();
+                if (app_env.saved_prog_before_rm != 3) {
+                    bs300_set_prog_volume(3, 9);
+                    bs300_switch_program(3);
+                    bs300_persist_active_prog(app_env.saved_prog_before_rm);
+                }
+
+                APP_RM_Init(ear_side);
+                Audio_Init();
+                RF_SwitchToCPMode();
+                RM_Enable(1000);
+                app_env.audio_streaming = 1;
+            }
         }
 
         if (app_env.rm_stop_requested)
         {
             app_env.rm_stop_requested = 0;
+            app_env.rm_disc_state = RM_DISC_NONE;
+            app_env.rm_timeout_ticks = 0;
 
             /* Mute BS300 before tearing down audio pipeline */
             bs300_mute();
@@ -163,6 +191,34 @@ void Main_Loop(void)
 
             app_env.audio_streaming = 0;
             low_power_clk_param.low_power_enable = true;
+        }
+
+        /* RM disconnect → keep RM state, fall back to hearing aid.
+         * DEBOUNCE: wait for transient disconnects to resolve.
+         * On timeout: switch to hearing aid program + restart RM search. */
+        if (app_env.rm_disc_state == RM_DISC_DEBOUNCE) {
+            app_env.rm_disc_counter++;
+            if (app_env.rm_disc_counter >= RM_DISC_DEBOUNCE_THRESHOLD) {
+                app_env.rm_disc_state = RM_DISC_HEARING_AID;
+                if (app_env.saved_prog_before_rm != 3) {
+                    bs300_switch_program(app_env.saved_prog_before_rm);
+                }
+                bs300_active();
+                RM_Enable(1000);
+            }
+        }
+
+        /* 200ms tick driven by APP_Timer flag (re-armed here, not in handler) */
+        if (app_env.timer_200ms) {
+            app_env.timer_200ms = 0;
+            ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+            if (app_env.rm_timeout_ticks > 0
+                && app_env.rm_disc_state != RM_DISC_NONE) {
+                app_env.rm_timeout_ticks--;
+                if (app_env.rm_timeout_ticks == 0)
+                    app_env.rm_stop_requested = 1;
+            }
         }
 #endif
 

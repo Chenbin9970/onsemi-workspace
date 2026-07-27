@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define DEBUG_UART_ENABLE
+//#define DEBUG_UART_ENABLE
 
 #ifdef CFG_FOTA
 #define VER_ID                  "BS300"
@@ -107,6 +107,9 @@ extern "C"
 
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
+
+/* RM search timeout: 300 * 200ms = 1 minute */
+#define RM_TIMEOUT_TICKS                300
 
 /* ----------------------------------------------------------------------------
  * Remote Microphone Defines
@@ -229,6 +232,15 @@ extern "C"
 #define SIMUL                           0
 
 #include "dsp_pm_dm.h"
+
+/* RM disconnect debounce threshold (Main_Loop iterations, ~1-3s) */
+#define RM_DISC_DEBOUNCE_THRESHOLD  500
+
+enum rm_disc_state {
+    RM_DISC_NONE = 0,
+    RM_DISC_DEBOUNCE,
+    RM_DISC_HEARING_AID
+};
 
 extern uint8_t ear_side;
 extern uint8_t *Dsp2CmBuff0dec;
@@ -466,6 +478,10 @@ struct app_env_tag
     uint8_t saved_prog_before_rm;
     uint8_t rm_was_enabled;
     uint8_t init_done;
+    uint16_t rm_disc_counter;
+    uint8_t rm_disc_state;
+    uint16_t rm_timeout_ticks;
+    uint8_t  timer_200ms;
 #endif
 };
 

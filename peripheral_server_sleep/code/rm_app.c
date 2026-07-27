@@ -206,7 +206,10 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             if (app_env.init_done && app_env.audio_streaming)
             {
                 RM_PRINTF("__RM_LINK_DISCONNECTED\r\n");
-                app_env.rm_stop_requested = 1;
+                app_env.rm_disc_state = RM_DISC_DEBOUNCE;
+                app_env.rm_disc_counter = 0;
+                app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+                bs300_mute();
             }
             app_env.rm_lostLink_counter++;
         }
@@ -222,8 +225,30 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
         {
             RM_PRINTF("__RM_LINK_ESTABLISHED\n");
 
-            /* Start BS300 DSP now that the audio link is ready */
-            bs300_active();
+            app_env.rm_timeout_ticks = 0;
+
+            switch (app_env.rm_disc_state) {
+            case RM_DISC_NONE:
+                /* First-time connection */
+                bs300_active();
+                break;
+
+            case RM_DISC_DEBOUNCE:
+                /* Quick reconnect — program 3 still loaded, just re-activate */
+                bs300_active();
+                app_env.rm_disc_state = RM_DISC_NONE;
+                break;
+
+            case RM_DISC_HEARING_AID:
+                /* Reconnect from hearing aid mode — switch back to program 3 */
+                bs300_mute();
+                if (app_env.saved_prog_before_rm != 3) {
+                    bs300_switch_program(3);
+                }
+                bs300_active();
+                app_env.rm_disc_state = RM_DISC_NONE;
+                break;
+            }
 
             asrc_stable     = false;
             cntr_stability  = 0;
