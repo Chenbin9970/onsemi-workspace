@@ -229,22 +229,17 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 
             switch (app_env.rm_disc_state) {
             case RM_DISC_NONE:
-                /* First-time connection */
-                bs300_active();
-                break;
-
-            case RM_DISC_DEBOUNCE:
-                /* Quick reconnect — program 3 still loaded, just re-activate */
+            case RM_DISC_HEARING_AID:
+                /* BS300 on hearing aid program — switch to program 3 */
+                bs300_mute();
+                if (app_env.saved_prog_before_rm != 3)
+                    bs300_switch_program(3);
                 bs300_active();
                 app_env.rm_disc_state = RM_DISC_NONE;
                 break;
 
-            case RM_DISC_HEARING_AID:
-                /* Reconnect from hearing aid mode — switch back to program 3 */
-                bs300_mute();
-                if (app_env.saved_prog_before_rm != 3) {
-                    bs300_switch_program(3);
-                }
+            case RM_DISC_DEBOUNCE:
+                /* Quick reconnect — program 3 still loaded, just re-activate */
                 bs300_active();
                 app_env.rm_disc_state = RM_DISC_NONE;
                 break;

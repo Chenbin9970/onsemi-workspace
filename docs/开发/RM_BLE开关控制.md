@@ -13,10 +13,10 @@
 | RM 连上 | TX 连接 | 关定时器，切程序 3，DSP active，音频开始 |
 | TX 断开 | 自动 | 保持 RM 状态：mute → 消抖 1s → 切回助听 → RM_Enable 搜索；快速重连直接恢复 |
 | 停止 RM | BLE 写 0x00 | 完整清理：mute → 停管道 → RM_Disable → 切 BLE → 恢复原程序 → 低功耗睡眠 |
-| 启动 RM | BLE 写 0x01 | **仅 RM 完全关闭时有效**（`audio_streaming=0`），已连接/搜索中直接跳过 |
+| 启动 RM | BLE 写 0x01 | **仅 RM 完全关闭时有效**（`audio_streaming=0`）。不切程序，连接后才切。已连接/搜索中直接跳过 |
 | 超时退出 | 1min 无连接 | 自动走完整清理切回 BLE 低功耗 |
 
-> **关键约束**：程序 3 是音频模式，RM 必须在程序 3 下运行。进入 RM 前 mute + 切程序 3，active 推迟到 LINK_ESTABLISHED。退出时先 mute 再拆硬件，防止噗声。
+> **关键约束**：程序 3 是音频模式，RM 必须在程序 3 下运行。**统一在 LINK_ESTABLISHED 时切程序 3**（所有路径：冷启/BLE 0x01/搜索重连），搜索期间 BS300 跑助听程序防杂音。退出时先 mute 再拆硬件，防止噗声。
 
 ---
 
@@ -84,19 +84,12 @@ if (app_env.rm_start_requested)
     app_env.rm_start_requested = 0;
 
     /* Only start if RM is completely off (audio_streaming=0).
-     * Skip when already connected, searching, or debouncing. */
+     * Program switch is deferred to LINK_ESTABLISHED. */
     if (!app_env.audio_streaming)
     {
         app_env.rm_disc_state = RM_DISC_NONE;
         app_env.rm_timeout_ticks = 0;
-
         app_env.saved_prog_before_rm = bs300_get_active_prog();
-        bs300_mute();
-        if (app_env.saved_prog_before_rm != 3) {
-            bs300_set_prog_volume(3, 9);
-            bs300_switch_program(3);
-            bs300_persist_active_prog(app_env.saved_prog_before_rm);
-        }
 
         APP_RM_Init(ear_side);
         Audio_Init();
@@ -186,17 +179,15 @@ case LINK_ESTABLISHED:
     app_env.rm_timeout_ticks = 0;   // 停止超时定时器
 
     switch (app_env.rm_disc_state) {
-    case RM_DISC_NONE:              // 首次连接
-        bs300_active();
-        break;
-    case RM_DISC_DEBOUNCE:          // 快速重连 — 程序3还在
-        bs300_active();
-        app_env.rm_disc_state = RM_DISC_NONE;
-        break;
+    case RM_DISC_NONE:              // BLE启动 / 冷启 — 助听程序上搜
     case RM_DISC_HEARING_AID:       // 搜索中重连 — 切回程序3
         bs300_mute();
         if (app_env.saved_prog_before_rm != 3)
             bs300_switch_program(3);
+        bs300_active();
+        app_env.rm_disc_state = RM_DISC_NONE;
+        break;
+    case RM_DISC_DEBOUNCE:          // 快速重连 — 程序3还在，只 active
         bs300_active();
         app_env.rm_disc_state = RM_DISC_NONE;
         break;
@@ -270,9 +261,8 @@ RM_ONOFF 特征值写入无状态判断，直接设标志：
 LINK_ESTABLISHED
   → timeout_ticks=0（停超时）
   → 按state分支:
-    NONE         → active()                    首次连接
-    DEBOUNCE     → active() → state=NONE       快速重连
-    HEARING_AID  → mute → 切程序3 → active()   搜索中重连
+    NONE/HEARING_AID → mute → 切程序3 → active()  (所有路径统一)
+    DEBOUNCE         → active() → state=NONE      (程序3还在)
 
 LINK_DISCONNECTED
   → state=DEBOUNCE, counter=0, timeout_ticks=300（重启超时）
@@ -289,7 +279,8 @@ Main_Loop DEBOUNCE:
   timeout_ticks==0 → rm_stop_requested → 完整清理 → BLE低功耗（定时器自然死亡）
 
 BLE 写 0x01（仅 audio_streaming==0 时生效）:
-  → 完整RM启动序列
+  → 保存程序 → APP_RM_Init → Audio_Init → RM_Enable（不切程序）
+  → 搜索中（BS300助听）→ LINK_ESTABLISHED → mute → 切程序3 → active
 
 BLE 写 0x00:
   → 完整清理 → BLE低功耗
@@ -423,6 +414,26 @@ if (app_env.timer_200ms) {
 | RM 断连后噗声 | DSP 无数据仍在 active | `LINK_DISCONNECTED` 立即 `bs300_mute()` |
 | 进入 RM 杂音 | 搜索期 DSP 有输出 | active 推迟到 `LINK_ESTABLISHED` |
 | 退出 RM 噗声 | 硬件清理时 BS300 活跃 | 先 `bs300_mute()` 再拆硬件管道 |
+| RM 模式按键长按不触发 | `SYS_WAIT_FOR_EVENT` 无条件执行，不检查 `low_power_enable`，按键 HELD 期间 WFE 额外等待 ~1ms，每 tick 耗时 2~3ms | WFE 加 `low_power_enable` 守卫，按键按住时跳过 WFE，与 BLE 模式时序一致 |
+
+### 9.1 RM 模式按键时序修复（2026-07-27）
+
+```c
+// app.c — 主循环底部，修复前
+if (app_env.audio_streaming)
+{
+    SYS_WAIT_FOR_EVENT;   // ← 无条件等待，按键按住时也等
+}
+
+// 修复后
+if (app_env.audio_streaming)
+{
+    if (low_power_clk_param.low_power_enable)  // ← 加守卫
+        SYS_WAIT_FOR_EVENT;
+}
+```
+
+BLE 模式的 `SYS_WAIT_FOR_INTERRUPT` 有 `low_power_enable` 守卫，RM 模式的 `SYS_WAIT_FOR_EVENT` 缺少。这导致 RM 模式下按键按住期间每 tick 额外等待 RM 事件（~1ms），1000 ticks 需按住 2~3s，用户体感长按不触发。
 
 ---
 

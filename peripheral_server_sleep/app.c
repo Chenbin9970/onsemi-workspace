@@ -131,22 +131,13 @@ void Main_Loop(void)
             app_env.rm_start_requested = 0;
 
             /* Only start if RM is completely off (audio_streaming=0).
-             * Skip when already connected, searching, or debouncing. */
+             * Skip when already connected, searching, or debouncing.
+             * Program switch is deferred to LINK_ESTABLISHED. */
             if (!app_env.audio_streaming)
             {
                 app_env.rm_disc_state = RM_DISC_NONE;
                 app_env.rm_timeout_ticks = 0;
-
-                /* Switch to program 3 (audio mode) before entering RM.
-                 * Mute first to prevent noise during RM search phase.
-                 * active() is deferred to LINK_ESTABLISHED callback. */
                 app_env.saved_prog_before_rm = bs300_get_active_prog();
-                bs300_mute();
-                if (app_env.saved_prog_before_rm != 3) {
-                    bs300_set_prog_volume(3, 9);
-                    bs300_switch_program(3);
-                    bs300_persist_active_prog(app_env.saved_prog_before_rm);
-                }
 
                 APP_RM_Init(ear_side);
                 Audio_Init();
@@ -344,7 +335,7 @@ void Main_Loop(void)
                 /* Held — block sleep, count ~1ms ticks */
                 low_power_clk_param.low_power_enable = false;
                 hold_ticks++;
-                if (!long_fired && hold_ticks >= 1500)
+                if (!long_fired && hold_ticks >= 1000)
                 {
                     long_fired = 1;
                     pending_action = BTN_LONG;
@@ -415,7 +406,8 @@ void Main_Loop(void)
 #ifdef APP_RM_ENABLE
         if (app_env.audio_streaming)
         {
-            SYS_WAIT_FOR_EVENT;
+            if (low_power_clk_param.low_power_enable)
+                SYS_WAIT_FOR_EVENT;
         }
         else
 #endif
