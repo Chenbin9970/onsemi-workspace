@@ -108,8 +108,8 @@ extern "C"
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
 
-/* RM search timeout: 300 * 200ms = 1 minute */
-#define RM_TIMEOUT_TICKS                300
+/* RM search timeout: 150 * 200ms = 30 seconds */
+#define RM_TIMEOUT_TICKS                150
 
 /* ----------------------------------------------------------------------------
  * Remote Microphone Defines

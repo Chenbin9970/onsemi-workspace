@@ -208,16 +208,20 @@ void Main_Loop(void)
             }
         }
 
-        /* 200ms tick driven by APP_Timer flag (re-armed here, not in handler) */
+        /* 200ms tick: only in CP mode (audio_streaming=1).
+         * Re-arm here because handler self-re-arm fails in CP. */
         if (app_env.timer_200ms) {
             app_env.timer_200ms = 0;
-            ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-            if (app_env.rm_timeout_ticks > 0
-                && app_env.rm_disc_state != RM_DISC_NONE) {
-                app_env.rm_timeout_ticks--;
-                if (app_env.rm_timeout_ticks == 0)
-                    app_env.rm_stop_requested = 1;
+            if (app_env.audio_streaming) {
+                if (app_env.rm_timeout_ticks > 0
+                    && app_env.rm_disc_state != RM_DISC_NONE) {
+                    app_env.rm_timeout_ticks--;
+                    if (app_env.rm_timeout_ticks == 0)
+                        app_env.rm_stop_requested = 1;
+                    else
+                        ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+                }
             }
         }
 #endif

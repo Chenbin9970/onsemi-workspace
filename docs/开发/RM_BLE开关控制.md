@@ -222,7 +222,8 @@ case LINK_DISCONNECTED:
 int APP_Timer(ke_msg_id_t const msg_id, void const *param,
               ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    /* Re-arm is done in Main_Loop — just set flag here */
+    /* Do NOT self-re-arm here — handler re-arm fails in CP mode.
+     * Re-arm is done in Main_Loop, and only when audio_streaming=1. */
     app_env.timer_200ms = 1;
 
     if (ble_env.state == APPM_CONNECTED)
@@ -283,9 +284,9 @@ Main_Loop DEBOUNCE:
   └─ >=阈值 → state=HEARING_AID
        → 切助听程序 → active() → RM_Enable(1000) → 搜索+助听
 
-200ms Tick（timer_200ms标志 → Main_Loop重投ke_timer）:
-  state != NONE 时 timeout_ticks--
-  timeout_ticks==0 → rm_stop_requested=1 → 完整清理 → BLE低功耗
+200ms Tick（仅 CP 模式，audio_streaming=1）:
+  timer_200ms标志 → Main_Loop消费 → ke_timer_set重投(仅CP) + 递减计数
+  timeout_ticks==0 → rm_stop_requested → 完整清理 → BLE低功耗（定时器自然死亡）
 
 BLE 写 0x01（仅 audio_streaming==0 时生效）:
   → 完整RM启动序列
@@ -331,23 +332,60 @@ NONE ──[LINK_DISCONNECTED]──▶ DEBOUNCE
 
 ## 六、定时器机制
 
-### 6.1 200ms 周期驱动
+### 6.1 核心问题
 
-`ke_timer_set` 在 handler 内部 re-arm 自己在 CP 模式下不可靠（首次触发后不再周期性触发）。解决方案：
+`ke_timer_set` 在 handler 内部 re-arm 自己在 **CP 模式下失败**（首次触发后不再周期触发）。但从 **Main_Loop 调用 `ke_timer_set` 在 BLE 模式下会导致功耗异常**（内核睡眠唤醒计时被破坏）。
+
+最终方案：**CP/BLE 双模分工**。
+
+### 6.2 实现
 
 ```
-APP_Timer (handler) → 只设 timer_200ms = 1
+APP_Timer (handler) → 不 re-arm，只设 timer_200ms = 1 + LED
         ↓
-Main_Loop → 消费 timer_200ms → 清0 → ke_timer_set 重投（外部调用）
-         → 递减 rm_timeout_ticks → 归零则 rm_stop_requested = 1
+Main_Loop → 消费 timer_200ms
+        ├─ audio_streaming=1 (CP) → ke_timer_set 重投 + 递减计数
+        └─ audio_streaming=0 (BLE) → 什么都不做，定时器自然死亡
 ```
 
-### 6.2 超时参数
+```c
+// app_process.c — APP_Timer
+int APP_Timer(...) {
+    app_env.timer_200ms = 1;   // 只设 flag，不 re-arm
+    // ... LED ...
+    return (KE_MSG_CONSUMED);
+}
+
+// app.c — Main_Loop
+if (app_env.timer_200ms) {
+    app_env.timer_200ms = 0;
+    if (app_env.audio_streaming) {
+        if (rm_timeout_ticks > 0 && state != NONE) {
+            rm_timeout_ticks--;
+            if (rm_timeout_ticks == 0)
+                rm_stop_requested = 1;     // 超时触发，不 re-arm（定时器死）
+            else
+                ke_timer_set(...);         // 继续下一轮
+        }
+    }
+}
+```
+
+### 6.3 模式切换行为
+
+| 事件 | CP 模式 | BLE 模式 |
+|------|---------|----------|
+| APP_Timer 触发 | 设 flag | 设 flag |
+| Main_Loop 处理 | re-arm + 计数 | 不 re-arm |
+| 定时器状态 | 持续运行 | 自然死亡 |
+| 原因 | handler re-arm 在 CP 失败，需 Main_Loop 补 | Main_Loop re-arm 破坏 BLE 睡眠，需避免 |
+
+### 6.4 超时参数
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | `TIMER_200MS_SETTING` | 20 | ke_timer 单位 10ms，20×10 = 200ms |
-| `RM_TIMEOUT_TICKS` | 300 | 300×200ms = 60s = 1 分钟 |
+| `RM_TIMEOUT_TICKS` | 150 | 150×200ms = 30s（调试值，发布时改 300 = 1min） |
 
 ---
 
@@ -377,7 +415,9 @@ Main_Loop → 消费 timer_200ms → 清0 → ke_timer_set 重投（外部调用
 
 | 问题 | 根因 | 解决 |
 |------|------|------|
-| `ke_timer_set` CP 模式下不周期触发 | handler 内部 re-arm 自己失败 | APP_Timer 只设 flag，Main_Loop 外部重投 |
+| `ke_timer_set` handler 内 re-arm 在 CP 模式失败 | CP 模式下内核定时器只触发一次 | Main_Loop 在 `audio_streaming=1` 时重投 |
+| `ke_timer_set` Main_Loop 调用导致 BLE 功耗异常 | 定时器在 Kernel_Schedule 外部设置，破坏睡眠唤醒计时 | BLE 模式（`audio_streaming=0`）不调用，定时器自然死亡 |
+| 切 BLE 前多调一次 ke_timer_set | 超时触发同一轮内 re-arm 了才去切 | 超时归零那轮不 re-arm |
 | 冷启 `saved_prog_before_rm` 为 0 | `bs300_driver_init` 在 `App_Initialize` 之后 | 冷启块放在 Main_Loop preamble（`bs300_test_run` 之后） |
 | BLE 写 0x01 打断已连接 RM | 无状态判断 | `audio_streaming==1` 时跳过 |
 | RM 断连后噗声 | DSP 无数据仍在 active | `LINK_DISCONNECTED` 立即 `bs300_mute()` |
