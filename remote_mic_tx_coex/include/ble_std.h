@@ -179,6 +179,10 @@ extern struct ble_env_tag ble_env;
 /* Current peer being connected (0 or 1) */
 extern uint8_t current_peer;
 
+/* Multi-connection: per-peer conidx mapping */
+extern uint8_t peer_conidx[PEER_COUNT];
+extern bool   peer_ble_connected[PEER_COUNT];
+
 /* Bluetooth Device Address */
 extern uint8_t bdaddr[BDADDR_LENGTH];
 
@@ -192,6 +196,9 @@ extern void BLE_Initialize(void);
 extern bool Service_Add(void);
 
 extern void DirectConnect(uint8_t peer_idx);
+
+/* Map BLE connection index to peer index */
+extern uint8_t ConidxToPeer(uint8_t conidx);
 
 extern void Connection_SendStartCmd(struct gap_bdaddr *peer);
 

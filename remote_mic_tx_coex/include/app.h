@@ -321,6 +321,12 @@ extern "C"
 
 #define STABLE_THR                      400
 
+/* Audio detection: energy threshold = sum of abs per 64-sample DMIC subframe.
+   Detection runs in 200ms timer ticks — CONSEC_CNT ticks above threshold
+   triggers audio_detected. Tune THRESHOLD based on measured noise floor. */
+#define AUDIO_ENERGY_THRESHOLD    5000
+#define AUDIO_DETECT_CONSEC_CNT   3
+
 #define AUDIO_FRAME_SIZE                60
 
 #define CONCAT(x, y)                    x##y
@@ -565,6 +571,8 @@ extern uint8_t ear_side;
 
 #if (INPUT_INTRF == DMIC_RX_RAW_INPUT)
 extern int32_t dmic_buffer_in[];
+extern uint32_t audio_energy_left;
+extern uint32_t audio_energy_right;
 #else    /* SPI_RX_RAW_INPUT || PCM_RX_RAW_INPUT */
 extern int16_t spi_buf[];
 extern int32_t pcm_buf[];

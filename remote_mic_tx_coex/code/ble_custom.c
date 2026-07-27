@@ -90,7 +90,7 @@ int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
 {
     uint8_t uuid[CS_IDX_NB][16] = CS_CHARACTERISTICS_LIST;
     uint8_t conidx = KE_IDX_GET(src_id);
-    uint8_t idx = current_peer;
+    uint8_t idx = ConidxToPeer(conidx);
     uint8_t i;
 
     if (param->attr_hdl != 0 && cs_env[idx].disc_attnum < CS_IDX_NB)
@@ -138,7 +138,7 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id, struct gattc_cmp_evt
                  ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
     uint8_t conidx = KE_IDX_GET(src_id);
-    uint8_t idx = current_peer;
+    uint8_t idx = ConidxToPeer(conidx);
 
     if (param->status != GAP_ERR_NO_ERROR)
     {
@@ -193,7 +193,7 @@ int GATTC_DiscSvcInd(ke_msg_id_t const msg_id,
                      ke_task_id_t const src_id)
 {
     uint8_t conidx = KE_IDX_GET(src_id);
-    uint8_t idx = current_peer;
+    uint8_t idx = ConidxToPeer(conidx);
     struct gattc_disc_cmd *cmd;
 
     if (param->uuid_len == ATT_UUID_128_LEN)

@@ -751,16 +751,29 @@ void I2C_IRQHandler(void)
  * Description   : DMIC DMA completion ISR — unpack 32-bit DMIC data into
  *                 left/right 16-bit samples and feed to encoder queue
  * ------------------------------------------------------------------------- */
+/* Audio detection — energy values exposed for timer to read */
+uint32_t audio_energy_left;
+uint32_t audio_energy_right;
+
 void Port_rx_dmic_dma_isr(void)
 {
     uint8_t i;
+    int16_t s;
+    uint32_t e_l = 0, e_r = 0;
 
     /* Unpack DMIC 32-bit words: low 16 = DMIC0 (left), high 16 = DMIC1 (right) */
     for (i = 0; i < SUBFRAME_LENGTH; i++)
     {
-        left_data[i]  = dmic_buffer_in[i] & 0xFFFF;
-        right_data[i] = dmic_buffer_in[i] >> 16;
+        s = (int16_t)(dmic_buffer_in[i] & 0xFFFF);
+        left_data[i] = s;
+        e_l += (s >= 0) ? (uint32_t)s : (uint32_t)(-(int32_t)s);
+
+        s = (int16_t)(dmic_buffer_in[i] >> 16);
+        right_data[i] = s;
+        e_r += (s >= 0) ? (uint32_t)s : (uint32_t)(-(int32_t)s);
     }
+    audio_energy_left  = e_l;
+    audio_energy_right = e_r;
 
     /* Feed left channel to encoder queue */
     QueueInsert(&queue_tx[PKT_LEFT], (uint16_t *)&left_data[0]);

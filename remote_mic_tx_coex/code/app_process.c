@@ -25,6 +25,11 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include <printf.h>
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
 
 const struct ke_task_desc TASK_DESC_APP = {
     NULL,       &appm_default_handler,
@@ -75,32 +80,100 @@ int APP_Timer(ke_msg_id_t const msg_id,
     static uint8_t delay_cnt[PEER_COUNT];
     static uint8_t configured_count;
     static uint8_t rm_delay;
+    static bool  peer1_connect_started;
+
+    /* Audio detection state machine */
+    static bool  ad_detected;
+    static uint8_t ad_cnt;
+    static uint8_t ad_dbg;
 
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    /* LED */
-    if (ble_env.state >= APPM_CONNECTED)
-        Sys_GPIO_Set_High(LED_DIO_NUM);
-    else if (ble_env.state == APPM_CONNECTING)
-        Sys_GPIO_Toggle(LED_DIO_NUM);
-    else
-        Sys_GPIO_Set_Low(LED_DIO_NUM);
+    /* LED: on if any peer connected */
+    {
+        bool any_connected = false;
+        uint8_t p;
+        for (p = 0; p < PEER_COUNT; p++)
+            if (peer_ble_connected[p])
+                any_connected = true;
+        if (any_connected)
+            Sys_GPIO_Set_High(LED_DIO_NUM);
+        else if (ble_env.state == APPM_CONNECTING)
+            Sys_GPIO_Toggle(LED_DIO_NUM);
+        else
+            Sys_GPIO_Set_Low(LED_DIO_NUM);
+    }
 
-    /* Step 1: For each peer, write RM_ONOFF 1s after discovery */
-    if (ble_env.state == APPM_CONNECTED)
+    /* Step 0: After peer 0 discovery, start connecting peer 1 (keep both) */
+    if (cs_env[0].state >= CS_ALL_ATTS_DISCOVERED
+        && !peer_ble_connected[1] && !peer1_connect_started)
+    {
+        peer1_connect_started = true;
+        DirectConnect(1);
+    }
+
+    /* Audio detection: EMA-filtered energy from DMIC ISR.
+     * Keep running during RM streaming so we can detect silence later. */
+    if (peer_ble_connected[0] || peer_ble_connected[1]
+        || app_env.audio_streaming)
+    {
+        static uint32_t ema_e;
+
+        uint32_t raw = (audio_energy_left > audio_energy_right)
+                       ? audio_energy_left : audio_energy_right;
+
+        if (ema_e == 0)
+            ema_e = raw;
+        else if (raw > ema_e)
+            ema_e += (raw - ema_e) >> 4;
+        else
+            ema_e -= (ema_e - raw) >> 4;
+
+        if (ema_e > AUDIO_ENERGY_THRESHOLD)
+        {
+            if (ad_cnt < AUDIO_DETECT_CONSEC_CNT)
+                ad_cnt++;
+            if (ad_cnt >= AUDIO_DETECT_CONSEC_CNT && !ad_detected)
+            {
+                ad_detected = true;
+                PRINTF("__AUD DETECTED raw=%lu ema=%lu\n", raw, ema_e);
+            }
+        }
+        else
+        {
+            ad_cnt = 0;
+        }
+
+        if (++ad_dbg >= 10)
+        {
+            ad_dbg = 0;
+            PRINTF("__AUD raw=%lu ema=%lu cnt=%d det=%d\n",
+                   raw, ema_e, ad_cnt, ad_detected);
+        }
+    }
+    else
+    {
+        ad_cnt = 0;
+        ad_detected = false;
+    }
+
+    /* Step 1: Write RM_ONOFF to each peer after discovery + audio detected */
     {
         uint8_t i;
         for (i = 0; i < PEER_COUNT; i++)
         {
-            if (cs_env[i].state == CS_ALL_ATTS_DISCOVERED)
+            if (cs_env[i].state == CS_ALL_ATTS_DISCOVERED
+                && peer_ble_connected[i] && ad_detected)
             {
-                if (++delay_cnt[i] >= 5)    /* 1s */
+                if (++delay_cnt[i] >= 5)
                 {
                     delay_cnt[i] = 0;
                     cs_env[i].state = CS_CONFIGURING;
                     cs_env[i].config_num = 0;
-                    CustomSrvice_SendWrite(ble_env.conidx, &onoff_val,
+                    PRINTF("__RM_ONOFF write p=%d conidx=%d\n",
+                           i, peer_conidx[i]);
+                    CustomSrvice_SendWrite(peer_conidx[i], &onoff_val,
                                            cs_env[i].disc_att[CS_REMPRO_IDX_RM_ONOFF].pointer_hdl,
                                            0, 1, GATTC_WRITE);
                 }
@@ -108,7 +181,7 @@ int APP_Timer(ke_msg_id_t const msg_id,
         }
     }
 
-    /* Step 2: Count configured peers, start next connection or RM switch */
+    /* Step 2: Count configured peers */
     {
         uint8_t i;
         configured_count = 0;
@@ -119,12 +192,13 @@ int APP_Timer(ke_msg_id_t const msg_id,
         }
     }
 
-    if (configured_count >= PEER_COUNT && !app_env.audio_streaming)
+    /* Step 3: Start RM when both configured + audio detected */
+    if (configured_count >= PEER_COUNT && !app_env.audio_streaming && ad_detected)
     {
-        /* All peers configured — switch to RM after 1s */
         if (++rm_delay >= 5)
         {
             rm_delay = 0;
+            PRINTF("__RM START streaming\n");
             APP_RM_Init(ear_side);
             RF_SwitchToCPMode();
             NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
@@ -132,29 +206,24 @@ int APP_Timer(ke_msg_id_t const msg_id,
             app_env.audio_streaming = 1;
         }
     }
-    else if (configured_count == 1 && current_peer == 0
-             && ble_env.state == APPM_CONNECTED)
-    {
-        /* Peer 0 configured — disconnect and start peer 1 */
-        struct gapc_disconnect_cmd *disc_cmd;
-        disc_cmd = KE_MSG_ALLOC(GAPC_DISCONNECT_CMD,
-                                KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
-                                TASK_APP, gapc_disconnect_cmd);
-        disc_cmd->operation = GAPC_DISCONNECT;
-        disc_cmd->reason = CO_ERROR_REMOTE_USER_TERM_CON;
-        ke_msg_send(disc_cmd);
-        current_peer = 1;
-    }
 
-    /* Reconnect: after disconnect, connect next peer after 1s */
-    if (ble_env.state == APPM_READY && !app_env.audio_streaming
-        && configured_count < PEER_COUNT)
+    /* Reconnect disconnected peers */
+    if (!app_env.audio_streaming)
     {
-        static uint8_t reconnect_cnt = 0;
-        if (++reconnect_cnt >= 5)
+        uint8_t i;
+        for (i = 0; i < PEER_COUNT; i++)
         {
-            reconnect_cnt = 0;
-            DirectConnect(current_peer);
+            if (!peer_ble_connected[i]
+                && cs_env[i].state < CS_PEER_CONFIGURED)
+            {
+                static uint8_t reconnect_cnt = 0;
+                if (++reconnect_cnt >= 5)
+                {
+                    reconnect_cnt = 0;
+                    DirectConnect(i);
+                }
+                break;
+            }
         }
     }
 

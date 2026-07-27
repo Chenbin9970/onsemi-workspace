@@ -30,6 +30,20 @@
 /* Bluetooth Environment Structure */
 struct ble_env_tag ble_env;
 uint8_t current_peer;
+uint8_t peer_conidx[PEER_COUNT];
+bool    peer_ble_connected[PEER_COUNT];
+
+/* Map BLE connection index to peer index */
+uint8_t ConidxToPeer(uint8_t conidx)
+{
+    uint8_t p;
+    for (p = 0; p < PEER_COUNT; p++)
+    {
+        if (peer_ble_connected[p] && peer_conidx[p] == conidx)
+            return p;
+    }
+    return 0;  /* fallback */
+}
 
 /* Peer MAC addresses */
 static const uint8_t peer_macs[PEER_COUNT][BDADDR_LENGTH] = {
@@ -332,17 +346,21 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
 {
     struct gapc_connection_cfm *cfm;
 
-    ble_env.conidx = KE_IDX_GET(src_id);
+    uint8_t new_conidx = KE_IDX_GET(src_id);
+    uint8_t peer = current_peer;
 
     PRINTF("__GAPC_CONNECTION_REQ_IND\n");
-    /* Check if the received connection handle was valid */
-    if (ble_env.conidx != GAP_INVALID_CONIDX)
+    if (new_conidx != GAP_INVALID_CONIDX)
     {
-        PRINTF("__APPM_CONNECTED\n");
-        ble_env.state  = APPM_CONNECTED;
+        PRINTF("__APPM_CONNECTED peer=%d conidx=%d\n", peer, new_conidx);
 
-        /* Retrieve the connection info from the parameters */
-        ble_env.conidx = param->conhdl;
+        /* Track per-peer connection */
+        peer_conidx[peer] = new_conidx;
+        peer_ble_connected[peer] = true;
+
+        /* Keep global conidx for legacy compatibility (last connected) */
+        ble_env.conidx = new_conidx;
+        ble_env.state  = APPM_CONNECTED;
 
         /* Save the connection parameters */
         ble_env.con_interval = param->con_interval;
@@ -351,22 +369,21 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
 
         /* Send connection confirmation */
         cfm = KE_MSG_ALLOC(GAPC_CONNECTION_CFM,
-                           KE_BUILD_ID(TASK_GAPC, ble_env.conidx), TASK_APP,
+                           KE_BUILD_ID(TASK_GAPC, new_conidx), TASK_APP,
                            gapc_connection_cfm);
 
         cfm->pairing_lvl = GAP_AUTH_REQ_NO_MITM_NO_BOND;
-
         cfm->svc_changed_ind_enable = 0;
 
-        /* Send the message */
         ke_msg_send(cfm);
 
-        /* Start enabling client services */
-        BLE_SetServiceState(true, ble_env.conidx);
+        /* Start enabling client services for this peer */
+        BLE_SetServiceState(true, new_conidx);
     }
     else
     {
-        ble_env.state = APPM_READY;
+        if (!peer_ble_connected[0] && !peer_ble_connected[1])
+            ble_env.state = APPM_READY;
     }
 
     return (KE_MSG_CONSUMED);
@@ -418,14 +435,36 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
                        struct gapc_disconnect_ind const *param,
                        ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    PRINTF("__GAPC_DISCONNECT_IND\n");
-    /* Go to the ready state */
-    ble_env.state = APPM_READY;
+{
+    uint8_t disc_conidx = KE_IDX_GET(src_id);
+    uint8_t p;
+    uint8_t disc_peer = PEER_COUNT;  /* unknown */
 
-    BLE_SetServiceState(false, ble_env.conidx);
+    PRINTF("__GAPC_DISCONNECT_IND conidx=%d\n", disc_conidx);
 
-    /* Connect next peer after 1s delay */
+    /* Find which peer disconnected */
+    for (p = 0; p < PEER_COUNT; p++)
+    {
+        if (peer_ble_connected[p] && peer_conidx[p] == disc_conidx)
+        {
+            disc_peer = p;
+            break;
+        }
+    }
+
+    /* Mark peer as disconnected */
+    if (disc_peer < PEER_COUNT)
+    {
+        peer_ble_connected[disc_peer] = false;
+        BLE_SetServiceState(false, disc_conidx);
+    }
+
+    /* Only go to READY if all peers disconnected */
+    if (!peer_ble_connected[0] && !peer_ble_connected[1])
+        ble_env.state = APPM_READY;
+
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+}
 
     return (KE_MSG_CONSUMED);
 }
@@ -475,9 +514,10 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
                            ke_task_id_t const src_id)
 {
     struct gapc_param_update_cfm *cfm;
+    uint8_t req_conidx = KE_IDX_GET(src_id);
 
     cfm = KE_MSG_ALLOC(GAPC_PARAM_UPDATE_CFM,
-                       KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
+                       KE_BUILD_ID(TASK_GAPC, req_conidx),
                        TASK_APP,
                        gapc_param_update_cfm);
     cfm->accept     = 1;
@@ -502,6 +542,9 @@ void DirectConnect(uint8_t peer_idx)
 
     current_peer = peer_idx;
     PRINTF("__DIRECT CONNECT peer=%d\n", peer_idx);
+
+    /* Clear stale state for this peer before connecting */
+    peer_ble_connected[peer_idx] = false;
     cmd = KE_MSG_ALLOC_DYN(GAPM_START_CONNECTION_CMD, TASK_GAPM, TASK_APP,
                            gapm_start_connection_cmd,
                            (sizeof(struct gap_bdaddr)));
@@ -689,12 +732,10 @@ void BLE_SetServiceState(bool enable, uint8_t conidx)
     }
     else
     {
+        uint8_t peer = ConidxToPeer(conidx);
         basc_support_env[conidx].enable = false;
-        /* Preserve CS_PEER_CONFIGURED so timer can trigger RM switch */
-        if (cs_env[conidx].state != CS_PEER_CONFIGURED)
-        {
-            cs_env[conidx].state = CS_INIT;
-        }
+        if (cs_env[peer].state != CS_PEER_CONFIGURED)
+            cs_env[peer].state = CS_INIT;
     }
 }
 

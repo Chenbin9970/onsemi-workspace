@@ -150,24 +150,19 @@ RM 运行中
 
 ---
 
-## 第四阶段：双设备连接
+## 第四阶段：双设备顺序连接
 
 ### 目标
 
 TX 先后连接两个 Sleep 设备，分别发 RM_ONOFF，都就绪后切 RM。
 
-### 参考
-
-`ble_central_client_bond` 多连接 demo：所有连接状态用数组 `[conidx]` 索引，`KE_IDX_GET(src_id)` 路由 GATT 事件。
-
 ### 架构设计
 
-**顺序连接**：先连 peer 0 走完完整流程，断连后再连 peer 1。两个都 CS_PEER_CONFIGURED 后切 RM。
+**顺序连接**（初版）：先连 peer 0 走完完整流程，断连后再连 peer 1。两个都 CS_PEER_CONFIGURED 后切 RM。
 
 **环境结构**：
 - `ble_env` — 保持单实例（GAPM 层全局状态）
 - `cs_env[PEER_COUNT]` — 每个 peer 独立的状态机
-- `basc_support_env[PEER_COUNT]` — 每个 peer 独立的电池服务
 - `current_peer` — 当前正在连接的 peer 索引（0 或 1）
 
 ### MAC 地址
@@ -180,37 +175,143 @@ TX 先后连接两个 Sleep 设备，分别发 RM_ONOFF，都就绪后切 RM。
 
 ### 关键 Bug：conidx 复用
 
-BLE 栈顺序连接时复用 `conidx`（peer 0 断开后 peer 1 也用 conidx=0）。GATT handler 里不能用 `KE_IDX_GET(src_id)` 作为 `cs_env[]` 索引——两个 peer 的 GATT 事件路由到同一个 `cs_env[0]`。
+BLE 栈顺序连接时复用 `conidx`（peer 0 断开后 peer 1 也用 conidx=0）。GATT handler 里用 `current_peer` 而非 `KE_IDX_GET(src_id)` 索引 `cs_env[]`。
 
-**修复**：GATT handler 里用 `current_peer` 索引 `cs_env[]`：
+### 涉及文件
+
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h)、[ble_std.c](../remote_mic_tx_coex/code/ble_std.c)
+- [ble_custom.h](../remote_mic_tx_coex/include/ble_custom.h)、[ble_custom.c](../remote_mic_tx_coex/code/ble_custom.c)
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c)
+
+---
+
+## 第五阶段：同时双连接（替换顺序连接）
+
+### 目标
+
+**两个从机同时保持 BLE 连接**，不再连一个断一个。
+
+### 架构改动
+
+新增 per-peer 连接跟踪：
+
 ```c
-uint8_t conidx = KE_IDX_GET(src_id);  // BLE API 调用用
-uint8_t idx = current_peer;            // cs_env 索引用
-cs_env[idx].state = CS_ALL_ATTS_DISCOVERED;
-...
-GATTC_DiscAllChar(conidx, ...);        // BLE API 用 conidx
+// ble_std.h
+extern uint8_t peer_conidx[PEER_COUNT];     // peer → BLE conidx 映射
+extern bool   peer_ble_connected[PEER_COUNT]; // 每个 peer 的 BLE 连接状态
+extern uint8_t ConidxToPeer(uint8_t conidx); // conidx → peer 反向映射
 ```
+
+**关键修改**：
+
+| 文件 | 改动 |
+|------|------|
+| [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) | `GAPC_ConnectionReqInd`：存 per-peer conidx，不覆盖已有连接；`GAPC_DisconnectInd`：只在该 peer 断开时处理，全部断开才设 `APPM_READY`；`BLE_SetServiceState` 用 `ConidxToPeer` 索引 `cs_env` |
+| [ble_custom.c](../remote_mic_tx_coex/code/ble_custom.c) | GATT handler 用 `ConidxToPeer(KE_IDX_GET(src_id))` 替代 `current_peer` 索引 `cs_env[]` |
+| [app_process.c](../remote_mic_tx_coex/code/app_process.c) | peer0 发现完毕后立即 `DirectConnect(1)`（保持 peer0 连接）；RM_ONOFF 写操作用 `peer_conidx[i]` 指定正确的 BLE 连接；断线重连遍历所有 peer |
+
+### 流程
+
+```
+boot → DirectConnect(0) → conidx=0 连 peer0
+  → 服务发现完毕 → DirectConnect(1)（peer0 保持连接！）
+  → conidx=1 连 peer1 → 服务发现完毕
+  → 写 RM_ONOFF 到两个 peer（通过各自 conidx）
+  → 都 CS_PEER_CONFIGURED → 切 RM
+```
+
+---
+
+## 第六阶段：DMIC 音频检测
+
+### 目标
+
+有音频输入才启动 RM，没音频时不触发。
+
+### 检测架构
+
+**计算在 ISR，判决在 Timer**（ISR 只做纯算术避免 hard fault）：
+
+| 层 | 位置 | 职责 |
+|----|------|------|
+| ISR | [app_func.c](../remote_mic_tx_coex/code/app_func.c) `Port_rx_dmic_dma_isr()` | 计算左右声道绝对值和，写入 `audio_energy_left/right` |
+| Timer | [app_process.c](../remote_mic_tx_coex/code/app_process.c) 200ms tick | 读能量 → EMA 低通滤波 → 阈值比较 → 连续计数 → 置 `ad_detected` |
+
+### 滤波参数
+
+```
+#define AUDIO_ENERGY_THRESHOLD    5000   // 安静时能量 ~75，阈值 ≈ 66x 裕度
+#define AUDIO_DETECT_CONSEC_CNT   3      // 连续 3 tick (600ms) 超阈值判定为有音频
+```
+
+**EMA 低通滤波**：α = 1/16（右移 4 位），平滑 DMIC 初始化瞬态尖峰（实测 69030 单次尖峰 → ema 峰值 4384，不触发）
+
+### 检测条件
+
+```c
+if (peer_ble_connected[0] || peer_ble_connected[1]
+    || app_env.audio_streaming)
+```
+
+BLE 连接期间和 RM 推流期间都持续检测。RM 断连后 BLE 重连，检测继续。
+
+### 门控策略
+
+- **RM_ONOFF 写**：卡 `ad_detected`（没音频不写）
+- **RM 推流启动**：卡 `ad_detected` + 双 peer 都配置完
+- 双连接保持不受影响（BLE 稳定在线等待音频）
 
 ### 完整流程
 
 ```
-DirectConnect(0) → 连 MAC0 → 服务发现 → 1s → 写01
-  → GATTC_CmpEvt: cs_env[0].state = CS_PEER_CONFIGURED
-  → Timer: configured_count=1 → 主动断开 peer 0
-  → GAPC_DisconnectInd → 1s → DirectConnect(1)
-
-DirectConnect(1) → 连 MAC1 → 服务发现 → 1s → 写01
-  → GATTC_CmpEvt: cs_env[1].state = CS_PEER_CONFIGURED
-  → Timer: configured_count=2 → 1s → 切 RM
+boot → BLE 双连接 peer0 + peer1
+  → 服务发现完毕
+  → [等 DMIC 检测到音频 — EMA 滤波，阈值 5000，连续 600ms]
+  → 写 RM_ONOFF 到两个从机
+  → 都配置完 → 启动 RM 推流
+  → RM 推流期间 BLE 自然断开，DMIC 检测持续运行
 ```
 
 ### 涉及文件
 
-- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — `PEER_COUNT 2`、两个 MAC、`current_peer` extern
-- [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — `DirectConnect(idx)`、`BLE_SetServiceState` 用 `cs_env[conidx]`
-- [ble_custom.h](../remote_mic_tx_coex/include/ble_custom.h) — `cs_env[PEER_COUNT]`
-- [ble_custom.c](../remote_mic_tx_coex/code/ble_custom.c) — GATT handler 用 `current_peer` 索引
-- [ble_basc.h](../remote_mic_tx_coex/include/ble_basc.h) — `basc_support_env[PEER_COUNT]`
-- [ble_basc.c](../remote_mic_tx_coex/code/ble_basc.c) — 所有引用加 `[ble_env.conidx]`
-- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — timer 遍历双 slot、计数 `configured_count`
-- [app.c](../remote_mic_tx_coex/app.c) — 电池读加 `[ble_env.conidx]`
+- [app.h](../remote_mic_tx_coex/include/app.h) — `AUDIO_ENERGY_THRESHOLD`、`AUDIO_DETECT_CONSEC_CNT`、`extern audio_energy_*`
+- [app_func.c](../remote_mic_tx_coex/code/app_func.c) — DMIC ISR 能量计算
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — 音频检测状态机 + 门控逻辑
+
+---
+
+## 当前完整架构
+
+```
+上电
+  → 硬件初始化（DMIC、DSP encoder flash copy）
+  → BLE_Initialize + App_Env_Initialize + APP_RM_Init
+  → DirectConnect(0)
+
+BLE 双连接（同时在线）
+  → peer0 服务发现完毕 → DirectConnect(1)
+  → peer1 服务发现完毕
+
+Timer（200ms）:
+  ├─ DMIC 音频检测（EMA + 阈值 + 连续计数）
+  ├─ 检测到音频 → 写 RM_ONOFF 到两个 peer（各 1s 延迟）
+  ├─ 两个都 CS_PEER_CONFIGURED → 1s → 切 RM
+  └─ 断线自动重连（RM 活跃时跳过）
+
+RM 运行中
+  → DMIC → DMA → 解包 → queue → LPDSP32 G.722 编码 → tx_data_fifo
+  → RM_Callback_TRX → Read_buffer → RM 协议发送
+  → DMIC 检测持续运行（条件含 audio_streaming）
+```
+
+---
+
+## 更新后的关键经验
+
+1. **BLE 连接参数要匹配对端**
+2. **RSL10 支持 BLE 多连接**（参考 `ble_central_client_bond` demo），conidx 按连接顺序分配
+3. **radio 不能同时跑 BLE 和 RM** — 互斥，RM 启动后 BLE 自然断
+4. **ISR 里只做纯计算，状态机放 task 上下文** — 避免 hard fault
+5. **DMIC 瞬态噪峰用 EMA 滤波** — 单次尖峰 69030 在 α=1/16 下不会触发
+6. **GATT handler 用 conidx→peer 反向映射** — 多连接下事件路由正确
+7. **DMIC 检测门控放 RM_ONOFF 和 RM 推流两层** — 从机没收到 RM_ONOFF 就不会切 RM 接收模式
