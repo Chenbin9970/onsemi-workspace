@@ -282,7 +282,6 @@ static void cmd_setvolume(const uint8_t *data, uint8_t len)
 
     /* Left side volume — no tone, same path as EQ (re-encode bin_gain → 0x8060B2) */
     if (dev_type == 0 || dev_type == 1) {
-        app_env.volume = volume;
         bs300_set_volume_notone_async(volume, NULL);
         /* Flash persist deferred to BLE disconnect — see GAPC_DisconnectInd */
     }
@@ -439,25 +438,24 @@ static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
 static void cmd_getcurrentscene(void)
 {
     uint8_t resp_data[12];
-    bs300_prog_struct_t *dsp = bs300_get_dsp_state();
     uint8_t prog = bs300_get_active_prog();
 
-    resp_data[0]  = prog;                          /* Left_Scene_ID */
-    resp_data[1]  = prog;                          /* Right_Scene_ID (same for single device) */
-    resp_data[2]  = dsp->modules.volume_level;     /* Volume_Left */
-    resp_data[3]  = dsp->modules.volume_level;     /* Volume_Right (same) */
-    resp_data[4]  = bs300_get_prog_denoise(prog);  /* Denoise 0-4 */
-    resp_data[5]  = (uint8_t)(int8_t)dsp->modules.eq_low;   /* Left_EQ_Low [-5,5] */
-    resp_data[6]  = (uint8_t)(int8_t)dsp->modules.eq_mid;   /* Left_EQ_Mid [-5,5] */
-    resp_data[7]  = (uint8_t)(int8_t)dsp->modules.eq_high;  /* Left_EQ_High [-5,5] */
-    resp_data[8]  = (uint8_t)(int8_t)dsp->modules.eq_low;   /* Right_EQ_Low (same) */
-    resp_data[9]  = (uint8_t)(int8_t)dsp->modules.eq_mid;   /* Right_EQ_Mid (same) */
-    resp_data[10] = (uint8_t)(int8_t)dsp->modules.eq_high;  /* Right_EQ_High (same) */
-    resp_data[11] = 0;                              /* reserved/padding */
+    resp_data[0]  = prog;                                  /* Left_Scene_ID */
+    resp_data[1]  = prog;                                  /* Right_Scene_ID (same for single device) */
+    resp_data[2]  = bs300_get_module_volume(prog);         /* Volume_Left */
+    resp_data[3]  = bs300_get_module_volume(prog);         /* Volume_Right (same) */
+    resp_data[4]  = bs300_get_prog_denoise(prog);          /* Denoise 0-4 */
+    resp_data[5]  = (uint8_t)bs300_get_prog_eq_low(prog);  /* Left_EQ_Low [-5,5] */
+    resp_data[6]  = (uint8_t)bs300_get_prog_eq_mid(prog);  /* Left_EQ_Mid [-5,5] */
+    resp_data[7]  = (uint8_t)bs300_get_prog_eq_high(prog); /* Left_EQ_High [-5,5] */
+    resp_data[8]  = (uint8_t)bs300_get_prog_eq_low(prog);  /* Right_EQ_Low (same) */
+    resp_data[9]  = (uint8_t)bs300_get_prog_eq_mid(prog);  /* Right_EQ_Mid (same) */
+    resp_data[10] = (uint8_t)bs300_get_prog_eq_high(prog); /* Right_EQ_High (same) */
+    resp_data[11] = 0;                                     /* reserved/padding */
 
     PRINTF("[REMPRO] GetCurrentScene: prog=%u vol=%u denoise=%u eq=%d/%d/%d\r\n",
-           prog, dsp->modules.volume_level, bs300_get_prog_denoise(prog),
-           dsp->modules.eq_low, dsp->modules.eq_mid, dsp->modules.eq_high);
+           prog, bs300_get_module_volume(prog), bs300_get_prog_denoise(prog),
+           bs300_get_prog_eq_low(prog), bs300_get_prog_eq_mid(prog), bs300_get_prog_eq_high(prog));
     hdlc_response(CMD_GETCURRENTSCENE, 0, resp_data, 12);
 }
 

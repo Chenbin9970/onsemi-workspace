@@ -466,7 +466,6 @@ struct app_env_tag
 
 #ifdef APP_RM_ENABLE
     uint8_t RM_on_off;
-    uint8_t volume;
     struct rm_param_tag rm_param;
     uint8_t rm_link_status;
     uint16_t rm_lostLink_counter;

@@ -1140,3 +1140,58 @@ if (s_cur_prog != 3)
 | 文件 | 变更 |
 |------|------|
 | `code/bs300_ram_sync.c` | `load_struct()` + `bs300_cache_boot_state()` 各加一行覆盖 |
+
+---
+
+## 31. 2026-07-28 更新：RM 退出加 program==3 守卫 / 0x8060B2 提前
+
+### 31.1 RM 退出 mute/active 守卫
+
+**问题**：`rm_stop_requested` 触发时，`audio_streaming` 可能已置 1 但 RM 链路未建立（BS300 还在程序 0-2），却无条件执行 mute + 拆管线 + switch_program + active，对助听模式下的 BS300 是多余操作。反之，如果把整段用 `audio_streaming` 守卫，超时后 `rm_disc_state` 和 `rm_timeout_ticks` 被清零但 RM 硬件未拆，RF 卡在 CP 模式回不去 BLE。
+
+**修复**：拆开守卫 — RM 硬件拆管线无条件执行，BS300 的 mute/switch/active 只在 `bs300_get_active_prog() == 3` 时才发：
+
+```c
+// app.c — rm_stop_requested
+if (bs300_get_active_prog() == 3)
+    bs300_mute();
+
+// ... 拆 RM 硬件（无条件）...
+
+if (bs300_get_active_prog() == 3 && saved_prog_before_rm != 3) {
+    bs300_switch_program(saved_prog_before_rm);
+    bs300_active();
+}
+```
+
+### 31.2 0x8060B2 提前到全量同步最前面
+
+**全量同步**（`bs300_sync_program_dynamic`）：将 0x8060B2 从 WDRC 块末尾移到第一条命令位置（DDM2 之前），让音量/EQ 立即生效。
+
+**差异同步**（`switch_diff_pre_enr`）：0x8060B2 从 `switch_diff_wdrc` 中部移除，放到 `switch_diff_pre_enr` 最前面（DDM2/MM+/DFBC 之前），函数签名增加 `wdrc` 参数。
+
+```c
+// switch_diff_pre_enr — 新签名
+static void switch_diff_pre_enr(const bs300_wdrc_t *nw,  // ← 新增
+                                 const bs300_modules_t *nm, ...)
+
+// 函数体第一条就是 0x8060B2
+{
+    int bg_changed = (memcmp(ow->bin_gain, nw->bin_gain, 32) != 0);
+    int vol_eq_changed = (om->volume_level != nm->volume_level) || ...;
+    if (bg_changed || vol_eq_changed || igd_changed)
+        SEND_IF_DIRTY(session, 0x8060B2, ...);
+    // ... DDM2, MM+, DFBC ...
+}
+```
+
+### 31.3 音量 per-program 一致性修复
+
+CMD=15、按键短按、切模式三条链路统一从 `s_volumes[prog]` 读取音量，不再用 `dsp->modules.*` 或 `app_env.volume`。详见 `按键功能设计.md` §8。
+
+### 31.4 相关文件
+
+| 文件 | 变更 |
+|------|------|
+| `app.c` | `rm_stop_requested` 拆守卫：RM 硬件无条件拆，BS300 mute/active 仅 prog==3 |
+| `code/bs300_ram_sync.c` | 全量同步 0x8060B2 移到第一条；差异同步 `switch_diff_pre_enr` 加 wdrc 参数，0x8060B2 放最前面；`switch_diff_wdrc` 删除 0x8060B2 |

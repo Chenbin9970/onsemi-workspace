@@ -153,8 +153,12 @@ void Main_Loop(void)
             app_env.rm_disc_state = RM_DISC_NONE;
             app_env.rm_timeout_ticks = 0;
 
-            /* Mute BS300 before tearing down audio pipeline */
-            bs300_mute();
+            /* BS300 mute/active only needed if actually on program 3.
+             * During link-establish window, BS300 is still on hearing aid program. */
+            if (bs300_get_active_prog() == 3)
+            {
+                bs300_mute();
+            }
 
             /* Stop audio pipeline before RF switch */
             NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
@@ -175,7 +179,9 @@ void Main_Loop(void)
             RF_SwitchToBLEMode();
 
             /* Restore pre-RM program for normal hearing aid operation */
-            if (app_env.saved_prog_before_rm != 3) {
+            if (bs300_get_active_prog() == 3
+                && app_env.saved_prog_before_rm != 3)
+            {
                 bs300_switch_program(app_env.saved_prog_before_rm);
                 bs300_active();
             }
@@ -263,7 +269,6 @@ void Main_Loop(void)
                 }
                 else if (cmd == 0x02)
                 {
-                    app_env.volume = arg;
                     bs300_set_volume_notone_async(arg, on_bs300_volume_done);
                     PRINTF("[BS300] volume=%d\r\n", arg);
                 }
@@ -370,9 +375,9 @@ void Main_Loop(void)
                 }
                 else
                 {
-                    uint8_t vol = (app_env.volume + 1) % 10;
-                    app_env.volume = vol;
-                    rempro_push_volume_change(bs300_get_active_prog(), vol);
+                    uint8_t prog = bs300_get_active_prog();
+                    uint8_t vol = (bs300_get_module_volume(prog) + 1) % 10;
+                    rempro_push_volume_change(prog, vol);
                     bs300_set_volume_async(vol, on_btn_volume_done);
                     bs300_settings_persist();
                 }

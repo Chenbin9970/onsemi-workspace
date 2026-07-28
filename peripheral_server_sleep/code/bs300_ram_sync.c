@@ -266,6 +266,24 @@ void bs300_set_prog_denoise(uint8_t prog_idx, uint8_t level)
     }
 }
 
+int8_t bs300_get_prog_eq_low(uint8_t prog_idx)
+{
+    if (prog_idx > 3) return 0;
+    return s_eq_low[prog_idx];
+}
+
+int8_t bs300_get_prog_eq_mid(uint8_t prog_idx)
+{
+    if (prog_idx > 3) return 0;
+    return s_eq_mid[prog_idx];
+}
+
+int8_t bs300_get_prog_eq_high(uint8_t prog_idx)
+{
+    if (prog_idx > 3) return 0;
+    return s_eq_high[prog_idx];
+}
+
 uint8_t bs300_get_prog_denoise(uint8_t prog_idx)
 {
     return (prog_idx < 4) ? s_denoise[prog_idx] : 0;
@@ -730,6 +748,8 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
 
     prog->modules.wnr_enable_dual |= 0x01;
 
+    SEND_CMD(0x8060B2, bs300_encode_wdrc_bin_gain(&prog->wdrc, calib, &prog->modules, input_type, data));
+
     SEND_CMD(0x800022, bs300_encode_ddm2(&prog->modules, calib, data));
     SEND_CMD(0x800062, bs300_encode_mm_plus(&prog->modules, calib, input_type, data));
     SEND_CMD(0x800052, bs300_encode_dfbc(&prog->modules, calib, data));
@@ -770,7 +790,6 @@ static int bs300_sync_program_dynamic(bs300_prog_struct_t *prog,
     SEND_CMD(0x8030B2, bs300_encode_wdrc_attack_time(&prog->wdrc, data));
     SEND_CMD(0x8040B2, bs300_encode_wdrc_release_time(&prog->wdrc, data));
     SEND_CMD(0x8050B2, bs300_encode_wdrc_ratio(&prog->wdrc, data));
-    SEND_CMD(0x8060B2, bs300_encode_wdrc_bin_gain(&prog->wdrc, calib, &prog->modules, input_type, data));
     SEND_CMD(0x8070B2, bs300_encode_wdrc_lmt_threshold(&prog->wdrc, calib, data));
     SEND_CMD(0x8080B2, bs300_encode_wdrc_lmt_attack(&prog->wdrc, data));
     SEND_CMD(0x8090B2, bs300_encode_wdrc_lmt_release(&prog->wdrc, data));
@@ -873,8 +892,6 @@ static void switch_diff_wdrc(const bs300_wdrc_t *nw,
         SEND_IF_DIRTY(session, 0x8040B2, bs300_encode_wdrc_release_time(nw, data));
     if (hdr_changed || ratio_changed)
         SEND_IF_DIRTY(session, 0x8050B2, bs300_encode_wdrc_ratio(nw, data));
-    if (bg_changed || vol_eq_changed || igd_changed)
-        SEND_IF_DIRTY(session, 0x8060B2, bs300_encode_wdrc_bin_gain(nw, calib, nm, new_it, data));
 
     if (ow->limiter == 0 && nw->limiter == 0) {
     } else if (ow->limiter == 0 && nw->limiter == 1) {
@@ -992,14 +1009,27 @@ static void switch_diff_enr(const bs300_enr_t *ne,
     }
 }
 
-static void switch_diff_pre_enr(const bs300_modules_t *nm,
+static void switch_diff_pre_enr(const bs300_wdrc_t *nw,
+                                 const bs300_modules_t *nm,
                                  const bs300_calib_t *calib,
                                  uint8_t new_it, int igd_changed,
                                  bs300_sync_session_t *session,
                                  int *sent, int *fail, uint8_t *data)
 {
     const bs300_modules_t *om = &s_dsp_state.modules;
+    const bs300_wdrc_t *ow = &s_dsp_state.wdrc;
     int ret;
+
+    /* Bin Gain (0x8060B2) FIRST — volume/EQ takes effect immediately */
+    {
+        int bg_changed = (memcmp(ow->bin_gain, nw->bin_gain, 32) != 0);
+        int vol_eq_changed = (om->volume_level != nm->volume_level)
+                           || (om->eq_low != nm->eq_low)
+                           || (om->eq_mid != nm->eq_mid)
+                           || (om->eq_high != nm->eq_high);
+        if (bg_changed || vol_eq_changed || igd_changed)
+            SEND_IF_DIRTY(session, 0x8060B2, bs300_encode_wdrc_bin_gain(nw, calib, nm, new_it, data));
+    }
 
     /* DDM2 */
     {
@@ -1167,7 +1197,7 @@ static int build_diff_session(bs300_sync_session_t *s)
     new_it = get_input_type(s_target.modules.input_selection, s_target.modules.mm_type);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&s_target.wdrc, &s_target.modules, &calib, new_it, igd_changed,
                         s, &sent, &fail, data);
     switch_diff_enr(&s_target.enr, &calib, new_it, igd_changed,
                     s, &sent, &fail, data);
@@ -1208,7 +1238,7 @@ int bs300_switch_program(uint8_t new_prog_idx)
     s_cur_prog = new_prog_idx;
     s_target.modules.volume_level = s_volumes[new_prog_idx];
 
-    switch_diff_pre_enr(&s_target.modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&s_target.wdrc, &s_target.modules, &calib, new_it, igd_changed,
                         NULL, &sent, &fail, data);
     switch_diff_enr(&s_target.enr, &calib, new_it, igd_changed,
                     NULL, &sent, &fail, data);
@@ -1497,7 +1527,7 @@ int bs300_resync_diff(bs300_prog_struct_t *_new)
 
     PRINTF("[BS300] resync diff prog=%d\r\n", s_cur_prog);
 
-    switch_diff_pre_enr(&_new->modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&_new->wdrc, &_new->modules, &calib, new_it, igd_changed,
                         NULL, &sent, &fail, data);
     switch_diff_enr(&_new->enr, &calib, new_it, igd_changed,
                     NULL, &sent, &fail, data);
@@ -1543,7 +1573,7 @@ int bs300_param_modify(uint8_t prog_idx, uint16_t offset,
     new_it = get_input_type(new_prog.modules.input_selection, new_prog.modules.mm_type);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&new_prog.wdrc, &new_prog.modules, &calib, new_it, igd_changed,
                         NULL, &sent, &fail, data);
     switch_diff_enr(&new_prog.enr, &calib, new_it, igd_changed,
                     NULL, &sent, &fail, data);
@@ -1924,7 +1954,7 @@ int bs300_resync_diff_start(bs300_sync_session_t *s, bs300_prog_struct_t *_new)
 
     PRINTF("[BS300] resync diff async prog=%d\r\n", s_cur_prog);
 
-    switch_diff_pre_enr(&_new->modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&_new->wdrc, &_new->modules, &calib, new_it, igd_changed,
                         s, &sent, &fail, data);
     switch_diff_enr(&_new->enr, &calib, new_it, igd_changed,
                     s, &sent, &fail, data);
@@ -1972,7 +2002,7 @@ int bs300_param_modify_start(bs300_sync_session_t *s, uint8_t prog_idx,
     new_it = get_input_type(new_prog.modules.input_selection, new_prog.modules.mm_type);
     igd_changed = (old_it != new_it);
 
-    switch_diff_pre_enr(&new_prog.modules, &calib, new_it, igd_changed,
+    switch_diff_pre_enr(&new_prog.wdrc, &new_prog.modules, &calib, new_it, igd_changed,
                         s, &sent, &fail, data);
     switch_diff_enr(&new_prog.enr, &calib, new_it, igd_changed,
                     s, &sent, &fail, data);
