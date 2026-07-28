@@ -474,14 +474,14 @@ static void cmd_getdeviceconfig(void)
 
     /* Left side */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
-    d[pos++] = 101; d[pos++] = 0;                        /* Product_Type = 101 */
+    d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
     d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
     /* Right side (same as left) */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
-    d[pos++] = 101; d[pos++] = 0;                        /* Product_Type = 101 */
+    d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
     d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */

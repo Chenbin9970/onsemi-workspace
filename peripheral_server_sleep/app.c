@@ -111,7 +111,7 @@ void Main_Loop(void)
             app_env.saved_prog_before_rm = bs300_get_active_prog();
             Audio_Init();
             RF_SwitchToCPMode();
-            RM_Enable(1000);
+            RM_Enable(500);
             app_env.audio_streaming = 1;
             app_env.rm_disc_state = RM_DISC_HEARING_AID;
             app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
@@ -142,7 +142,7 @@ void Main_Loop(void)
                 APP_RM_Init(ear_side);
                 Audio_Init();
                 RF_SwitchToCPMode();
-                RM_Enable(1000);
+                RM_Enable(500);
                 app_env.audio_streaming = 1;
             }
         }
@@ -195,7 +195,7 @@ void Main_Loop(void)
                     bs300_switch_program(app_env.saved_prog_before_rm);
                 }
                 bs300_active();
-                RM_Enable(1000);
+                RM_Enable(500);
             }
         }
 
@@ -335,7 +335,7 @@ void Main_Loop(void)
                 /* Held — block sleep, count ~1ms ticks */
                 low_power_clk_param.low_power_enable = false;
                 hold_ticks++;
-                if (!long_fired && hold_ticks >= 1000)
+                if (!long_fired && hold_ticks >= 500)
                 {
                     long_fired = 1;
                     pending_action = BTN_LONG;

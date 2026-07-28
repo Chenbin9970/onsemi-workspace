@@ -305,7 +305,7 @@ void App_RM_BLE_Initialize(void)
     APP_RM_Init(0);
 #endif
     RF_SwitchToCPMode();
-    RM_Enable(1000);
+    RM_Enable(500);
     app_env.audio_streaming = 1;
 #endif
 

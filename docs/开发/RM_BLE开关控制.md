@@ -415,6 +415,7 @@ if (app_env.timer_200ms) {
 | 进入 RM 杂音 | 搜索期 DSP 有输出 | active 推迟到 `LINK_ESTABLISHED` |
 | 退出 RM 噗声 | 硬件清理时 BS300 活跃 | 先 `bs300_mute()` 再拆硬件管道 |
 | RM 模式按键长按不触发 | `SYS_WAIT_FOR_EVENT` 无条件执行，不检查 `low_power_enable`，按键 HELD 期间 WFE 额外等待 ~1ms，每 tick 耗时 2~3ms | WFE 加 `low_power_enable` 守卫，按键按住时跳过 WFE，与 BLE 模式时序一致 |
+| 0x26 Product_Type 与广播包不一致 | 0x26 返回 101，BLE 广播 Manufacturer Data 为 20 | 统一为 20 |
 
 ### 9.1 RM 模式按键时序修复（2026-07-27）
 
@@ -434,6 +435,27 @@ if (app_env.audio_streaming)
 ```
 
 BLE 模式的 `SYS_WAIT_FOR_INTERRUPT` 有 `low_power_enable` 守卫，RM 模式的 `SYS_WAIT_FOR_EVENT` 缺少。这导致 RM 模式下按键按住期间每 tick 额外等待 RM 事件（~1ms），1000 ticks 需按住 2~3s，用户体感长按不触发。
+
+### 9.2 参数调优（2026-07-28）
+
+**BLE 广播间隔**：`CFG_ADV_INTERVAL_MS = 100`（100ms）
+**RM 事件间隔**：`RM_Enable(500)`（500ms，单位 ms）
+**长按阈值**：`hold_ticks >= 500`（~500ms）
+**0x26 Product_Type**：101 → 20，与 BLE 广播包 Manufacturer Data 中的产品类型一致
+
+```c
+// ble_std.h
+#define CFG_ADV_INTERVAL_MS   100    // BLE 广播 100ms
+
+// app.c — 长按阈值
+if (!long_fired && hold_ticks >= 500)  // 500ms
+
+// rm_app.c / app_init.c / app.c — RM 事件
+RM_Enable(500);   // 500ms
+
+// ble_rempro_cmd.c — 0x26 指令
+d[pos++] = 20;   // Product_Type = 20
+```
 
 ---
 
