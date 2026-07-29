@@ -540,6 +540,9 @@ void DirectConnect(uint8_t peer_idx)
 {
     struct gapm_start_connection_cmd *cmd;
 
+    if (ble_env.state == APPM_CONNECTING)
+        return;
+
     current_peer = peer_idx;
     PRINTF("__DIRECT CONNECT peer=%d\n", peer_idx);
 

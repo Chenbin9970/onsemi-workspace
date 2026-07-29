@@ -214,7 +214,8 @@ int APP_Timer(ke_msg_id_t const msg_id,
         for (i = 0; i < PEER_COUNT; i++)
         {
             if (!peer_ble_connected[i]
-                && cs_env[i].state < CS_PEER_CONFIGURED)
+                && cs_env[i].state < CS_PEER_CONFIGURED
+                && ble_env.state != APPM_CONNECTING)
             {
                 static uint8_t reconnect_cnt = 0;
                 if (++reconnect_cnt >= 5)

@@ -92,7 +92,8 @@ TX 通过 BLE 连接 Sleep 设备，发送 RM_ONOFF=1 指令让 Sleep 进入 RM 
 | Supervision timeout | 72（720ms） |
 | 连接后写 01 延迟 | 1s（5×200ms timer） |
 | 写完切 RM 延迟 | 1s（5×200ms timer） |
-| 断线重连延迟 | 10s（RM 活跃时跳过） |
+| 断线重连延迟 | 1s（5×200ms timer，RM 活跃时跳过） |
+| 重连守卫 | `DirectConnect` 入口 + timer 层双重检查 `ble_env.state != APPM_CONNECTING`，防止打断正在进行的连接 |
 
 ### 最终 BLE 连接参数
 
@@ -125,7 +126,7 @@ Timer（200ms）:
   ├─ 写完成 → CS_PEER_CONFIGURED（GATTC_CmpEvt）
   ├─ CS_PEER_CONFIGURED → 等 1s → RF_SwitchToCPMode + RM_Enable
   │   └─ app_env.audio_streaming = 1，停电池读、停重连
-  └─ APPM_READY（断线）→ 等 10s → DirectConnect（RM 活跃时跳过）
+  └─ APPM_READY（断线）→ 等 1s → DirectConnect（RM 活跃时跳过；APPM_CONNECTING 守卫防打断）
 
 RM 运行中
   → DMIC → DMA → 解包 → queue → LPDSP32 G.722 编码 → tx_data_fifo
@@ -296,7 +297,7 @@ Timer（200ms）:
   ├─ DMIC 音频检测（EMA + 阈值 + 连续计数）
   ├─ 检测到音频 → 写 RM_ONOFF 到两个 peer（各 1s 延迟）
   ├─ 两个都 CS_PEER_CONFIGURED → 1s → 切 RM
-  └─ 断线自动重连（RM 活跃时跳过）
+  └─ 断线自动重连（RM 活跃时跳过；APPM_CONNECTING 守卫防打断）
 
 RM 运行中
   → DMIC → DMA → 解包 → queue → LPDSP32 G.722 编码 → tx_data_fifo
