@@ -30,6 +30,7 @@ extern "C" {
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
 #define CMD_SETAUDIOMETRYSTATUS  40
+#define CMD_IICDATACOMMUNITY    78
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
 #define CMD_PUSH_VOLUME              4

@@ -802,6 +802,58 @@ static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
     }
 }
 
+/* ID:78  IICDataCommunity — I2C / 1-wire data relay */
+static void cmd_iicdatacommunity(const uint8_t *data, uint8_t len)
+{
+    /* min: Device_Type(1) + Data_Number(1) + Data_Length(2) + SUB_CMD_Type(1) = 5 */
+    if (len < 5) { hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0); return; }
+
+    uint8_t dev_type    = data[0];
+    uint8_t data_number = data[1];
+    uint8_t data_len_lo = data[2];
+    uint8_t data_len_hi = data[3];
+    uint8_t sub_cmd     = data[4];
+    uint16_t sub_len    = (uint16_t)data_len_lo | ((uint16_t)data_len_hi << 8);
+
+    if (data_number != 1) {
+        PRINTF("[REMPRO] IICData: only Data_Number=1 supported, got %u\r\n",
+               data_number);
+        hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
+        return;
+    }
+
+    if (sub_cmd < 1 || sub_cmd > 5) {
+        PRINTF("[REMPRO] IICData: bad SUB_CMD_Type=%u\r\n", sub_cmd);
+        hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
+        return;
+    }
+
+    /* verify total length: header(5) + sub_len */
+    if (len != (uint8_t)(5 + sub_len)) {
+        PRINTF("[REMPRO] IICData: len=%u expected=%u\r\n", len, (uint8_t)(5 + sub_len));
+        hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
+        return;
+    }
+
+    PRINTF("[REMPRO] IICDataCommunity: dev=%u sub=%u dlen=%u\r\n",
+           dev_type, sub_cmd, sub_len);
+
+    /* echo back sub-command data for now — real I2C relay TBD */
+    uint8_t resp[250];
+    uint8_t pos = 0;
+    resp[pos++] = dev_type;
+    resp[pos++] = data_number;
+    resp[pos++] = data_len_lo;
+    resp[pos++] = data_len_hi;
+    resp[pos++] = sub_cmd;
+    if (sub_len > 0) {
+        memcpy(resp + pos, data + 5, sub_len);
+        pos += sub_len;
+    }
+
+    hdlc_response(CMD_IICDATACOMMUNITY, 0, resp, pos);
+}
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
@@ -901,6 +953,10 @@ void rempro_cmd_process(void)
             break;
         case CMD_GETFEEDBACKONOFF:
             cmd_getfeedbackonoff(data, data_len);
+            break;
+        case CMD_IICDATACOMMUNITY:
+            if (data) cmd_iicdatacommunity(data, data_len);
+            else hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
             break;
         default:
             PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);

@@ -214,10 +214,15 @@ void Main_Loop(void)
                 if (app_env.rm_timeout_ticks > 0
                     && app_env.rm_disc_state != RM_DISC_NONE) {
                     app_env.rm_timeout_ticks--;
-                    if (app_env.rm_timeout_ticks == 0)
+                    if (app_env.rm_timeout_ticks == 0) {
                         app_env.rm_stop_requested = 1;
-                    else
-                        ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+                    } else {
+                        ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                                     TIMER_200MS_SETTING);
+                    }
+                } else {
+                    ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                                 TIMER_200MS_SETTING);
                 }
             }
         }
@@ -362,8 +367,10 @@ void Main_Loop(void)
             }
             btn_prev = btn_now;
 
-            /* Process pending action when I2C is free */
-            if (pending_action != BTN_NONE && !bs300_sync_is_busy())
+            /* Process pending action when I2C is free.
+             * Block button actions in program 3 (RM audio mode). */
+            if (pending_action != BTN_NONE && !bs300_sync_is_busy()
+                && bs300_get_active_prog() != 3)
             {
                 if (pending_action == BTN_LONG)
                 {

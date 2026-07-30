@@ -159,18 +159,29 @@ if (app_env.rm_disc_state == RM_DISC_DEBOUNCE) {
 ```c
 if (app_env.timer_200ms) {
     app_env.timer_200ms = 0;
-    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    if (app_env.rm_timeout_ticks > 0
-        && app_env.rm_disc_state != RM_DISC_NONE) {
-        app_env.rm_timeout_ticks--;
-        if (app_env.rm_timeout_ticks == 0)
-            app_env.rm_stop_requested = 1;
+    if (app_env.audio_streaming) {
+        if (app_env.rm_timeout_ticks > 0
+            && app_env.rm_disc_state != RM_DISC_NONE) {
+            app_env.rm_timeout_ticks--;
+            if (app_env.rm_timeout_ticks == 0) {
+                app_env.rm_stop_requested = 1;     // 到期不 re-arm
+            } else {
+                ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                             TIMER_200MS_SETTING);
+            }
+        } else {
+            ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                         TIMER_200MS_SETTING);      // CP 模式持续 re-arm
+        }
     }
+    // BLE 模式: 不 re-arm，定时器自然死亡
 }
 ```
 
 > **设计要点**：`ke_timer_set` 在 **handler 内部 re-arm 自己会失败**（CP 模式下），因此 APP_Timer 只设 `timer_200ms = 1` 标志，真正的 `ke_timer_set` 重投在 Main_Loop 中执行。
+
+> **关键分叉**：CP 模式下 timer 始终 re-arm（倒计时到期那一轮除外），确保 RM 连接期间（`disc=NONE`）timer 不灭，断开后倒计时能立即启动。详见 § 九 409 行。
 
 ### 3.2 `rm_app.c` — 回调
 
@@ -275,8 +286,11 @@ Main_Loop DEBOUNCE:
        → 切助听程序 → active() → RM_Enable(1000) → 搜索+助听
 
 200ms Tick（仅 CP 模式，audio_streaming=1）:
-  timer_200ms标志 → Main_Loop消费 → ke_timer_set重投(仅CP) + 递减计数
+  timer_200ms标志 → Main_Loop消费 → ke_timer_set重投(CP下始终) + 递减计数
   timeout_ticks==0 → rm_stop_requested → 完整清理 → BLE低功耗（定时器自然死亡）
+
+按键拦截（prog==3）:
+  长按/短按 → pending_action 丢弃，不做任何处理（RM 音频中禁止按键操作）
 
 BLE 写 0x01（仅 audio_streaming==0 时生效）:
   → 保存程序 → APP_RM_Init → Audio_Init → RM_Enable（不切程序）
@@ -354,9 +368,11 @@ if (app_env.timer_200ms) {
         if (rm_timeout_ticks > 0 && state != NONE) {
             rm_timeout_ticks--;
             if (rm_timeout_ticks == 0)
-                rm_stop_requested = 1;     // 超时触发，不 re-arm（定时器死）
+                rm_stop_requested = 1;     // 到期，不 re-arm
             else
-                ke_timer_set(...);         // 继续下一轮
+                ke_timer_set(...);         // 继续倒计时
+        } else {
+            ke_timer_set(...);             // CP 模式持续 re-arm
         }
     }
 }
@@ -416,6 +432,8 @@ if (app_env.timer_200ms) {
 | 退出 RM 噗声 | 硬件清理时 BS300 活跃 | 先 `bs300_mute()` 再拆硬件管道 |
 | RM 模式按键长按不触发 | `SYS_WAIT_FOR_EVENT` 无条件执行，不检查 `low_power_enable`，按键 HELD 期间 WFE 额外等待 ~1ms，每 tick 耗时 2~3ms | WFE 加 `low_power_enable` 守卫，按键按住时跳过 WFE，与 BLE 模式时序一致 |
 | 0x26 Product_Type 与广播包不一致 | 0x26 返回 101，BLE 广播 Manufacturer Data 为 20 | 统一为 20 |
+| RM 断开超时 30s 不触发 | RM 连接期间 `disc=NONE`，timer 不 re-arm 直接死亡；断开后设 `ticks=150` 但无人递减 | CP 模式下 timer 始终 re-arm（到期那轮除外），RM 连接时 timer 保持存活 |
+| **模式 3 按键长按/短按** | RM 音频中按键调音量或切模式干扰音频 | prog==3 时丢弃 pending_action，不做任何处理 |
 
 ### 9.1 RM 模式按键时序修复（2026-07-27）
 
