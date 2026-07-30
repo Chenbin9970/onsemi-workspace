@@ -62,7 +62,7 @@ extern "C"
 #define APP_RM_AUDIO_CHANNEL            RM_LEFT
 #endif
 
-#define OUTPUT_POWER_6DBM               0
+#define OUTPUT_POWER_6DBM               1
 
 #define NO_RX_INPUT                     0
 #define SPI_RX_CODED_INPUT              1    /*with bi_directional_master in E7100 */

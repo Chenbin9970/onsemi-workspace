@@ -177,6 +177,9 @@ void Main_Loop(void)
             NVIC_ClearPendingIRQ(TIMER0_IRQn);
             NVIC_ClearPendingIRQ(TIMER1_IRQn);
             RF_SwitchToBLEMode();
+#ifdef RM_TX_POWER_BOOST
+            Sys_RFFE_SetTXPower(0);
+#endif
 
             /* Restore pre-RM program for normal hearing aid operation */
             if (bs300_get_active_prog() == 3
@@ -220,9 +223,6 @@ void Main_Loop(void)
                         ke_timer_set(APP_TEST_TIMER, TASK_APP,
                                      TIMER_200MS_SETTING);
                     }
-                } else {
-                    ke_timer_set(APP_TEST_TIMER, TASK_APP,
-                                 TIMER_200MS_SETTING);
                 }
             }
         }

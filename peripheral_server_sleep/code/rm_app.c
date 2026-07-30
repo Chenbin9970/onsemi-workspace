@@ -20,6 +20,8 @@
 #include "app.h"
 #include "bs300_ram_sync.h"
 
+extern bool frame_decoded;
+
 #ifdef APP_RM_ENABLE
 
 #ifdef DEBUG_UART_ENABLE
@@ -165,8 +167,10 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
         {
             if (*length > 0)
             {
-                memcpy(outTempBuff, ptr, *length);
-                Rendering_func(outTempBuff);
+                if (frame_decoded) {
+                    memcpy(outTempBuff, ptr, *length);
+                    Rendering_func(outTempBuff);
+                }
             }
             else
             {
@@ -209,6 +213,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 app_env.rm_disc_state = RM_DISC_DEBOUNCE;
                 app_env.rm_disc_counter = 0;
                 app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+                ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
                 bs300_mute();
             }
             app_env.rm_lostLink_counter++;

@@ -366,7 +366,11 @@ void Audio_Init(void)
     Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
                           (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
 
+#ifdef RM_TX_POWER_BOOST
+    Sys_RFFE_SetTXPower(Load_Tx_Power_Value());
+#else
     Sys_RFFE_SetTXPower(0);
+#endif
 
     NVIC_SetPriority(DSP1_IRQn, 4);
     NVIC_ClearPendingIRQ(DSP1_IRQn);
