@@ -63,6 +63,8 @@ extern "C"
 /* Hardcoded sleep device MAC addresses (BLE little-endian) */
 #define SLEEP_BD_ADDRESS_0              { 0x91, 0x76, 0x00, 0xbf, 0xc0, 0x60 }
 #define SLEEP_BD_ADDRESS_1              { 0x76, 0x76, 0x00, 0xbf, 0xc0, 0x60 }
+//#define SLEEP_BD_ADDRESS_0              { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }  /* AB:89:67:45:23:01 */
+//#define SLEEP_BD_ADDRESS_1              { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  /* 00:12:09:00:80:09 */
 #define SLEEP_BD_ADDRESS_TYPE           BD_TYPE_PUBLIC
 
 /* Set scan interval to 62.5ms and scan window to 50% of the interval */

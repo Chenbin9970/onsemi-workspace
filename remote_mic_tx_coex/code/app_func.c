@@ -809,3 +809,4 @@ void port_rx_coded_dma_isr(void)
 }
 
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
+

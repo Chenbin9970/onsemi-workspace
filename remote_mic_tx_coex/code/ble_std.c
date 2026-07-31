@@ -47,8 +47,10 @@ uint8_t ConidxToPeer(uint8_t conidx)
 
 /* Peer MAC addresses */
 static const uint8_t peer_macs[PEER_COUNT][BDADDR_LENGTH] = {
-    SLEEP_BD_ADDRESS_0,
-    SLEEP_BD_ADDRESS_1
+    SLEEP_BD_ADDRESS_0
+#if PEER_COUNT > 1
+    , SLEEP_BD_ADDRESS_1
+#endif
 };
 
 /* List of functions used to create the database */
@@ -352,7 +354,12 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
     PRINTF("__GAPC_CONNECTION_REQ_IND\n");
     if (new_conidx != GAP_INVALID_CONIDX)
     {
-        PRINTF("__APPM_CONNECTED peer=%d conidx=%d\n", peer, new_conidx);
+        PRINTF("__APPM_CONNECTED peer=%d conidx=%d "
+               "intv=%u(%.1fms) lat=%u sup=%u(%.0fms)\n",
+               peer, new_conidx,
+               param->con_interval, param->con_interval * 1.25f,
+               param->con_latency, param->sup_to,
+               param->sup_to * 10.0f);
 
         /* Track per-peer connection */
         peer_conidx[peer] = new_conidx;
@@ -382,7 +389,12 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
     }
     else
     {
-        if (!peer_ble_connected[0] && !peer_ble_connected[1])
+        uint8_t p;
+        bool any_connected = false;
+        for (p = 0; p < PEER_COUNT; p++)
+            if (peer_ble_connected[p])
+                any_connected = true;
+        if (!any_connected)
             ble_env.state = APPM_READY;
     }
 
@@ -440,7 +452,8 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
     uint8_t p;
     uint8_t disc_peer = PEER_COUNT;  /* unknown */
 
-    PRINTF("__GAPC_DISCONNECT_IND conidx=%d\n", disc_conidx);
+    PRINTF("__GAPC_DISCONNECT_IND conidx=%d reason=0x%02X\n",
+           disc_conidx, param->reason);
 
     /* Find which peer disconnected */
     for (p = 0; p < PEER_COUNT; p++)
@@ -460,10 +473,16 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
     }
 
     /* Only go to READY if all peers disconnected */
-    if (!peer_ble_connected[0] && !peer_ble_connected[1])
-        ble_env.state = APPM_READY;
+    {
+        uint8_t p;
+        bool any_connected = false;
+        for (p = 0; p < PEER_COUNT; p++)
+            if (peer_ble_connected[p])
+                any_connected = true;
+        if (!any_connected)
+            ble_env.state = APPM_READY;
+    }
 
-    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 }
 
     return (KE_MSG_CONSUMED);

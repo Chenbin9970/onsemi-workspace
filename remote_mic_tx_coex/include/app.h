@@ -389,12 +389,6 @@ extern "C"
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
                                         CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
 
-#define DEBUG_DIO_FIRST                 15
-#if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD)
-#define DEBUG_DIO_SECOND                1
-#else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
-#define DEBUG_DIO_SECOND                11
-#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
 
 /* LPDSP32 CODEC related defines */
 #define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)

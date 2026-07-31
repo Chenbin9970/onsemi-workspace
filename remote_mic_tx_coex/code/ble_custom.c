@@ -18,6 +18,11 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include <printf.h>
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
 
 /* Global variable definition */
 struct cs_env_tag cs_env[PEER_COUNT];
@@ -110,6 +115,7 @@ int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
         if (cs_env[idx].disc_attnum == CS_IDX_NB)
         {
             cs_env[idx].state = CS_ALL_ATTS_DISCOVERED;
+            PRINTF("__ALL_ATTS_DISCOVERED peer=%d conidx=%d\n", idx, conidx);
             ServiceEnable(conidx);
         }
     }

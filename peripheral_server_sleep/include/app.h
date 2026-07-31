@@ -29,7 +29,7 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 #ifdef RM_TX_POWER_BOOST
 #define RF_TX_POWER_LEVEL_DBM           6

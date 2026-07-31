@@ -390,17 +390,10 @@ void App_Initialize(void)
 
     RF_SwitchToBLEMode();
 
-    Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
     Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
-    Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
-    /* Enable 6dBM or 0dBM mode*/
-#if (OUTPUT_POWER_6DBM)
-    Sys_RFFE_SetTXPower(6);
-#else    /* 0DBM */
+    /* BLE idle uses 0dBm — RM boost applied at streaming start */
     Sys_RFFE_SetTXPower(0);
-#endif    /* CFG_6DBM */
 
     /* Enable Flash overlay */
     memcpy((uint8_t *)PRAM0_BASE, (uint8_t *)FLASH_MAIN_BASE, PRAM0_SIZE);

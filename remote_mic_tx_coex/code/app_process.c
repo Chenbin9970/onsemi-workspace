@@ -115,8 +115,13 @@ int APP_Timer(ke_msg_id_t const msg_id,
 
     /* Audio detection: EMA-filtered energy from DMIC ISR.
      * Keep running during RM streaming so we can detect silence later. */
-    if (peer_ble_connected[0] || peer_ble_connected[1]
-        || app_env.audio_streaming)
+    {
+        bool any_connected = false;
+        uint8_t p;
+        for (p = 0; p < PEER_COUNT; p++)
+            if (peer_ble_connected[p])
+                any_connected = true;
+        if (any_connected || app_env.audio_streaming)
     {
         static uint32_t ema_e;
 
@@ -157,6 +162,7 @@ int APP_Timer(ke_msg_id_t const msg_id,
         ad_cnt = 0;
         ad_detected = false;
     }
+    }   /* end audio detection guard */
 
     /* Step 1: Write RM_ONOFF to each peer after discovery + audio detected */
     {
@@ -202,6 +208,9 @@ int APP_Timer(ke_msg_id_t const msg_id,
             APP_RM_Init(ear_side);
             RF_SwitchToCPMode();
             NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
+#if OUTPUT_POWER_6DBM
+            Sys_RFFE_SetTXPower(6);
+#endif
             RM_Enable(1000);
             app_env.audio_streaming = 1;
         }
@@ -210,6 +219,7 @@ int APP_Timer(ke_msg_id_t const msg_id,
     /* Reconnect disconnected peers */
     if (!app_env.audio_streaming)
     {
+        static uint8_t reconnect_cnt[PEER_COUNT];
         uint8_t i;
         for (i = 0; i < PEER_COUNT; i++)
         {
@@ -217,10 +227,10 @@ int APP_Timer(ke_msg_id_t const msg_id,
                 && cs_env[i].state < CS_PEER_CONFIGURED
                 && ble_env.state != APPM_CONNECTING)
             {
-                static uint8_t reconnect_cnt = 0;
-                if (++reconnect_cnt >= 5)
+                if (++reconnect_cnt[i] >= 5)
                 {
-                    reconnect_cnt = 0;
+                    reconnect_cnt[i] = 0;
+                    PRINTF("__RECONNECT peer=%d (state=%d)\n", i, ble_env.state);
                     DirectConnect(i);
                 }
                 break;

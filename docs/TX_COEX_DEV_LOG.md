@@ -316,3 +316,105 @@ RM 运行中
 5. **DMIC 瞬态噪峰用 EMA 滤波** — 单次尖峰 69030 在 α=1/16 下不会触发
 6. **GATT handler 用 conidx→peer 反向映射** — 多连接下事件路由正确
 7. **DMIC 检测门控放 RM_ONOFF 和 RM 推流两层** — 从机没收到 RM_ONOFF 就不会切 RM 接收模式
+
+---
+
+## 第七阶段：调试日志 + 单设备双连接 bug
+
+### 新增日志
+
+| 位置 | 输出 |
+|------|------|
+| `GAPC_ConnectionReqInd` (TX) | `intv=32(40.0ms) lat=0 sup=72(720ms)` — 协商的连接参数 |
+| `GAPC_DisconnectInd` (TX) | `reason=0x08` — 断开原因码 |
+| `GATTC_DiscCharInd` | `__ALL_ATTS_DISCOVERED peer=0 conidx=0` — 服务发现完成 |
+| `APP_Timer` 重连 | `__RECONNECT peer=1 (state=6)` — 重连触发时的状态 |
+
+### 断连原因码速查
+
+| reason | 含义 |
+|--------|------|
+| `0x08` | 连接超时（supervision timeout） |
+| `0x13` | 远端主动断开 |
+| `0x16` | 本地主动断开 |
+| `0x3E` | 连接未完成就断了 |
+
+### 单设备测试发现的 bug
+
+**问题 1：reconnect_cnt 共享**
+
+`reconnect_cnt` 是单例 static，peer 0 连接期间每 200ms 检查 peer 1 → `reconnect_cnt++`。累计 5 次后触发 `DirectConnect(1)` 去连不存在的设备。peer 0 断开后 reconnect_cnt 已到 4，只需再 1 tick 就重连（本该等 1s）。
+
+**修复**：`reconnect_cnt` 改为 `reconnect_cnt[PEER_COUNT]` 数组，per-peer 独立计数。
+
+**问题 2：PEER_COUNT=2 硬编码访问越界**
+
+多处 `peer_ble_connected[0] \|\| peer_ble_connected[1]` 在 PEER_COUNT 变化时会越界。
+
+**修复**：改为 for 循环遍历 `p < PEER_COUNT`。`peer_macs` 数组初始化加 `#if PEER_COUNT > 1` 保护。Step 0 加 `#if PEER_COUNT > 1` 保护。
+
+**问题 3：GAPC_DisconnectInd 重启定时器打乱 delay_cnt**
+
+任一 peer 断开时 `ke_timer_set` 重启 200ms 定时器，导致其他 peer 的 `delay_cnt` 计数节奏被打乱。peer 0 delay_cnt 先到 4，peer 1 断开后定时器重装，peer 0 从头等，最终 peer 1 先到 5 写 RM_ONOFF，peer 0 永远到不了 → `configured_count=1 < PEER_COUNT(2)` → RM 不启动。
+
+**修复**：删除 `GAPC_DisconnectInd` 中的 `ke_timer_set`。200ms 定时器在 `APP_Timer` 顶部自己重装，不需要断开时干预。
+
+### 涉及文件
+
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — reconnect_cnt 数组化、for 循环通用化
+- [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — 连接/断开日志、for 循环通用化、删除 ke_timer_set
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — `#if PEER_COUNT > 1` 保护
+- [ble_custom.c](../remote_mic_tx_coex/code/ble_custom.c) — 服务发现完成日志、PRINTF 修复
+
+---
+
+## 第八阶段：RFX2401C FEM 控制（已移除，待后续开发）
+
+### 硬件连接
+
+- RFX2401C：2.4GHz FEM，集成 PA + LNA，单天线端口 TR 切换
+- DIO11 → TXEN（PA enable），DIO10 → RXEN（LNA enable）
+- 真值表：TXEN/RXEN 不能同时为高（非法状态）
+
+### 验证过程与结论
+
+| 测试 | TXEN | RXEN | 结果 |
+|------|------|------|------|
+| 共存中断切 TX/RX | ISR 按 `BLE_TX`/`BLE_RX` 切 | ISR 按 `BLE_TX`/`BLE_RX` 切 | **失败** — 全部 reason=0x3E |
+| RXEN 常开 | LOW | HIGH | 能收到 CONNECT_IND，TX 无 PA 发不出去 |
+| **TXEN 常开** | **HIGH** | **LOW** | **成功** — BLE 全链路通，RM 启动 |
+
+### 失败原因
+
+共存中断 ISR 的 GPIO 响应延迟 2-5μs，对 RFX2401C 够用（芯片切换 ~1μs），但 BLE 的 TX↔RX 槽切换窗口仅 150μs，且 ISR 在射频起止边缘才触发，无提前量。PA/LNA 不能在槽切换前就位，导致包头部丢失 → 连接建立失败（0x3E）。
+
+### 可行方案
+
+用 `BLE_IN_PROCESS`（非 TX/RX 细粒度）控制 TXEN，整个 BLE 连接事件窗口 PA 常开。RXEN 不用（近场信号够强不需要 LNA）。RM 推流 TXEN 常开。
+
+代码已从当前分支移除，详见 commit history 或 `app.h/app_init.c/app_func.c/app_process.c/rm_app.c` 中 `SIGNAL_BOOST` 相关的 commit。
+
+### 后续开发方向
+
+1. **硬件级别 GPIO 控制**：RSL10 `DIO_RF_GPIO03_SRC`/`DIO_RF_GPIO47_SRC` 可能支持 BBIF 信号直接映射到 DIO，消除 ISR 延迟
+2. **用 BLE_GROSSTGTIM 提前开**：粗定时器在连接事件前 ~100μs 触发，可提前使能 FEM
+3. **调 BLE 连接参数**：增大连接间隔、减小 supervision timeout 裕度，降低对切换速度的敏感度
+
+---
+
+## 第九阶段：MAC 地址更新
+
+```c
+// old (commented out):
+// SLEEP_BD_ADDRESS_0 = 60:c0:bf:00:76:91
+// SLEEP_BD_ADDRESS_1 = 60:c0:bf:00:76:76
+// new:
+#define SLEEP_BD_ADDRESS_0  { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }  // AB:89:67:45:23:01
+#define SLEEP_BD_ADDRESS_1  { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  // 00:12:09:00:80:09
+```
+
+BLE 地址在 C 代码中是小端序，所以倒序书写。
+
+### 涉及文件
+
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h)
