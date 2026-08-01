@@ -326,6 +326,7 @@ extern "C"
    triggers audio_detected. Tune THRESHOLD based on measured noise floor. */
 #define AUDIO_ENERGY_THRESHOLD    5000
 #define AUDIO_DETECT_CONSEC_CNT   3
+#define AUDIO_LOST_CONSEC_CNT     15   /* 15 ticks = 3s of silence → audio lost */
 
 #define AUDIO_FRAME_SIZE                60
 

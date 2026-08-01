@@ -515,3 +515,59 @@ if (phase < PEER_COUNT) {
 - [app_process.c](../remote_mic_tx_coex/code/app_process.c) — 简化为 CANCEL + RM 流程
 - [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — CANCEL 处理、DirectConnect 去保护、MAC 比对 peer 识别
 - [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — SLEEP_BD_ADDRESS 多组注释
+
+---
+
+## 第十二阶段：TX 音频门控 — BLE 待机 → 有音频才唤醒
+
+### 原理
+
+Phase 11 的 CONNECT_IND+CANCEL+RM 在 boot 后无条件触发，但 TX 开机时 Sleep 不一定需要被唤醒（Sleep 冷启已在 RM 搜索模式，30s 窗口）。真正需要 CONNECT_IND 的场景是：**Sleep 已超时退到 BLE 省电模式，TX 检测到 DMIC 音频后需要快速唤醒 Sleep**。
+
+CONNECT_IND 本质是**单向唤醒信号**：
+- TX 用 RFX2401C PA 强化发送 → Sleep 收到 CONNECT_IND
+- Sleep 识别 TX MAC → 直接切 RM（跳过 BLE 握手，Phase 10）
+- TX **收不到** Sleep 回复（RFX2401C 无 LNA 强化接收，非对称链路）
+- BLE 连接注定建立失败
+
+因此 CONNECT_IND 不是建立连接，只是一个"敲门"信号。
+
+### TX 状态机
+
+```
+TX_BLE_IDLE ──[ad_detected]──▶ TX_CONNECTING ──[CANCEL 序列完成]──▶ TX_RM_ACTIVE
+     ▲                              │                                      │
+     │                              │ 音频中途消失                          │
+     │                              └──▶ TX_BLE_IDLE                       │
+     │                                                                     │
+     └──────────────────────[ad_lost]──────────────────────────────────────┘
+```
+
+| 状态 | 行为 | 功耗 |
+|------|------|------|
+| `TX_BLE_IDLE` | BLE 主机模式待机，DMIC 持续检测音频 | 低功耗 |
+| `TX_CONNECTING` | 串行发 CONNECT_IND 到两个 peer（各 600ms + CANCEL） | BLE 活跃 |
+| `TX_RM_ACTIVE` | RM 推流，持续检测音频丢失 | RM 活跃 |
+
+### 音频检测
+
+- **检测到音频**：EMA 能量 > `AUDIO_ENERGY_THRESHOLD(5000)` 连续 3 tick（600ms）→ `ad_detected`
+- **音频丢失**：能量 < 阈值连续 15 tick（3s）→ `ad_lost`
+- 音频检测**始终运行**（去掉 `any_connected || audio_streaming` 守卫），`BLE_IDLE` 和 `RM_ACTIVE` 都需要
+
+### 状态转换详情
+
+1. **BLE_IDLE → CONNECTING**：`ad_detected` 触发，重置 phase/tick/cancelling
+2. **CONNECTING**：沿用 Phase 11 的 phase/tick/cancelling 逻辑，串行两个 peer
+   - 序列完成时检查音频是否还在（`ad_detected && !ad_lost`）→ 还在则切 RM，已消失则回 BLE_IDLE
+3. **RM_ACTIVE → BLE_IDLE**：`ad_lost` 触发 → `RM_Disable()` → `RF_SwitchToBLEMode()` → 重开 BLE 中断 → 清音频标志 → 回 BLE_IDLE
+
+### 删除的逻辑
+
+- **reconnect 段**：BLE 连接不存在，CONNECT_IND 发送统一由音频检测驱动
+- **phase 无条件触发**：CONNECT_IND 只在 `TX_CONNECTING` 状态下执行，不再 boot 后无条件跑
+
+### 涉及文件
+
+- [app.h](../remote_mic_tx_coex/include/app.h) — 新增 `AUDIO_LOST_CONSEC_CNT 15`
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — TX 状态机 + 音频门控 + 拆除 reconnect 段

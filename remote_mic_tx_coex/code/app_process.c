@@ -76,38 +76,36 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
-    /* Audio detection state machine */
-    static bool  ad_detected;
-    static uint8_t ad_cnt;
-    static uint8_t ad_dbg;
+    /* TX state machine */
+    enum { TX_BLE_IDLE, TX_CONNECTING, TX_RM_ACTIVE } static tx_state;
+
+    /* Audio detection state */
+    static bool     ad_detected;
+    static uint8_t  ad_cnt;
+    static uint8_t  ad_lost_cnt;
+    static bool     ad_lost;
+    static uint8_t  ad_dbg;
+
+    /* CONNECT_IND phase state */
+    static uint8_t  phase;
+    static uint8_t  tick;
+    static uint8_t  cancelling;
 
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    /* LED: on if any peer connected */
+    /* LED: on=streaming, toggle=connecting, off=idle */
     {
-        bool any_connected = false;
-        uint8_t p;
-        for (p = 0; p < PEER_COUNT; p++)
-            if (peer_ble_connected[p])
-                any_connected = true;
-        if (any_connected)
+        if (tx_state == TX_RM_ACTIVE)
             Sys_GPIO_Set_High(LED_DIO_NUM);
-        else if (ble_env.state == APPM_CONNECTING)
+        else if (tx_state == TX_CONNECTING)
             Sys_GPIO_Toggle(LED_DIO_NUM);
         else
             Sys_GPIO_Set_Low(LED_DIO_NUM);
     }
 
     /* Audio detection: EMA-filtered energy from DMIC ISR.
-     * Keep running during RM streaming so we can detect silence later. */
-    {
-        bool any_connected = false;
-        uint8_t p;
-        for (p = 0; p < PEER_COUNT; p++)
-            if (peer_ble_connected[p])
-                any_connected = true;
-        if (any_connected || app_env.audio_streaming)
+     * Always run — needed in BLE_IDLE (detect start) and RM_ACTIVE (detect stop). */
     {
         static uint32_t ema_e;
 
@@ -123,6 +121,7 @@ int APP_Timer(ke_msg_id_t const msg_id,
 
         if (ema_e > AUDIO_ENERGY_THRESHOLD)
         {
+            ad_lost_cnt = 0;
             if (ad_cnt < AUDIO_DETECT_CONSEC_CNT)
                 ad_cnt++;
             if (ad_cnt >= AUDIO_DETECT_CONSEC_CNT && !ad_detected)
@@ -134,56 +133,69 @@ int APP_Timer(ke_msg_id_t const msg_id,
         else
         {
             ad_cnt = 0;
+            if (ad_detected)
+            {
+                if (ad_lost_cnt < AUDIO_LOST_CONSEC_CNT)
+                    ad_lost_cnt++;
+                if (ad_lost_cnt >= AUDIO_LOST_CONSEC_CNT && !ad_lost)
+                {
+                    ad_lost = true;
+                    PRINTF("__AUD LOST raw=%lu ema=%lu\n", raw, ema_e);
+                }
+            }
         }
 
         if (++ad_dbg >= 10)
         {
             ad_dbg = 0;
-            PRINTF("__AUD raw=%lu ema=%lu cnt=%d det=%d\n",
-                   raw, ema_e, ad_cnt, ad_detected);
+            PRINTF("__AUD raw=%lu ema=%lu cnt=%d det=%d lost=%d\n",
+                   raw, ema_e, ad_cnt, ad_detected, ad_lost);
         }
     }
-    else
-    {
-        ad_cnt = 0;
-        ad_detected = false;
-    }
-    }   /* end audio detection guard */
 
-    /* After boot: send CONNECT_IND to each peer for 600ms, then CANCEL. */
+    /* TX state machine */
+    switch (tx_state)
     {
-        static uint8_t phase;
-        static uint8_t tick;
-        static uint8_t cancelling;
-
-        if (!app_env.audio_streaming)
+    case TX_BLE_IDLE:
+        if (ad_detected)
         {
-            if (phase < PEER_COUNT)
+            PRINTF("__TX BLE_IDLE -> CONNECTING\n");
+            phase = 0;
+            tick = 0;
+            cancelling = 0;
+            tx_state = TX_CONNECTING;
+        }
+        break;
+
+    case TX_CONNECTING:
+    {
+        if (phase < PEER_COUNT)
+        {
+            if (cancelling)
             {
-                if (cancelling)
-                {
-                    if (ble_env.state != APPM_CONNECTING)
-                        phase++, cancelling = 0, tick = 0;
-                }
-                else if (tick == 0)
-                {
-                    DirectConnect(phase);
-                    tick = 1;
-                }
-                else if (++tick >= 3)
-                {
-                    struct gapm_cancel_cmd *c;
-                    c = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM,
-                                     TASK_APP, gapm_cancel_cmd);
-                    c->operation = GAPM_CANCEL;
-                    ke_msg_send(c);
-                    cancelling = 1;
-                    tick = 0;
-                }
+                if (ble_env.state != APPM_CONNECTING)
+                    phase++, cancelling = 0, tick = 0;
             }
-            else if (ble_env.state != APPM_CONNECTING)
+            else if (tick == 0)
             {
-                phase = 0;
+                DirectConnect(phase);
+                tick = 1;
+            }
+            else if (++tick >= 3)
+            {
+                struct gapm_cancel_cmd *c;
+                c = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM,
+                                 TASK_APP, gapm_cancel_cmd);
+                c->operation = GAPM_CANCEL;
+                ke_msg_send(c);
+                cancelling = 1;
+                tick = 0;
+            }
+        }
+        else if (ble_env.state != APPM_CONNECTING)
+        {
+            if (ad_detected && !ad_lost)
+            {
                 PRINTF("__RM START\n");
                 APP_RM_Init(ear_side);
                 RF_SwitchToCPMode();
@@ -193,34 +205,38 @@ int APP_Timer(ke_msg_id_t const msg_id,
 #endif
                 RM_Enable(1000);
                 app_env.audio_streaming = 1;
+                tx_state = TX_RM_ACTIVE;
             }
-        }
-    }
-
-    /* Reconnect disconnected peers */
-    if (!app_env.audio_streaming)
-    {
-        static uint8_t reconnect_cnt[PEER_COUNT];
-        uint8_t i;
-        for (i = 0; i < PEER_COUNT; i++)
-        {
-            if (!peer_ble_connected[i]
-                && cs_env[i].state < CS_PEER_CONFIGURED
-                && ble_env.state != APPM_CONNECTING)
+            else
             {
-                if (++reconnect_cnt[i] >= 5)
-                {
-                    reconnect_cnt[i] = 0;
-                    PRINTF("__RECONNECT peer=%d (state=%d)\n", i, ble_env.state);
-                    DirectConnect(i);
-                }
-                break;
+                PRINTF("__TX CONNECTING -> BLE_IDLE (audio gone)\n");
+                ad_detected = false;
+                ad_lost = false;
+                ad_lost_cnt = 0;
+                tx_state = TX_BLE_IDLE;
             }
         }
+        break;
     }
 
-    /* Battery: only before RM streaming starts */
-    if (!app_env.audio_streaming)
+    case TX_RM_ACTIVE:
+        if (ad_lost)
+        {
+            PRINTF("__TX RM_ACTIVE -> BLE_IDLE (audio lost)\n");
+            RM_Disable();
+            RF_SwitchToBLEMode();
+            NVIC_EnableIRQ(BLE_FINETGTIM_IRQn);
+            app_env.audio_streaming = 0;
+            ad_detected = false;
+            ad_lost = false;
+            ad_lost_cnt = 0;
+            tx_state = TX_BLE_IDLE;
+        }
+        break;
+    }
+
+    /* Battery: only when idle */
+    if (tx_state == TX_BLE_IDLE)
         app_env.send_batt_req++;
 
     return (KE_MSG_CONSUMED);
