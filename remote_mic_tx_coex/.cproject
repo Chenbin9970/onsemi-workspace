@@ -461,4 +461,5 @@
 			<file name="RTE/Utility/SEGGER_RTT_Conf.h" version="1.0.0"/>
 		</files>
 	</storageModule>
+	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
 </cproject>

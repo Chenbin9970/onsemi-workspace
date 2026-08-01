@@ -126,6 +126,26 @@ void Main_Loop(void)
 #ifdef APP_RM_ENABLE
         RM_StatusHandler();
 
+        if (app_env.tx_connect_detected)
+        {
+            app_env.tx_connect_detected = 0;
+
+            if (!app_env.audio_streaming)
+            {
+                app_env.rm_disc_state = RM_DISC_NONE;
+                app_env.rm_timeout_ticks = 0;
+                app_env.saved_prog_before_rm = bs300_get_active_prog();
+
+                APP_RM_Init(ear_side);
+                Audio_Init();
+                RF_SwitchToCPMode();
+                RM_Enable(500);
+                app_env.audio_streaming = 1;
+                app_env.rm_disc_state = RM_DISC_HEARING_AID;
+                app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+            }
+        }
+
         if (app_env.rm_start_requested)
         {
             app_env.rm_start_requested = 0;

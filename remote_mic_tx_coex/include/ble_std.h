@@ -61,8 +61,8 @@ extern "C"
 #define PEER_COUNT                      2
 
 /* Hardcoded sleep device MAC addresses (BLE little-endian) */
-#define SLEEP_BD_ADDRESS_0              { 0x91, 0x76, 0x00, 0xbf, 0xc0, 0x60 }
-#define SLEEP_BD_ADDRESS_1              { 0x76, 0x76, 0x00, 0xbf, 0xc0, 0x60 }
+#define SLEEP_BD_ADDRESS_0              { 0x91, 0x76, 0x00, 0xbf, 0xc0, 0x60 }  /* 60:C0:BF:00:76:91 */
+#define SLEEP_BD_ADDRESS_1              { 0x76, 0x76, 0x00, 0xbf, 0xc0, 0x60 }  /* 60:C0:BF:00:76:76 */
 //#define SLEEP_BD_ADDRESS_0              { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }  /* AB:89:67:45:23:01 */
 //#define SLEEP_BD_ADDRESS_1              { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  /* 00:12:09:00:80:09 */
 #define SLEEP_BD_ADDRESS_TYPE           BD_TYPE_PUBLIC

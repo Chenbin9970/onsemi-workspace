@@ -561,6 +561,32 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
     /* Check if the received connection handle was valid */
     if (ble_env.conidx != GAP_INVALID_CONIDX)
     {
+#ifdef APP_RM_ENABLE
+        /* TX fast-switch: if peer is TX device, skip BLE, go RM */
+        {
+            uint8_t tx_mac[BDADDR_LENGTH] = TX_BD_ADDRESS;
+            if (tx_mac[0] == param->peer_addr.addr[0] &&
+                tx_mac[1] == param->peer_addr.addr[1] &&
+                tx_mac[2] == param->peer_addr.addr[2] &&
+                tx_mac[3] == param->peer_addr.addr[3] &&
+                tx_mac[4] == param->peer_addr.addr[4] &&
+                tx_mac[5] == param->peer_addr.addr[5])
+            {
+                PRINTF("[BLE] TX detected %02X:%02X:%02X:%02X:%02X:%02X — RM\n",
+                       param->peer_addr.addr[5], param->peer_addr.addr[4],
+                       param->peer_addr.addr[3], param->peer_addr.addr[2],
+                       param->peer_addr.addr[1], param->peer_addr.addr[0]);
+                app_env.tx_connect_detected = 1;
+                ble_env.state = APPM_READY;
+                Advertising_Start();
+                return (KE_MSG_CONSUMED);
+            }
+            PRINTF("[BLE] unknown peer %02X:%02X:%02X:%02X:%02X:%02X — accept\n",
+                   param->peer_addr.addr[5], param->peer_addr.addr[4],
+                   param->peer_addr.addr[3], param->peer_addr.addr[2],
+                   param->peer_addr.addr[1], param->peer_addr.addr[0]);
+        }
+#endif
         /* Save the existing state */
         ble_env.prev_state = ble_env.state;
 

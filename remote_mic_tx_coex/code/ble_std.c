@@ -232,8 +232,7 @@ int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
             /* If there are no more services to add, go to the ready state */
             ble_env.state = APPM_READY;
 
-            /* No more service to add, start scanning */
-            DirectConnect(0);
+            /* RM switch handled by timer */
         }
     }
 
@@ -300,8 +299,7 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
                 /* Go to the ready state */
                 ble_env.state = APPM_READY;
 
-                /* No services to add — start scanning */
-                DirectConnect(0);
+                /* RM switch handled by timer */
             }
         }
         break;
@@ -309,7 +307,21 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
         /* Scan cancelled — now connect to the saved peer */
         case (GAPM_CANCEL):
         {
-            Connection_SendStartCmd(&scanned_peer);
+            if (ble_env.state == APPM_SCANNING)
+                Connection_SendStartCmd(&scanned_peer);
+            else
+                ble_env.state = APPM_READY;
+        }
+        break;
+
+        /* Direct connection completed */
+        case (GAPM_CONNECTION_DIRECT):
+        {
+            if (param->status != GAP_ERR_NO_ERROR)
+            {
+                PRINTF("__GAPM_CONN_FAIL status=0x%02X\n", param->status);
+                ble_env.state = APPM_READY;
+            }
         }
         break;
 
@@ -349,7 +361,16 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
     struct gapc_connection_cfm *cfm;
 
     uint8_t new_conidx = KE_IDX_GET(src_id);
-    uint8_t peer = current_peer;
+    uint8_t peer;
+    uint8_t p;
+
+    /* Identify peer by MAC, not current_peer (may be stale from dual connect) */
+    for (p = 0; p < PEER_COUNT; p++)
+    {
+        if (memcmp(peer_macs[p], param->peer_addr.addr, BDADDR_LENGTH) == 0)
+            break;
+    }
+    peer = (p < PEER_COUNT) ? p : current_peer;
 
     PRINTF("__GAPC_CONNECTION_REQ_IND\n");
     if (new_conidx != GAP_INVALID_CONIDX)
@@ -396,6 +417,7 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
                 any_connected = true;
         if (!any_connected)
             ble_env.state = APPM_READY;
+
     }
 
     return (KE_MSG_CONSUMED);
@@ -558,9 +580,6 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
 void DirectConnect(uint8_t peer_idx)
 {
     struct gapm_start_connection_cmd *cmd;
-
-    if (ble_env.state == APPM_CONNECTING)
-        return;
 
     current_peer = peer_idx;
     PRINTF("__DIRECT CONNECT peer=%d\n", peer_idx);

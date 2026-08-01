@@ -29,8 +29,12 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define DEBUG_UART_ENABLE
+//#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
+
+/* TX device MAC for BLE→RM fast switch */
+//#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */
+#define TX_BD_ADDRESS { 0xFB, 0x6E, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6E:FB */
 #ifdef RM_TX_POWER_BOOST
 #define RF_TX_POWER_LEVEL_DBM           6
 #endif
@@ -485,6 +489,7 @@ struct app_env_tag
     uint8_t rm_disc_state;
     uint16_t rm_timeout_ticks;
     uint8_t  timer_200ms;
+    uint8_t  tx_connect_detected;   /* TX CONNECT_IND received → skip BLE, go RM */
 #endif
 };
 

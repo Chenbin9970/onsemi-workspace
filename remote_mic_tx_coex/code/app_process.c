@@ -76,12 +76,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
-    uint8_t onoff_val = 1;
-    static uint8_t delay_cnt[PEER_COUNT];
-    static uint8_t configured_count;
-    static uint8_t rm_delay;
-    static bool  peer1_connect_started;
-
     /* Audio detection state machine */
     static bool  ad_detected;
     static uint8_t ad_cnt;
@@ -103,14 +97,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
             Sys_GPIO_Toggle(LED_DIO_NUM);
         else
             Sys_GPIO_Set_Low(LED_DIO_NUM);
-    }
-
-    /* Step 0: After peer 0 discovery, start connecting peer 1 (keep both) */
-    if (cs_env[0].state >= CS_ALL_ATTS_DISCOVERED
-        && !peer_ble_connected[1] && !peer1_connect_started)
-    {
-        peer1_connect_started = true;
-        DirectConnect(1);
     }
 
     /* Audio detection: EMA-filtered energy from DMIC ISR.
@@ -164,55 +150,50 @@ int APP_Timer(ke_msg_id_t const msg_id,
     }
     }   /* end audio detection guard */
 
-    /* Step 1: Write RM_ONOFF to each peer after discovery + audio detected */
+    /* After boot: send CONNECT_IND to each peer for 600ms, then CANCEL. */
     {
-        uint8_t i;
-        for (i = 0; i < PEER_COUNT; i++)
+        static uint8_t phase;
+        static uint8_t tick;
+        static uint8_t cancelling;
+
+        if (!app_env.audio_streaming)
         {
-            if (cs_env[i].state == CS_ALL_ATTS_DISCOVERED
-                && peer_ble_connected[i] && ad_detected)
+            if (phase < PEER_COUNT)
             {
-                if (++delay_cnt[i] >= 5)
+                if (cancelling)
                 {
-                    delay_cnt[i] = 0;
-                    cs_env[i].state = CS_CONFIGURING;
-                    cs_env[i].config_num = 0;
-                    PRINTF("__RM_ONOFF write p=%d conidx=%d\n",
-                           i, peer_conidx[i]);
-                    CustomSrvice_SendWrite(peer_conidx[i], &onoff_val,
-                                           cs_env[i].disc_att[CS_REMPRO_IDX_RM_ONOFF].pointer_hdl,
-                                           0, 1, GATTC_WRITE);
+                    if (ble_env.state != APPM_CONNECTING)
+                        phase++, cancelling = 0, tick = 0;
+                }
+                else if (tick == 0)
+                {
+                    DirectConnect(phase);
+                    tick = 1;
+                }
+                else if (++tick >= 3)
+                {
+                    struct gapm_cancel_cmd *c;
+                    c = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM,
+                                     TASK_APP, gapm_cancel_cmd);
+                    c->operation = GAPM_CANCEL;
+                    ke_msg_send(c);
+                    cancelling = 1;
+                    tick = 0;
                 }
             }
-        }
-    }
-
-    /* Step 2: Count configured peers */
-    {
-        uint8_t i;
-        configured_count = 0;
-        for (i = 0; i < PEER_COUNT; i++)
-        {
-            if (cs_env[i].state == CS_PEER_CONFIGURED)
-                configured_count++;
-        }
-    }
-
-    /* Step 3: Start RM when both configured + audio detected */
-    if (configured_count >= PEER_COUNT && !app_env.audio_streaming && ad_detected)
-    {
-        if (++rm_delay >= 5)
-        {
-            rm_delay = 0;
-            PRINTF("__RM START streaming\n");
-            APP_RM_Init(ear_side);
-            RF_SwitchToCPMode();
-            NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
+            else if (ble_env.state != APPM_CONNECTING)
+            {
+                phase = 0;
+                PRINTF("__RM START\n");
+                APP_RM_Init(ear_side);
+                RF_SwitchToCPMode();
+                NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
 #if OUTPUT_POWER_6DBM
-            Sys_RFFE_SetTXPower(6);
+                Sys_RFFE_SetTXPower(6);
 #endif
-            RM_Enable(1000);
-            app_env.audio_streaming = 1;
+                RM_Enable(1000);
+                app_env.audio_streaming = 1;
+            }
         }
     }
 
@@ -238,8 +219,8 @@ int APP_Timer(ke_msg_id_t const msg_id,
         }
     }
 
-    /* Battery: only on peer 0 before any writes */
-    if (configured_count == 0 && cs_env[0].state < CS_CONFIGURING)
+    /* Battery: only before RM streaming starts */
+    if (!app_env.audio_streaming)
         app_env.send_batt_req++;
 
     return (KE_MSG_CONSUMED);

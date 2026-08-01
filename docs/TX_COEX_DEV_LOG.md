@@ -418,3 +418,100 @@ BLE 地址在 C 代码中是小端序，所以倒序书写。
 ### 涉及文件
 
 - [ble_std.h](../remote_mic_tx_coex/include/ble_std.h)
+
+---
+
+## 第十阶段：Sleep BLE→RM 直切
+
+### 原理
+
+TX 发送 CONNECT_IND → Sleep 在 `GAPC_ConnectionReqInd` 中检测对端 MAC → 匹配 TX 则跳过 BLE 握手（不发 `gapc_connection_cfm`），直接切 RM 模式。
+
+跳过了 service discovery + GATT write RM_ONOFF 全套 BLE 流程。
+
+### Sleep 改动
+
+`GAPC_ConnectionReqInd` 新增 MAC 检测（逐字节比较，不用 `memcmp`）：
+
+```c
+uint8_t tx_mac[BDADDR_LENGTH] = TX_BD_ADDRESS;
+if (tx_mac[0] == param->peer_addr.addr[0] && ...)
+{
+    app_env.tx_connect_detected = 1;
+    ble_env.state = APPM_READY;
+    Advertising_Start();
+    return;  // 不发送 gapc_connection_cfm
+}
+```
+
+main loop 检测 `tx_connect_detected` → `APP_RM_Init` + `RM_Enable(500)`。
+
+30s 超时退回 BLE 逻辑保持：`rm_timeout_ticks = RM_TIMEOUT_TICKS(150)`，每 200ms 减 1。
+
+### TX MAC 地址
+
+```c
+#define TX_BD_ADDRESS { 0xFB, 0x6E, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6E:FB */
+//#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */
+```
+
+### 涉及文件
+
+- [app.h](../peripheral_server_sleep/include/app.h) — `TX_BD_ADDRESS`、`tx_connect_detected` 标志
+- [ble_std.c](../peripheral_server_sleep/code/ble_std.c) — GAPC_ConnectionReqInd MAC 检测
+- [app.c](../peripheral_server_sleep/app.c) — main loop tx_connect_detected 处理
+
+---
+
+## 第十一阶段：TX 简化 — 直接发 CONNECT_IND + CANCEL + RM
+
+### 原理
+
+TX 不再走 BLE 服务发现、GATT 写入等流程。Boot 后直接向两个 Sleep MAC 发送 CONNECT_IND，然后切 RM。
+
+由于 GAPM 一次只能处理一个连接请求，按顺序发送：
+peer 0 → 600ms → CANCEL → 等状态变 READY → peer 1 → 600ms → CANCEL → RM START。
+
+CANCEL 通过 `GAPM_CancelCmd` 发送，`GAPM_CmpEvt(GAPM_CANCEL)` 中判断非扫描态则置 `APPM_READY`。
+
+### 关键发现
+
+- **GAPM 不超时**：对不在线设备发送 CONNECT_IND，GAPM 永不主动超时返回
+- **GAPM_CANCEL 可用**：CANCEL 命令触发 `GAPM_CmpEvt(CANCEL)`，用于强制退出 CONNECTING 状态
+- **不能同时发两个**：GAPM 同时只能处理一个连接请求
+- **nb_peers 不支持**：`gapm_start_connection_cmd.nb_peers > 1` 在 RSL10 stack 上不工作
+
+### Timer 核心逻辑
+
+```c
+if (phase < PEER_COUNT) {
+    if (cancelling) {
+        if (ble_env.state != APPM_CONNECTING)
+            phase++, cancelling = 0, tick = 0;
+    } else if (tick == 0) {
+        DirectConnect(phase);
+        tick = 1;
+    } else if (++tick >= 3) {  // 600ms
+        // send GAPM_CANCEL
+        cancelling = 1;
+        tick = 0;
+    }
+} else if (ble_env.state != APPM_CONNECTING) {
+    // RM START
+}
+```
+
+### TX 改动汇总
+
+- `DirectConnect` 移除 `APPM_CONNECTING` 保护
+- `GAPM_CmpEvt` 新增 `GAPM_CANCEL` 处理（非扫描态设 READY）
+- 删除 Step 0-3（服务发现、RM_ONOFF 写入、configured_count）
+- `reconnect_cnt` 数组化，per-peer 独立计数
+- `GAPC_DisconnectInd` 删除 `ke_timer_set` 重启定时器
+- 连接/断连检测用 for 循环替代硬编码 `[0]||[1]`
+
+### 涉及文件
+
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — 简化为 CANCEL + RM 流程
+- [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — CANCEL 处理、DirectConnect 去保护、MAC 比对 peer 识别
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — SLEEP_BD_ADDRESS 多组注释
