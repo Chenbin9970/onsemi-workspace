@@ -149,10 +149,16 @@ int GATTM_AddSvcRsp(ke_msg_id_t const msg_id,
     {
         cs_env.start_hdl = param->start_hdl;
     }
-    else
+    else if (rempro_env.start_hdl == 0)
     {
         rempro_env.start_hdl = param->start_hdl;
     }
+#ifdef APP_ASHA_ENABLE
+    else
+    {
+        ASHA_GATTM_AddSvcRspHandler(param);
+    }
+#endif
 
     /* Add the next requested service  */
     if (!Service_Add())
@@ -199,6 +205,19 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
     struct gattc_read_cfm *cfm;
 
     /* Route handle to the correct service */
+#ifdef APP_ASHA_ENABLE
+    if (ASHA_GATTC_ReadReqHandler(src_id, param))
+    {
+        cfm = KE_MSG_ALLOC(GATTC_READ_CFM, KE_BUILD_ID(TASK_GATTC, src_id),
+                           TASK_APP, gattc_read_cfm);
+        cfm->handle = param->handle;
+        cfm->length = 0;
+        cfm->status = GAP_ERR_NO_ERROR;
+        ke_msg_send(cfm);
+        return (KE_MSG_CONSUMED);
+    }
+    else
+#endif
     if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
     {
         attnum = (param->handle - rempro_env.start_hdl - 1);
@@ -375,6 +394,16 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
     }
 
     /* Route handle to the correct service */
+#ifdef APP_ASHA_ENABLE
+    if (ASHA_GATTC_WriteReqHandler(ble_env.conidx, param))
+    {
+        cfm->handle = param->handle;
+        cfm->status = GAP_ERR_NO_ERROR;
+        ke_msg_send(cfm);
+        return (KE_MSG_CONSUMED);
+    }
+    else
+#endif
     if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
     {
         attnum = (param->handle - rempro_env.start_hdl - 1);

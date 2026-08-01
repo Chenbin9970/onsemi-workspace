@@ -33,6 +33,7 @@ MEMORY
   DRAM (xrw) : ORIGIN = 0x20000000, LENGTH = 3*8K-6*4
   DRAM_DSP (xrw) : ORIGIN = 0x20006000, LENGTH = 48K
   DRAM_BB (xrw) : ORIGIN = 0x20012000, LENGTH = 16K
+  DRAM_DSP_CM3 (xrw) : ORIGIN = 0x2100B800, LENGTH = 2K
 }
 
 /* ----------------------------------------------------------------------------
@@ -221,4 +222,11 @@ SECTIONS
         
         . = ALIGN(4);
     } >DRAM
+
+    /* Shared memory between ARM CM3 and LPDSP32 for codec buffers */
+    .shared (NOLOAD) :
+    {
+        . = ALIGN(4);
+        KEEP(*(.shared))
+    } >DRAM_DSP_CM3
 }

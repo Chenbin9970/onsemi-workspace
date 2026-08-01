@@ -76,6 +76,8 @@
 							<tool command="${cross_prefix}${cross_c}${cross_suffix} -Wall" commandLinePattern="${COMMAND} ${cross_toolchain_flags} ${FLAGS} -c ${OUTPUT_FLAG} ${OUTPUT_PREFIX}${OUTPUT} ${INPUTS}" errorParsers="org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.GCCErrorParser" id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.458569908" name="Cross ARM C Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths.1619961124" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/include}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source/codecs}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -279,7 +281,7 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="RTE/Device/RSL10/rsl10_protocol.c|code/app_cs.c|code/app_batt.c|profiles|profiles/dis|profiles/bas|profiles/tip|profiles/scpp|profiles/rscp|profiles/prox|profiles/pasp|profiles/lan|profiles/htp|profiles/hrp|profiles/hogp|profiles/glp|profiles/find|profiles/cscp|profiles/cpp|profiles/blp|profiles/anp" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+						<entry excluding="RTE/Device/RSL10/msg_handler.h|RTE/Device/RSL10/msg_handler.c|RTE/Device/RSL10/ble_l2c.h|RTE/Device/RSL10/ble_l2c.c|RTE/Device/RSL10/ble_gatt.h|RTE/Device/RSL10/ble_gatt.c|RTE/Device/RSL10/ble_gap.h|RTE/Device/RSL10/ble_gap.c|RTE/Device/RSL10/ble_dfus.h|RTE/Device/RSL10/ble_dfus.c|RTE/Device/RSL10/ble_bass.h|RTE/Device/RSL10/ble_bass.c|RTE/Device/RSL10/rsl10_protocol.c|code/app_cs.c|code/app_batt.c|profiles|profiles/dis|profiles/bas|profiles/tip|profiles/scpp|profiles/rscp|profiles/prox|profiles/pasp|profiles/lan|profiles/htp|profiles/hrp|profiles/hogp|profiles/glp|profiles/find|profiles/cscp|profiles/cpp|profiles/blp|profiles/anp" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -362,6 +364,8 @@
 							<tool command="${cross_prefix}${cross_c}${cross_suffix} -Wall" commandLinePattern="${COMMAND} ${cross_toolchain_flags} ${FLAGS} -c ${OUTPUT_FLAG} ${OUTPUT_PREFIX}${OUTPUT} ${INPUTS}" errorParsers="org.eclipse.cdt.core.GLDErrorParser;org.eclipse.cdt.core.GCCErrorParser" id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.1574572748" name="Cross ARM C Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths.100074420" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/include}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source}&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source/codecs}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -608,7 +612,21 @@
 		<toolChainAdapter id="com.arm.cmsis.pack.build.gnuarmeclipse.toolChainAdapter" name="Cross ARM GCC Toolchain Adapter"/>
 		<device Dclock="48000000" Dcore="Cortex-M3" DcoreVersion="r2p1" Dendian="Little-endian" Dfamily="RSL10 Series" Dfpu="NO_FPU" Dmpu="NO_MPU" Dname="RSL10" Dvendor="ONSemiconductor:141" Pname=""/>
 		<files>
+			<file name="RTE/Device/RSL10/ble_asha.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_asha.h" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_bass.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_bass.h" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_dfus.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_dfus.h" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_gap.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_gap.h" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_gatt.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_gatt.h" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_l2c.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/ble_l2c.h" version="1.0.0"/>
 			<file name="RTE/Device/RSL10/mkfotaimg.py" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/msg_handler.c" version="1.0.0"/>
+			<file name="RTE/Device/RSL10/msg_handler.h" version="1.0.0"/>
 			<file name="RTE/Device/RSL10/rsl10_protocol.c" version="3.7.606"/>
 			<file name="RTE/Device/RSL10/RTE_Device.h" version="1.0.0"/>
 			<file name="RTE/Device/RSL10/startup_rsl10.S" version="1.0.0"/>

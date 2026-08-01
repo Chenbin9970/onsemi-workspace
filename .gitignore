@@ -41,3 +41,5 @@ __pycache__/
 # Dependency files
 *.d
 ble_android_asha/
+remote_mic_rx_raw/
+remote_mic_tx_raw/

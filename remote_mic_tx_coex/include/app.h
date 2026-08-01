@@ -418,7 +418,7 @@ extern "C"
 /* Frmae length in uint16_t */
 #define FRAME_LENGTH                    160
 
-/* Encoeded frame length in uint8_t */
+/* Encoded frame length in uint8_t */
 #if (CODEC_MODE == 3)
 #define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
 

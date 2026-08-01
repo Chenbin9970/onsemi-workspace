@@ -45,6 +45,7 @@ uint32_t asrc_cnt_cnst             = 0;
 bool flag_ascc_phase           = false;
 
 /* ISR aliases — map hardware IRQ names to readable function names */
+#ifndef APP_ASHA_ENABLE
 void __attribute__ ((alias("Asrc_in_dma_isr")))
 DMA_IRQ_FUNC(ASRC_IN_IDX)(void);
 
@@ -53,6 +54,7 @@ AUDIOSINK_PHASE_IRQHandler(void);
 
 void __attribute__ ((alias("Ascc_period_isr")))
 AUDIOSINK_PERIOD_IRQHandler(void);
+#endif
 
 void __attribute__ ((alias("DspDec_isr"))) DSP1_IRQHandler(void);
 
@@ -555,6 +557,7 @@ int16_t sample_in[FRAME_LENGTH]    = {
 
 
 
+#ifndef APP_ASHA_ENABLE
 void __attribute__ ((alias("Asrc_in_dma_isr")))
 DMA_IRQ_FUNC(ASRC_IN_IDX)(void);
 
@@ -564,6 +567,7 @@ AUDIOSINK_PHASE_IRQHandler(void);
 void __attribute__ ((alias("Ascc_period_isr")))
 AUDIOSINK_PERIOD_IRQHandler(void);
 
+#endif
 void __attribute__ ((alias("DspDec_isr"))) DSP1_IRQHandler(void);
 
 void __attribute__ ((alias("Packet_regulator_timer_isr")))
