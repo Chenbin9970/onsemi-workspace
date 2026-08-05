@@ -93,11 +93,6 @@ void Main_Loop(void)
 {
     Sys_Watchdog_Refresh();
 
-#ifdef APP_ASHA_ENABLE
-    if (asha_active)
-        ASHA_App_Process();
-#endif
-
     if ((cs_env.sentSuccess == 1) &&
         (app_env.sleep_cycles % APP_CS_TX_VALUE_NOTF_SLEEP_CYCLE == 0))
     {
@@ -196,6 +191,7 @@ void Main_Loop(void)
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
             SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
             BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP;
+            app_env.audio_streaming = 0;
             RM_Disable();
             Sys_Timers_Stop(SELECT_TIMER0);
             Sys_Timers_Stop(SELECT_TIMER1);
@@ -214,7 +210,6 @@ void Main_Loop(void)
                 bs300_active();
             }
 
-            app_env.audio_streaming = 0;
             low_power_clk_param.low_power_enable = true;
         }
 
@@ -310,34 +305,6 @@ void Main_Loop(void)
                     bs300_reset_to_defaults();
                     PRINTF("[BS300] cache cleared, reset to reload\r\n");
                 }
-#ifdef APP_ASHA_ENABLE
-                else if (cmd == 0xF0)
-                {
-                    if (arg == 0x01 && !asha_active)
-                    {
-                        PRINTF("[ASHA] switching to ASHA mode\r\n");
-                        struct ReadOnlyProperties_t props;
-                        props.version = 0x01;
-                        props.deviceCapabilities = 0x01; /* Monaural | Right */
-                        uint8_t hisync[8] = {0x62,0x03,0x22,0x33,0x44,0x55,0x66,0x77};
-                        memcpy(props.hiSyncId, hisync, 8);
-                        props.featureMap = ASHA_FEATURE_MAP_LE_COC_SUPPORTED;
-                        props.renderDelay = 0;
-                        props.preparationDelay = 0;
-                        props.codecIDs = ASHA_CODEC_ID_G722_16KHZ;
-                        ASHA_Initialize(&props, (void*)APP_ASHA_CallbackHandler);
-                        PRINTF("[ASHA] service initialized\r\n");
-                        ASHA_App_Init();
-                        Advertising_Start();
-                    }
-                    else if (arg == 0x00 && asha_active)
-                    {
-                        PRINTF("[ASHA] switching back to RM mode\r\n");
-                        ASHA_App_Deinit();
-                        Advertising_Start();
-                    }
-                }
-#endif
             }
 
             /* Handle REMPRO (RT App) commands from ROLE characteristic */

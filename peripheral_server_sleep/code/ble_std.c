@@ -26,8 +26,6 @@
 
 #include "app.h"
 #include "ble_rempro_cmd.h"
-#include <ble_gap.h>
-#include <msg_handler.h>
 
 #ifdef CFG_FOTA
 SYS_FOTA_VERSION(VER_ID, VER_MAJOR, VER_MINOR, VER_REVISION);
@@ -173,7 +171,7 @@ void BLE_Initialize(void)
     gapmConfigCmd->sugg_max_tx_time = TX_TIME_MAX;
     gapmConfigCmd->tx_pref_rates = GAP_RATE_ANY;
     gapmConfigCmd->rx_pref_rates = GAP_RATE_ANY;
-    gapmConfigCmd->max_nb_lecb = 1;  /* Required for ASHA L2CAP CoC */
+    gapmConfigCmd->max_nb_lecb = 0;
     gapmConfigCmd->audio_cfg = 0;
 
     /* Reset the stack */
@@ -305,29 +303,7 @@ void Advertising_Start(void)
                 cmd->info.host.adv_data_len += (device_name_length + 2);
             }
 
-            /* If there is still space, add ASHA data or company ID */
-#ifdef APP_ASHA_ENABLE
-            if (asha_active)
-            {
-                /* ASHA Service Data: [Len=9][Type=0x16][UUID=F0 FD][ver=1][cap][HiSyncId x4] */
-                uint8_t asha_adv[10];
-                uint8_t hi_sync[8] = {0x62, 0x03, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
-                asha_adv[0] = 9;          /* Length */
-                asha_adv[1] = 0x16;       /* AD Type: Service Data - 16-bit UUID */
-                asha_adv[2] = 0xF0;       /* ASHA UUID LSB */
-                asha_adv[3] = 0xFD;       /* ASHA UUID MSB */
-                asha_adv[4] = 0x01;       /* Protocol version */
-                asha_adv[5] = 0x01;  /* Monaural + Right side */
-                memcpy(&asha_adv[6], hi_sync, 4); /* First 4 bytes of HiSyncId */
-                if (((ADV_DATA_LEN - 3) - cmd->info.host.adv_data_len - 2) >= 10)
-                {
-                    memcpy(&cmd->info.host.adv_data[cmd->info.host.adv_data_len],
-                           asha_adv, 10);
-                    cmd->info.host.adv_data_len += 10;
-                }
-            }
-            else
-#endif
+            /* If there is still space, add company ID */
             if (((ADV_DATA_LEN - 3) - cmd->info.host.adv_data_len - 2) >=
                 APP_COMPANY_ID_DATA_LEN)
             {
@@ -456,11 +432,6 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id,
 
                 /* Go to the ready state */
                 ble_env.state = APPM_READY;
-
-#ifdef APP_ASHA_ENABLE
-                /* Register LE PSM for ASHA L2CAP CoC */
-                GAPM_LepsmRegisterCmd(0xA8, TASK_APP, 0);
-#endif
 
                 /* Start advertising since there are no services to add
                  * to the attribute database */
@@ -661,7 +632,6 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         Advertising_Start();
     }
 
-    MsgHandler_Notify(msg_id, (void *)param, dest_id, src_id);
     return (KE_MSG_CONSUMED);
 }
 

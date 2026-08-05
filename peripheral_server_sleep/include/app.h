@@ -28,9 +28,8 @@
 #define APP_H
 
 #define APP_RM_ENABLE
-#define APP_ASHA_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define DEBUG_UART_ENABLE
+//#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 
 /* TX device MAC for BLE→RM fast switch */
@@ -72,10 +71,6 @@ extern "C"
 #include "ble_bass.h"
 #include "ble_rempro.h"
 #include "calibration.h"
-#ifdef APP_ASHA_ENABLE
-#include "ble_asha_wrap.h"
-#include "asha_app.h"
-#endif
 #include "RTE_Device.h"
 #include "bs300_program_read.h"
 #ifdef CFG_FOTA
@@ -453,8 +448,7 @@ typedef void (*appm_add_svc_func_t)(void);
 #define SERVICE_ADD_FUNCTION_LIST                        \
     DEFINE_SERVICE_ADD_FUNCTION(Batt_ServiceAdd_Server), \
     DEFINE_SERVICE_ADD_FUNCTION(CustomService_ServiceAdd), \
-    DEFINE_SERVICE_ADD_FUNCTION(RemproService_ServiceAdd), \
-    DEFINE_SERVICE_ADD_FUNCTION(ASHA_ServiceAdd)
+    DEFINE_SERVICE_ADD_FUNCTION(RemproService_ServiceAdd)
 
 typedef void (*appm_enable_svc_func_t)(uint8_t);
 #define DEFINE_SERVICE_ENABLE_FUNCTION(func) (appm_enable_svc_func_t)func

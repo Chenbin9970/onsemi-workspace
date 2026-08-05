@@ -26,7 +26,6 @@
 
 #include "app.h"
 #include "bs300_ram_sync.h"
-#include <msg_handler.h>
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -503,7 +502,6 @@ int APP_Timer(ke_msg_id_t const msg_id, void const *param,
 int Msg_Handler(ke_msg_id_t const msg_id, void *param,
                 ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    MsgHandler_Notify(msg_id, param, dest_id, src_id);
     return (KE_MSG_CONSUMED);
 }
 
