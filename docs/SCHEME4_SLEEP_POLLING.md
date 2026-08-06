@@ -213,3 +213,50 @@ while 循环顶部:
 2. **RM 阶段无 Audio_Init**：省 100μA 但 LINK_ESTABLISHED 时才初始化，首次连接有短暂延迟。
 
 3. **200ms 广播间隔**：BLE 事件频率较高，BLE 广播功耗略增。如需更低功耗可适当拉大间隔和阈值。
+
+---
+
+## 2026-08-06 调试记录：RM 搜索功耗奇偶交替问题
+
+### 现象
+
+同一设备，无 TX 连接场景下，polling 的 RM 搜索阶段功耗呈现规律性交替：
+- 奇数轮 RM 搜索：功耗正常
+- 偶数轮 RM 搜索：功耗偏高
+- BLE 广播阶段始终正常
+
+```
+冷启 → BLE(正常) → RM搜索(正常) → BLE(正常) → RM搜索(偏高) → BLE(正常) → RM搜索(正常) → ...
+```
+
+对比实验：**BLE 指令开关 RM（BLE 已连接手机，RM 同样无 TX 连接）→ 功耗始终正常**。说明问题不在"有无连接 TX"，而在 polling 特有的某些状态差异。
+
+### 尝试的修复（均未解决）
+
+1. **poll_enter_rm 加 APP_RM_Init**：原设计 polling 入口未调用 `RM_Configure()`，怀疑 RM 硬件寄存器残留。加上后无效。
+
+2. **删除轻量停止，统一走完整 rm_stop_requested**：原设计有两套停止路径（轻量超时停止 vs 完整停止），轻量停止缺少 `BB_DEEP_SLEEP`、音频管线清理等。统一后无效。
+
+3. **删除 poll_enter_rm 入口，统一走 rm_start_requested**：polling 到期设 `rm_start_requested=1`，与 BLE 指令路径完全共用同一套进出代码。无效。
+
+4. **polling 路径跳过 Audio_Init，延迟到 LINK_ESTABLISHED**：怀疑 DSP/DMA 初始化后从未激活（无 TX 连接）导致残留。无效。
+
+### 关键发现
+
+- 所有 RM 入口/出口路径与 BLE 指令路径完全统一后，问题依然存在
+- BLE 指令路径（BLE 已连接手机）功耗始终正常，polling 路径（BLE 仅广播）交替异常
+- 两者差异仅在于进入 RM 前的 BLE 状态：**BLE 已连接 vs BLE 仅广播**
+- `RM_Configure()` 写入 190 字节 RF 配置、`RM_Enable()` 重置 `rm_env.state`、`RemoteMic_Protocol_Init()` 重置计数器和状态机——理论上每次 RM 启动硬件状态完全一致
+- `RM_Disable()` **仅关闭 NVIC 中断，不停止硬件定时器、不清除 rm_env.state、不恢复 RF 寄存器**
+
+### 推测根因
+
+**RM 底层固件/硬件状态在 RM_Disable/RM_Enable 周期之间未完全复位**。`RM_Disable()` 只做了软件层面的中断屏蔽，硬件定时器和 RF 状态机可能残留。虽然 `RM_Configure()` + `RemoteMic_Protocol_Init()` 重置了软件状态，但硬件层面的前次残留（如 RX AGC、PLL 锁定状态、通道滤波器状态等）可能导致下次 RM 搜索功耗不同。
+
+BLE 已连接 vs 仅广播的 BLE 状态差异，可能通过 BB 共存机制影响了 RM 硬件初始化时的起始条件，从而表现为"BLE 指令路径正常、polling 路径异常"。
+
+### 结论
+
+**方案四暂不实施，代码已 revert。** 根本解决方案可能需要：
+- 在 `RM_Disable()` 之后额外增加硬件复位（如 RF 寄存器完全恢复默认值再重新配置）
+- 或者排查 RM 底层固件（`rm_pkt_hdl.c` 中的状态机），确保 `RemoteMic_Protocol_Init()` 真正做到了完整硬件复位
