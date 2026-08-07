@@ -83,7 +83,7 @@
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.warning.missingprototypes.97527061" name="Warn if a global function has no prototype (-Wmissing-prototypes)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.warning.missingprototypes" useByScannerDiscovery="true" value="true" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.defs.1367304037" name="Defined symbols (-D)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.defs" useByScannerDiscovery="false" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="RSL10_CID=101"/>
-									<listOptionValue builtIn="false" value="CFG_CON=8"/>
+									<listOptionValue builtIn="false" value="CFG_CON=2"/>
 									<listOptionValue builtIn="false" value="CFG_BLE=1"/>
 									<listOptionValue builtIn="false" value="CFG_SLEEP"/>
 									<listOptionValue builtIn="false" value="CFG_HW_AUDIO"/>
@@ -353,7 +353,7 @@
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.warning.missingprototypes.2067997732" name="Warn if a global function has no prototype (-Wmissing-prototypes)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.warning.missingprototypes" useByScannerDiscovery="true" value="true" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.defs.1120948359" name="Defined symbols (-D)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.defs" useByScannerDiscovery="false" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="RSL10_CID=101"/>
-									<listOptionValue builtIn="false" value="CFG_CON=8"/>
+									<listOptionValue builtIn="false" value="CFG_CON=2"/>
 									<listOptionValue builtIn="false" value="CFG_BLE=1"/>
 									<listOptionValue builtIn="false" value="CFG_SLEEP"/>
 									<listOptionValue builtIn="false" value="CFG_HW_AUDIO"/>

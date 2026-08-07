@@ -312,9 +312,10 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
         }
     }
 
-    /* Allocate and build message */
+    /* Allocate and build message — response goes to the connection
+     * that sent the request */
     cfm = KE_MSG_ALLOC_DYN(GATTC_READ_CFM,
-                           KE_BUILD_ID(TASK_GATTC, ble_env.conidx),
+                           src_id,
                            TASK_APP,
                            gattc_read_cfm,
                            length);
@@ -358,8 +359,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
                       ke_task_id_t const src_id)
 {
     struct gattc_write_cfm *cfm = KE_MSG_ALLOC(GATTC_WRITE_CFM,
-                                               KE_BUILD_ID(TASK_GATTC,
-                                                           ble_env.conidx),
+                                               src_id,
                                                TASK_APP,
                                                gattc_write_cfm);
 

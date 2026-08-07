@@ -43,6 +43,28 @@ extern "C"
 /* Number of APP Task Instances */
 #define APP_IDX_MAX                     1
 
+/* Peer ear (opposite side hearing aid) MAC addresses for central role connection.
+ * Left ear connects to right ear MAC, right ear connects to left ear MAC.
+ * Format: BLE little-endian (byte 0 = LSB of MAC), same as TX_BD_ADDRESS.
+ * Example: MAC 11:22:33:44:55:66 → { 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 }
+ * TODO: replace with actual production MAC addresses */
+#define PEER_EAR_BD_ADDRESS_LEFT    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+#define PEER_EAR_BD_ADDRESS_RIGHT   { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }
+
+/* Peer ear connection parameters (intv: 1.25ms, timeout: 10ms) */
+#define PEER_EAR_CON_INTERVAL_MIN   400
+#define PEER_EAR_CON_INTERVAL_MAX   400
+#define PEER_EAR_CON_LATENCY        0
+#define PEER_EAR_SUP_TIMEOUT        600  /* 6 seconds */
+
+/* Peer ear connection scan window (units: 0.625ms) */
+#define PEER_EAR_SCAN_INTERVAL      100
+#define PEER_EAR_SCAN_WINDOW        50
+
+/* Peer ear connection retry interval (units: 200ms timer ticks) */
+#define PEER_EAR_RETRY_TICKS        25  /* 25 * 200ms = 5 seconds */
+#define PEER_EAR_INITIAL_DELAY      5   /* 5 * 200ms = 1 second */
+
 /* Advertising channel map - 37, 38, 39 */
 #define APP_ADV_CHMAP                   0x07
 
@@ -163,6 +185,23 @@ enum appm_state
     APPM_STATE_MAX
 };
 
+/* Connection type — distinguishes phone (incoming/peripheral) from
+ * peer ear (outgoing/central) connections */
+enum ble_conn_type
+{
+    BLE_CONN_TYPE_PHONE = 0,
+    BLE_CONN_TYPE_PEER_EAR = 1,
+};
+
+/* Peer ear connection flow states */
+enum peer_ear_state
+{
+    PEER_EAR_IDLE = 0,
+    PEER_EAR_CONNECTING,
+    PEER_EAR_CONNECTED,
+    PEER_EAR_RETRY_WAIT,
+};
+
 /* List of message handlers that are used by the Bluetooth application manager */
 #define BLE_MESSAGE_HANDLER_LIST                                              \
     DEFINE_MESSAGE_HANDLER(GAPM_CMP_EVT, GAPM_CmpEvt),                        \
@@ -229,6 +268,20 @@ struct ble_env_tag
     uint16_t actual_con_interval;
     uint16_t actual_con_latency;
     uint16_t actual_sup_to;
+
+    /* Peer ear (opposite side) connection tracking */
+    uint8_t peer_ear_conidx;
+    bool    peer_ear_connected;
+
+    /* Peer ear connection flow state machine */
+    uint8_t peer_ear_state;
+
+    /* Retry counter: counts 200ms Main_Loop iterations */
+    uint16_t peer_ear_retry_ticks;
+
+    /* Tracks whether GAPM is currently advertising (GAPM_STATE_ADVERTISING).
+     * Set true in Advertising_Start, cleared on cancel/connection/disconnect. */
+    bool    is_advertising;
 };
 
 /* Support for the application manager and the application environment */
@@ -253,6 +306,10 @@ extern void BLE_SetStateEnable(void);
 extern void BLE_SetServiceState(bool enable, uint8_t conidx);
 
 extern bool Service_Enable(uint8_t conidx);
+
+/* Peer ear (central role) connection functions */
+extern void DirectConnect_PeerEar(void);
+extern void PeerEar_TryConnect(void);
 
 /* Bluetooth event and message handlers */
 extern int GAPM_ProfileAddedInd(ke_msg_id_t const msgid,
