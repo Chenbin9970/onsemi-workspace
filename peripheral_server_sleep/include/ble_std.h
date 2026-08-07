@@ -48,8 +48,8 @@ extern "C"
  * Format: BLE little-endian (byte 0 = LSB of MAC), same as TX_BD_ADDRESS.
  * Example: MAC 11:22:33:44:55:66 → { 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 }
  * TODO: replace with actual production MAC addresses */
-#define PEER_EAR_BD_ADDRESS_LEFT    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
-#define PEER_EAR_BD_ADDRESS_RIGHT   { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }
+#define PEER_EAR_BD_ADDRESS_LEFT    { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }  /* AB:89:67:45:23:01 */
+#define PEER_EAR_BD_ADDRESS_RIGHT   { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  /* 00:12:09:00:80:09 */
 
 /* Peer ear connection parameters (intv: 1.25ms, timeout: 10ms) */
 #define PEER_EAR_CON_INTERVAL_MIN   400
@@ -282,7 +282,23 @@ struct ble_env_tag
     /* Tracks whether GAPM is currently advertising (GAPM_STATE_ADVERTISING).
      * Set true in Advertising_Start, cleared on cancel/connection/disconnect. */
     bool    is_advertising;
+
+    /* GATT discovery complete for peer ear (Central→Peripheral) */
+    bool    peer_ear_gatt_ready;
 };
+
+/* Peer ear GATT Client environment — discovered service/characteristic handles */
+struct cs_peer_env_tag
+{
+    uint16_t svc_start_hdl;   /* peer's Custom Service start handle */
+    uint16_t svc_end_hdl;     /* peer's Custom Service end handle */
+    uint16_t rx_hdl;          /* peer's RX characteristic value handle (write) */
+    uint16_t tx_hdl;          /* peer's TX characteristic value handle (notify) */
+    uint16_t tx_cccd_hdl;     /* peer's TX CCCD handle (subscribe) */
+    bool     tx_cccd_enabled; /* whether we subscribed to TX notifications */
+};
+
+extern struct cs_peer_env_tag cs_peer_env;
 
 /* Support for the application manager and the application environment */
 extern struct ble_env_tag ble_env;
@@ -310,6 +326,10 @@ extern bool Service_Enable(uint8_t conidx);
 /* Peer ear (central role) connection functions */
 extern void DirectConnect_PeerEar(void);
 extern void PeerEar_TryConnect(void);
+
+/* Peer ear GATT Client functions */
+extern void CS_Peer_Enable(uint8_t conidx);
+extern void CS_Peer_WriteRX(uint8_t conidx, uint8_t cmd, uint8_t arg);
 
 /* Bluetooth event and message handlers */
 extern int GAPM_ProfileAddedInd(ke_msg_id_t const msgid,

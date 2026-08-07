@@ -103,7 +103,10 @@ enum cs_idx_att
     DEFINE_MESSAGE_HANDLER(GATTC_READ_REQ_IND, GATTC_ReadReqInd),   \
     DEFINE_MESSAGE_HANDLER(GATTC_WRITE_REQ_IND, GATTC_WriteReqInd), \
     DEFINE_MESSAGE_HANDLER(GATTM_ADD_SVC_RSP, GATTM_AddSvcRsp),     \
-    DEFINE_MESSAGE_HANDLER(GATTC_CMP_EVT, GATTC_CmpEvt)
+    DEFINE_MESSAGE_HANDLER(GATTC_CMP_EVT, GATTC_CmpEvt),            \
+    DEFINE_MESSAGE_HANDLER(GATTC_DISC_SVC_IND, GATTC_DiscSvcInd),   \
+    DEFINE_MESSAGE_HANDLER(GATTC_DISC_CHAR_IND, GATTC_DiscCharInd), \
+    DEFINE_MESSAGE_HANDLER(GATTC_EVENT_IND, GATTC_EvtInd)
 
 /* Define the available custom service states */
 enum cs_state
@@ -184,6 +187,20 @@ extern void CustomService_SendNotification(uint8_t conidx, uint8_t attidx,
 
 extern int GATTC_CmpEvt(ke_msg_id_t const msg_id,
                         struct gattc_cmp_evt const *param,
+                        ke_task_id_t const dest_id,
+                        ke_task_id_t const src_id);
+
+/* Peer ear GATT Client handlers */
+extern int GATTC_DiscSvcInd(ke_msg_id_t const msg_id,
+                            struct gattc_disc_svc_ind const *param,
+                            ke_task_id_t const dest_id,
+                            ke_task_id_t const src_id);
+extern int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
+                             struct gattc_disc_char_ind const *param,
+                             ke_task_id_t const dest_id,
+                             ke_task_id_t const src_id);
+extern int GATTC_EvtInd(ke_msg_id_t const msg_id,
+                        struct gattc_event_ind const *param,
                         ke_task_id_t const dest_id,
                         ke_task_id_t const src_id);
 

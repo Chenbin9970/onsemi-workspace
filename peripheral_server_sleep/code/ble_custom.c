@@ -421,6 +421,12 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             {
                 valptr = (uint8_t *)&cs_env.rx_value;
                 cs_env.rx_value_changed = 1;
+                /* If write came from peer ear (not phone), prevent echo-back */
+                if (ble_env.peer_ear_connected
+                    && KE_IDX_GET(src_id) == ble_env.peer_ear_conidx)
+                {
+                    app_env.sync_from_remote = true;
+                }
                 PRINTF("[BS300] BLE RX: len=%u data=[%02X %02X]\r\n",
                        param->length,
                        param->length > 0 ? param->value[0] : 0,
@@ -549,6 +555,158 @@ int GATTC_CmpEvt(ke_msg_id_t const msg_id,
             rempro_env.sentSuccess = 1;
         }
     }
-
     return (KE_MSG_CONSUMED);
+}
+
+/* =====================================================================
+ * Peer Ear GATT Client — discover service, subscribe, write for sync
+ * ===================================================================== */
+
+struct cs_peer_env_tag cs_peer_env;
+
+void CS_Peer_Enable(uint8_t conidx)
+{
+    const uint8_t svc_uuid[ATT_UUID_128_LEN] = CS_SVC_UUID;
+
+    memset(&cs_peer_env, 0, sizeof(cs_peer_env));
+    ble_env.peer_ear_gatt_ready = false;
+
+    struct gattc_disc_cmd *cmd = KE_MSG_ALLOC_DYN(GATTC_DISC_CMD,
+        KE_BUILD_ID(TASK_GATTC, conidx), TASK_APP, gattc_disc_cmd,
+        ATT_UUID_128_LEN);
+    cmd->operation = GATTC_DISC_BY_UUID_SVC;
+    cmd->start_hdl = 0x0001;
+    cmd->end_hdl   = 0xFFFF;
+    cmd->uuid_len  = ATT_UUID_128_LEN;
+    memcpy(cmd->uuid, svc_uuid, ATT_UUID_128_LEN);
+    ke_msg_send(cmd);
+    PRINTF("[PEER_EAR] GATT: discovering service\r\n");
+}
+
+int GATTC_DiscSvcInd(ke_msg_id_t const msg_id,
+                     struct gattc_disc_svc_ind const *param,
+                     ke_task_id_t const dest_id,
+                     ke_task_id_t const src_id)
+{
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    cs_peer_env.svc_start_hdl = param->start_hdl;
+    cs_peer_env.svc_end_hdl   = param->end_hdl;
+    PRINTF("[PEER_EAR] GATT: service found %04X-%04X\r\n",
+           param->start_hdl, param->end_hdl);
+
+    /* Both ears run same firmware — characteristic handles are at fixed
+     * offsets within the service. No need for DISC_ALL_CHAR discovery.
+     *   svc + CS_IDX_TX_VALUE_VAL + 1  = TX value handle
+     *   svc + CS_IDX_TX_VALUE_CCC + 1  = TX CCCD handle
+     *   svc + CS_IDX_RX_VALUE_VAL + 1  = RX value handle
+     */
+    cs_peer_env.tx_hdl      = param->start_hdl + CS_IDX_TX_VALUE_VAL + 1;
+    cs_peer_env.tx_cccd_hdl = param->start_hdl + CS_IDX_TX_VALUE_CCC + 1;
+    cs_peer_env.rx_hdl      = param->start_hdl + CS_IDX_RX_VALUE_VAL + 1;
+    PRINTF("[PEER_EAR] GATT: TX=%04X TX_CCCD=%04X RX=%04X\r\n",
+           cs_peer_env.tx_hdl, cs_peer_env.tx_cccd_hdl, cs_peer_env.rx_hdl);
+
+    /* Subscribe to TX notifications immediately */
+    struct gattc_write_cmd *wcmd;
+    uint16_t cccd_val = ATT_CCC_START_NTF;
+    wcmd = KE_MSG_ALLOC_DYN(GATTC_WRITE_CMD,
+                            KE_BUILD_ID(TASK_GATTC, conidx),
+                            TASK_APP, gattc_write_cmd, 2);
+    wcmd->operation     = GATTC_WRITE;
+    wcmd->auto_execute  = 1;
+    wcmd->handle        = cs_peer_env.tx_cccd_hdl;
+    wcmd->offset        = 0;
+    wcmd->length        = 2;
+    wcmd->value[0]      = (uint8_t)cccd_val;
+    wcmd->value[1]      = (uint8_t)(cccd_val >> 8);
+    ke_msg_send(wcmd);
+    cs_peer_env.tx_cccd_enabled = true;
+    ble_env.peer_ear_gatt_ready = true;
+    PRINTF("[PEER_EAR] GATT: subscribed to TX notifications\r\n");
+    return (KE_MSG_CONSUMED);
+}
+
+int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
+                      struct gattc_disc_char_ind const *param,
+                      ke_task_id_t const dest_id,
+                      ke_task_id_t const src_id)
+{
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    const uint8_t tx_uuid[ATT_UUID_128_LEN] = CS_CHARACTERISTIC_TX_UUID;
+    const uint8_t rx_uuid[ATT_UUID_128_LEN] = CS_CHARACTERISTIC_RX_UUID;
+
+    if (memcmp(param->uuid, tx_uuid, ATT_UUID_128_LEN) == 0)
+    {
+        cs_peer_env.tx_hdl = param->attr_hdl;
+        cs_peer_env.tx_cccd_hdl = param->attr_hdl + 1;
+        PRINTF("[PEER_EAR] GATT: TX found handle=%04X\r\n", param->attr_hdl);
+    }
+    else if (memcmp(param->uuid, rx_uuid, ATT_UUID_128_LEN) == 0)
+    {
+        cs_peer_env.rx_hdl = param->attr_hdl;
+        PRINTF("[PEER_EAR] GATT: RX found handle=%04X\r\n", param->attr_hdl);
+    }
+    return (KE_MSG_CONSUMED);
+}
+
+int GATTC_EvtInd(ke_msg_id_t const msg_id,
+                 struct gattc_event_ind const *param,
+                 ke_task_id_t const dest_id,
+                 ke_task_id_t const src_id)
+{
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    if (param->handle == cs_peer_env.tx_hdl && param->length >= 3)
+    {
+        uint8_t prog = param->value[1];
+        uint8_t vol  = param->value[2];
+        uint8_t cur  = bs300_get_active_prog();
+
+        PRINTF("[PEER_EAR] sync rx: prog=%d vol=%d (local prog=%d)\r\n",
+               prog, vol, cur);
+
+        /* Route through cs_env.rx_value so Main_Loop processes with
+         * proper async sequencing. Program change takes priority. */
+        app_env.sync_from_remote = true;
+        if (prog != cur && prog < 4)
+        {
+            cs_env.rx_value[0] = 0x01;
+            cs_env.rx_value[1] = prog;
+            cs_env.rx_value_changed = 1;
+        }
+        else
+        {
+            uint8_t cur_vol = bs300_get_module_volume(cur);
+            if (vol != cur_vol)
+            {
+                cs_env.rx_value[0] = 0x02;
+                cs_env.rx_value[1] = vol;
+                cs_env.rx_value_changed = 1;
+            }
+        }
+    }
+    return (KE_MSG_CONSUMED);
+}
+
+void CS_Peer_WriteRX(uint8_t conidx, uint8_t cmd, uint8_t arg)
+{
+    if (cs_peer_env.rx_hdl == 0) return;
+
+    PRINTF("[PEER_EAR] sync tx: cmd=%02X arg=%02X\r\n", cmd, arg);
+    uint8_t data[2] = { cmd, arg };
+    struct gattc_write_cmd *wcmd = KE_MSG_ALLOC_DYN(GATTC_WRITE_CMD,
+        KE_BUILD_ID(TASK_GATTC, conidx), TASK_APP, gattc_write_cmd, 2);
+    wcmd->operation = GATTC_WRITE;
+    wcmd->auto_execute = 1;
+    wcmd->handle = cs_peer_env.rx_hdl;
+    wcmd->offset = 0;
+    wcmd->length = 2;
+    wcmd->value[0] = data[0];
+    wcmd->value[1] = data[1];
+    ke_msg_send(wcmd);
 }

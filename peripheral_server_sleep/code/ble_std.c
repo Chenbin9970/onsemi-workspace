@@ -716,6 +716,9 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         cfm->svc_changed_ind_enable = 0;
         ke_msg_send(cfm);
 
+        /* Start GATT discovery on peer ear for program/volume sync */
+        CS_Peer_Enable(new_conidx);
+
         /* Restore ble_env.state and restart advertising so phone can find us.
          * Advertising_Start requires APPM_READY, so temporarily adjust state. */
         {
@@ -730,6 +733,34 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         }
 
         return (KE_MSG_CONSUMED);
+    }
+
+    /* Check if incoming connection is from peer ear (opposite side runs same firmware).
+     * If MAC matches, this is a peer ear connection, not a phone connection. */
+    {
+        const uint8_t peer_mac_left[BDADDR_LENGTH]  = PEER_EAR_BD_ADDRESS_LEFT;
+        const uint8_t peer_mac_right[BDADDR_LENGTH] = PEER_EAR_BD_ADDRESS_RIGHT;
+        const uint8_t *peer_mac = (ear_side == RM_RIGHT) ? peer_mac_left : peer_mac_right;
+
+        if (memcmp(peer_mac, param->peer_addr.addr, BDADDR_LENGTH) == 0)
+        {
+            PRINTF("[PEER_EAR] incoming connection from opposite ear, conidx=%d\r\n",
+                   new_conidx);
+            ble_env.peer_ear_conidx = new_conidx;
+            ble_env.peer_ear_connected = true;
+            ble_env.peer_ear_state = PEER_EAR_CONNECTED;
+
+            cfm = KE_MSG_ALLOC(GAPC_CONNECTION_CFM,
+                               KE_BUILD_ID(TASK_GAPC, new_conidx), TASK_APP,
+                               gapc_connection_cfm);
+            cfm->pairing_lvl = GAP_AUTH_REQ_NO_MITM_NO_BOND;
+            cfm->svc_changed_ind_enable = 0;
+            ke_msg_send(cfm);
+
+            /* Central side (connect initiator) handles GATT discovery
+             * and writes to our RX. We sync back via TX notifications. */
+            return (KE_MSG_CONSUMED);
+        }
     }
 
     /* Phone connection (incoming, peripheral role) */
@@ -875,6 +906,8 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
         ble_env.peer_ear_conidx = GAP_INVALID_CONIDX;
         ble_env.peer_ear_state = PEER_EAR_RETRY_WAIT;
         ble_env.peer_ear_retry_ticks = PEER_EAR_RETRY_TICKS;
+        ble_env.peer_ear_gatt_ready = false;
+        memset(&cs_peer_env, 0, sizeof(cs_peer_env));
         ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
         return (KE_MSG_CONSUMED);
     }

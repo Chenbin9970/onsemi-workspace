@@ -143,7 +143,7 @@ extern "C"
 #define DEBUG_DIO_THIRD                 10
 
 /* Initial side channel */
-#define APP_RM_AUDIO_CHANNEL            RM_LEFT
+#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
 #define DIO_SYNC_PULSE                  8
@@ -492,6 +492,10 @@ struct app_env_tag
     uint8_t  timer_200ms;
     uint8_t  tx_connect_detected;   /* TX CONNECT_IND received → skip BLE, go RM */
 #endif
+
+    /* Ear-to-ear sync: set when command received from peer ear,
+     * prevents echo-back to peer. */
+    bool sync_from_remote;
 };
 
 struct low_power_clk_param_tag

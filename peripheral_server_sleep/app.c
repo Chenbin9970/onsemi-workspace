@@ -28,12 +28,27 @@ static void on_bs300_switch_done(void)
 {
     cs_env.tx_value_changed = 1;
     bs300_async_done_callback();
+    if (!app_env.sync_from_remote && ble_env.peer_ear_connected
+        && ble_env.peer_ear_gatt_ready)
+    {
+        uint8_t prog = bs300_get_active_prog();
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
+    }
+    app_env.sync_from_remote = false;
 }
 
 static void on_bs300_volume_done(void)
 {
     cs_env.tx_value_changed = 1;
     bs300_async_done_callback();
+    if (!app_env.sync_from_remote && ble_env.peer_ear_connected
+        && ble_env.peer_ear_gatt_ready)
+    {
+        uint8_t prog = bs300_get_active_prog();
+        uint8_t vol  = bs300_get_module_volume(prog);
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
+    }
+    app_env.sync_from_remote = false;
 }
 
 /* Button-path done callbacks: also restore low-power (I2C complete → can sleep) */
@@ -41,6 +56,13 @@ static void on_btn_switch_done(void)
 {
     cs_env.tx_value_changed = 1;
     bs300_async_done_callback();
+    if (!app_env.sync_from_remote && ble_env.peer_ear_connected
+        && ble_env.peer_ear_gatt_ready)
+    {
+        uint8_t prog = bs300_get_active_prog();
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
+    }
+    app_env.sync_from_remote = false;
     low_power_clk_param.low_power_enable = true;
 }
 
@@ -48,6 +70,14 @@ static void on_btn_volume_done(void)
 {
     cs_env.tx_value_changed = 1;
     bs300_async_done_callback();
+    if (!app_env.sync_from_remote && ble_env.peer_ear_connected
+        && ble_env.peer_ear_gatt_ready)
+    {
+        uint8_t prog = bs300_get_active_prog();
+        uint8_t vol  = bs300_get_module_volume(prog);
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
+    }
+    app_env.sync_from_remote = false;
     low_power_clk_param.low_power_enable = true;
 }
 
@@ -292,8 +322,10 @@ void Main_Loop(void)
         bs300_process_deferred();
 
         /* Peer ear connection state machine (central role).
+         * Only the left ear (ear_side == RM_LEFT) acts as Central.
          * Countdown driven by 200ms timer. Skip when RM streaming. */
-        if (ble_env.peer_ear_retry_ticks == 0 &&
+        if (ear_side == RM_LEFT
+            && ble_env.peer_ear_retry_ticks == 0 &&
             (ble_env.peer_ear_state == PEER_EAR_IDLE ||
              ble_env.peer_ear_state == PEER_EAR_RETRY_WAIT)
 #ifdef APP_RM_ENABLE
@@ -356,13 +388,21 @@ void Main_Loop(void)
              * notification is enabled */
             if (cs_env.tx_value_changed && (cs_env.tx_cccd_value & 1))
             {
+                uint8_t prog = bs300_get_active_prog();
+                uint8_t vol  = bs300_get_module_volume(prog);
+
                 cs_env.tx_value_changed = 0;
 
-                /* Emulate value change with notification data */
+                /* TX notification: [counter, prog, vol, 0, 0]
+                 * Byte 0: rolling counter (phone keepalive)
+                 * Byte 1-2: actual program/volume (ear-to-ear sync) */
                 cs_env.val_notif = Emulate_CS_Val_Notif_Change(
                     cs_env.val_notif);
-                memset(cs_env.tx_value, cs_env.val_notif,
-                       APP_CS_TX_VALUE_NOTF_LENGTH);
+                cs_env.tx_value[0] = cs_env.val_notif;
+                cs_env.tx_value[1] = prog;
+                cs_env.tx_value[2] = vol;
+                cs_env.tx_value[3] = 0;
+                cs_env.tx_value[4] = 0;
 
                 CustomService_SendNotification(ble_env.conidx,
                                                CS_IDX_TX_VALUE_VAL,
@@ -439,6 +479,11 @@ void Main_Loop(void)
                     uint8_t prog = bs300_get_active_prog();
                     uint8_t next = (prog + 1) % 3;
                     rempro_push_scene_change(next);
+                    /* Sync to peer ear immediately */
+                    if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+                        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, next);
+                        app_env.sync_from_remote = true;
+                    }
                     bs300_switch_program_async(next, on_btn_switch_done);
                     bs300_settings_persist();
                 }
@@ -447,6 +492,11 @@ void Main_Loop(void)
                     uint8_t prog = bs300_get_active_prog();
                     uint8_t vol = (bs300_get_module_volume(prog) + 1) % 10;
                     rempro_push_volume_change(prog, vol);
+                    /* Sync to peer ear immediately */
+                    if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+                        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
+                        app_env.sync_from_remote = true;
+                    }
                     bs300_set_volume_async(vol, on_btn_volume_done);
                     bs300_settings_persist();
                 }
