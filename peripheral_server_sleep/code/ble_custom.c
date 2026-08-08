@@ -425,7 +425,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
                 if (ble_env.peer_ear_connected
                     && KE_IDX_GET(src_id) == ble_env.peer_ear_conidx)
                 {
-                    app_env.sync_from_remote = true;
+                    app_env.sync_from_remote++;
                 }
                 PRINTF("[BS300] BLE RX: len=%u data=[%02X %02X]\r\n",
                        param->length,
@@ -672,7 +672,7 @@ int GATTC_EvtInd(ke_msg_id_t const msg_id,
 
         /* Route through cs_env.rx_value so Main_Loop processes with
          * proper async sequencing. Program change takes priority. */
-        app_env.sync_from_remote = true;
+        app_env.sync_from_remote++;
         if (prog != cur && prog < 4)
         {
             cs_env.rx_value[0] = 0x01;

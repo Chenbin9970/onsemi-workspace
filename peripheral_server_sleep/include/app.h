@@ -495,7 +495,7 @@ struct app_env_tag
 
     /* Ear-to-ear sync: set when command received from peer ear,
      * prevents echo-back to peer. */
-    bool sync_from_remote;
+    int  sync_from_remote;   /* >0: remote sync pending, skip echo-back */
 };
 
 struct low_power_clk_param_tag

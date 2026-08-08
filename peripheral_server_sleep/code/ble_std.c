@@ -908,6 +908,10 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
         ble_env.peer_ear_retry_ticks = PEER_EAR_RETRY_TICKS;
         ble_env.peer_ear_gatt_ready = false;
         memset(&cs_peer_env, 0, sizeof(cs_peer_env));
+        /* Restart advertising so peer ear can find us again */
+        ble_env.is_advertising = false;
+        ble_env.state = APPM_READY;
+        Advertising_Start();
         ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
         return (KE_MSG_CONSUMED);
     }
