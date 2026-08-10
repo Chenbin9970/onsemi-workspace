@@ -188,3 +188,52 @@ BLE 低功耗模式下（RM 关），左耳同时连手机和右耳，手机端�
 - 左耳连手机 + 右耳：**稳定**，100ms 心跳双连接正常
 - 右耳纯 Peripheral：**正常**，deep sleep 不受影响
 - 主从断连后重连：**正常**，~10s 重试
+
+---
+
+## 2026-08-10 调试：主从同步修正 + 按键推送修复
+
+### 1. 连上时不自动同步，靠事件驱动
+
+刚连上时两边各保持自己的程序/音量，不做任何初始同步。`sleep_cycles` 在 `while(true)` 外只加一次，周期性 TX 通知永不会自动触发。
+
+同步只发生在按键或 App 触发时：发 TX 通知 → 对端 `GATTC_EvtInd` 收到 → 只同步程序，不同步音量。
+
+### 2. 主从连接只同步程序，不同步音量
+
+两侧音量独立控制。去掉了 3 处音量同步路径：
+- `on_bs300_volume_done` / `on_btn_volume_done` 回调中的 `CS_Peer_WriteRX(0x02, vol)`
+- 按键流程中的 `CS_Peer_WriteRX(0x02, vol)`
+- `GATTC_EvtInd` 收到 TX 通知时的音量分支
+
+程序切换同步保留。
+
+### 3. 右耳被连后保持广播
+
+右耳接受左耳连接后，补上 `Advertising_Start()`，手机才能找到右耳。
+
+### 4. 广播包 ear side 运行时设置
+
+`APP_COMPANY_ID_DATA` 宏共享，`ble_std.c` 中根据 `ear_side` 运行时设 `company_id[10]`，不需要手动改宏。
+
+### 5. 按键推送修复
+
+按键切模式/调音量后手机收不到推送。根因：`ble_env.state` 在对侧连接恢复广播时被错误覆盖。
+- `Advertising_Start()` 内部会覆盖 `ble_env.prev_state`
+- 修复：在调 `Advertising_Start` 前后保存/恢复 `prev_state`
+
+### 6. MAC 地址
+
+| 用途 | MAC | 宏 |
+|------|------|------|
+| 左耳（生产） | `60:C0:BF:00:76:76` | `PEER_EAR_BD_ADDRESS_LEFT` |
+| 右耳（生产） | `60:C0:BF:00:76:91` | `PEER_EAR_BD_ADDRESS_RIGHT` |
+
+### 文件变更
+
+| 文件 | 改动 |
+|------|------|
+| `code/ble_std.c` | 对侧连接 state 恢复修正；右耳被连后恢复广播；广播包 ear side 运行时设 |
+| `code/ble_custom.c` | `GATTC_EvtInd` 去掉音量同步 |
+| `app.c` | 去掉 3 处音量同步；按键调试打印 |
+| `code/ble_rempro_cmd.c` | push 函数加状态跳过打印 |

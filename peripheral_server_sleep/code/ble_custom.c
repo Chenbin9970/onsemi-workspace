@@ -664,30 +664,17 @@ int GATTC_EvtInd(ke_msg_id_t const msg_id,
     if (param->handle == cs_peer_env.tx_hdl && param->length >= 3)
     {
         uint8_t prog = param->value[1];
-        uint8_t vol  = param->value[2];
         uint8_t cur  = bs300_get_active_prog();
 
-        PRINTF("[PEER_EAR] sync rx: prog=%d vol=%d (local prog=%d)\r\n",
-               prog, vol, cur);
+        PRINTF("[PEER_EAR] sync rx: prog=%d (local prog=%d)\r\n", prog, cur);
 
-        /* Route through cs_env.rx_value so Main_Loop processes with
-         * proper async sequencing. Program change takes priority. */
-        app_env.sync_from_remote++;
+        /* Program sync only — volume is per-ear, not synced */
         if (prog != cur && prog < 4)
         {
+            app_env.sync_from_remote++;
             cs_env.rx_value[0] = 0x01;
             cs_env.rx_value[1] = prog;
             cs_env.rx_value_changed = 1;
-        }
-        else
-        {
-            uint8_t cur_vol = bs300_get_module_volume(cur);
-            if (vol != cur_vol)
-            {
-                cs_env.rx_value[0] = 0x02;
-                cs_env.rx_value[1] = vol;
-                cs_env.rx_value_changed = 1;
-            }
         }
     }
     return (KE_MSG_CONSUMED);

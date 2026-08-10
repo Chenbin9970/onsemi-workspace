@@ -30,7 +30,7 @@
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
 //#define CFG_FOTA
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 
 /* TX device MAC for BLE→RM fast switch */

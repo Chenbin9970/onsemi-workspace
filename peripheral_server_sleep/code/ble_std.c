@@ -227,6 +227,9 @@ void Advertising_Start(void)
     uint8_t scan_rsp[SCAN_RSP_DATA_LEN] = APP_SCNRSP_DATA;
     uint8_t company_id[APP_COMPANY_ID_DATA_LEN] = APP_COMPANY_ID_DATA;
 
+    /* Set ear side at runtime (macro is compile-time only, shared by both ears) */
+    company_id[10] = (ear_side == RM_RIGHT) ? 0x02 : 0x01;
+
     /* Fill device MAC into advertising data at offset 12 (after 1E FF header + 10 data bytes) */
     company_id[12] = bdaddr[5];
     company_id[13] = bdaddr[4];
@@ -719,14 +722,15 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         CS_Peer_Enable(new_conidx);
 
         /* Restore ble_env.state and restart advertising so phone can find us.
-         * Advertising_Start requires APPM_READY, so temporarily adjust state. */
+         * Save state before Advertising_Start (which overwrites prev_state). */
         {
-            uint8_t saved_state = ble_env.state;
+            uint8_t saved = ble_env.prev_state;  /* pre-DirectConnect state */
             ble_env.is_advertising = false;
             ble_env.state = APPM_READY;
             Advertising_Start();
-            /* Restore previous state (APPM_CONNECTED if phone was connected) */
-            if (saved_state == APPM_CONNECTED) {
+            /* Advertising_Start overwrote prev_state → put back the original */
+            ble_env.prev_state = saved;
+            if (saved == APPM_CONNECTED) {
                 ble_env.state = APPM_CONNECTED;
             }
         }
@@ -756,8 +760,17 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
             cfm->svc_changed_ind_enable = 0;
             ke_msg_send(cfm);
 
-            /* Central side (connect initiator) handles GATT discovery
-             * and writes to our RX. We sync back via TX notifications. */
+            /* Keep advertising so phone can still connect */
+            {
+                uint8_t saved_state = ble_env.state;
+                ble_env.is_advertising = false;
+                ble_env.state = APPM_READY;
+                Advertising_Start();
+                if (saved_state == APPM_CONNECTED) {
+                    ble_env.state = APPM_CONNECTED;
+                }
+            }
+
             return (KE_MSG_CONSUMED);
         }
     }

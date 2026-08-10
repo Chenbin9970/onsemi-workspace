@@ -48,8 +48,6 @@ static void on_bs300_volume_done(void)
     bs300_async_done_callback();
     if (app_env.sync_from_remote > 0) {
         app_env.sync_from_remote--;
-    } else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
-        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
     }
 }
 
@@ -81,8 +79,6 @@ static void on_btn_volume_done(void)
     bs300_async_done_callback();
     if (app_env.sync_from_remote > 0) {
         app_env.sync_from_remote--;
-    } else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
-        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
     }
     low_power_clk_param.low_power_enable = true;
 }
@@ -511,10 +507,6 @@ void Main_Loop(void)
                     cs_env.tx_value[3] = 0;
                     cs_env.tx_value[4] = 0;
                     cs_env.tx_value_changed = 1;
-                    if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
-                        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x02, vol);
-                        app_env.sync_from_remote++;
-                    }
                     bs300_set_volume_async(vol, on_btn_volume_done);
                     bs300_settings_persist();
                 }
