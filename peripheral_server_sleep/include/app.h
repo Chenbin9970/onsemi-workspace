@@ -30,7 +30,7 @@
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
 //#define CFG_FOTA
-#define DEBUG_UART_ENABLE
+//#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 
 /* TX device MAC for BLE→RM fast switch */
@@ -117,8 +117,8 @@ extern "C"
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
 
-/* RM search timeout: 150 * 200ms = 30 seconds */
-#define RM_TIMEOUT_TICKS                150
+/* RM search timeout: 150000 * 200ms = 30000 seconds */
+#define RM_TIMEOUT_TICKS                150000
 
 /* ----------------------------------------------------------------------------
  * Remote Microphone Defines
@@ -261,6 +261,7 @@ extern int64_t audio_sink_cnt;
 extern int64_t audio_sink_period_cnt;
 
 extern void Audio_Init(void);
+extern void Audio_Resume(void);
 extern void Rendering_func(uint8_t *src_addr);
 extern void Asrc_reconfig(void);
 extern void DspDec_isr(void);
@@ -394,7 +395,7 @@ extern void Ascc_period_isr(void);
 #define XTAL32K_CLOAD_TRIM_VALUE        0x38
 
 /* How long in seconds between RC_OSC period updates */
-#define LOW_POWER_CLK_MEASUREMENT_INTERVAL_S       4
+#define LOW_POWER_CLK_MEASUREMENT_INTERVAL_S       30
 
 /* Used to scale connection interval and convert from ms to seconds.
  * 1000/1.25. 1000 is to convert ms to seconds and 1.25 is the scaling

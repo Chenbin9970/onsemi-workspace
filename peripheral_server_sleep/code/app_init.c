@@ -413,6 +413,34 @@ void Audio_Init(void)
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
 }
 
+/* Minimal audio pipeline resume after LINK_DISCONNECTED shutdown.
+ * No DSP reset / OD delay — assumes firmware and clock config are retained. */
+void Audio_Resume(void)
+{
+    SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
+
+    Sys_Audiosink_ResetCounters();
+    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
+    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
+
+    Sys_DMA_ChannelDisable(ASRC_IN_IDX);
+    Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
+                          (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
+
+    Sys_DMA_ChannelDisable(OD_DMA_NUM);
+    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
+    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    Sys_Timers_Start(1 << TIMER_REGUL);
+}
+
 void App_Initialize(void)
 {
     /* Mask all interrupts */

@@ -485,3 +485,54 @@ d[pos++] = 20;   // Product_Type = 20
 4. BLE 写 0x01 在 RM 搜索中 → 跳过，不打断
 5. BLE 写 0x00 在任何状态 → 完整清理回 BLE
 6. 超时退 BLE 后 → BLE 写 0x01 → 正常启动 RM
+
+---
+
+## 十一、左耳冷启动 RM + 双耳连接调试 (2026-08-08)
+
+### 11.1 需求
+
+冷启动进入 RM 模式，左耳同时保持和右耳的 BLE 连接。
+
+### 11.2 改动清单
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `include/app.h:121` | `RM_TIMEOUT_TICKS 150 → 150000` | 搜索超时从 30s 拉长到 ~8.3h |
+| `include/app.h:146` | `APP_RM_AUDIO_CHANNEL RM_RIGHT → RM_LEFT` | 左耳测试 |
+| `app.c:142-156` | 取消注释冷启动 RM 块 | 开机直接进 RM 搜索 |
+| `app.c:335-341` | 移除 `!app_env.audio_streaming` 守卫 | RM 模式下允许连右耳 |
+
+### 11.3 冷启动 RM 开启
+
+```c
+// app.c — Main_Loop preamble
+#ifdef APP_RM_ENABLE
+    {
+        static uint8_t rm_cold_boot_done = 0;
+        if (!rm_cold_boot_done) {
+            rm_cold_boot_done = 1;
+            app_env.saved_prog_before_rm = bs300_get_active_prog();
+            Audio_Init();
+            RF_SwitchToCPMode();
+            RM_Enable(500);
+            app_env.audio_streaming = 1;
+            app_env.rm_disc_state = RM_DISC_HEARING_AID;
+            app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+        }
+    }
+#endif
+```
+
+冷启动行为：开机 → BS300 在默认助听程序 → Audio_Init → 切 CP 模式 → RM_Enable 搜索 TX，搜索期间 BS300 正常跑助听程序，搜到 TX 后才切程序 3。
+
+### 11.4 RM 模式下允许连右耳
+
+原逻辑在 RM streaming 期间跳过 peer ear 连接（`!app_env.audio_streaming` 守卫），改动后移除守卫，左耳在 RM 搜索/连接的同时也会尝试 BLE 连接右耳。
+
+RF 共享链路：RM 跑在 CP 模式（专有 2.4GHz），peer ear BLE 连接复用时隙，测试验证可同时工作。
+
+### 11.5 验证结果
+
+- 冷启动 → RM 搜索 + BLE 连接右耳：**正常**
+- 左耳（`RM_LEFT`）声道配置：**正常**

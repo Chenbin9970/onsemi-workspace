@@ -246,3 +246,63 @@ case RM_RX_TRANSFER_NOPKT:      // 丢包无隐藏
 | 文件 | 改动 |
 |------|------|
 | [rm_app.c](../peripheral_server_sleep/code/rm_app.c#L164-L184) | `RM_Callback_TRX` 三个 case 拆开处理 |
+
+---
+
+## RM 断连后音频管线未关导致功耗偏高（2026-08-08）
+
+### 现象
+
+- 冷启动 RM 未连接：~300µA
+- RM 连接上 TX 再断开：~300µA 持续 4s，之后涨到 ~400µA
+
+### 根因
+
+`LINK_DISCONNECTED` 只调了 `bs300_mute()`，**没有关闭音频 ISR**。`LINK_ESTABLISHED` 里打开的 5 个音频中断（AUDIOSINK_PHASE / PERIOD / DMA_ASRC_IN / DSP1 / TIMER_REGUL）在断连后依然在跑，每个中断唤醒 CPU 执行 ISR，多耗 ~100µA。
+
+冷启动没这个问题，因为 `LINK_ESTABLISHED` 从未触发过，音频 ISR 没开过。
+
+### 修复 v1（仅关 NVIC，无效）
+
+`LINK_DISCONNECTED` 追加 5 个 `NVIC_DisableIRQ`。测试无效，功耗仍高 ~100µA — 仅关中断不够，外设硬件（DSP/DMA/定时器）本身仍在耗电。
+
+### 修复 v3（最终方案：参考 BLE→RM 切换模式）
+
+核心原则：**`Audio_Init()` 必须在 `RM_Enable()` 之前调用**，和 `rm_start_requested` 的 BLE→RM 切换保持一致。
+
+**LINK_DISCONNECTED** — 和 `rm_stop_requested` 一致彻底关音频（但保留 RM 和 RF 模式）：
+```c
+NVIC_DisableIRQ(x5) + Sys_Timers_Stop + Sys_DMA_ChannelDisable(ASRC_OUT/OD)
++ SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE
+```
+
+**慢速重连**（DEBOUNCE 超时 → HEARING_AID，`app.c`）— 参考 `rm_start` 模式：
+```c
+Audio_Init();           // ← 完整初始化，在 RM_Enable 之前
+rm_audio_shutdown = 0;
+RM_Enable(500);         // ← 之后才启 RM，数据不会来
+```
+
+**快速重连**（DEBOUNCE 内 LINK_ESTABLISHED，`rm_app.c`）— 轻量恢复：
+```c
+if (rm_audio_shutdown) {
+    rm_audio_shutdown = 0;
+    Audio_Resume();     // ← 无 DSP 复位/OD 延迟，<1ms
+}
+Sys_ASRC_Reset() + NVIC_EnableIRQ(x5)
+```
+
+| 场景 | Audio_Init 时机 | 数据来了吗 |
+|------|:--:|:--:|
+| 冷启动首次连接 | 冷启 RM 块，RM_Enable 之前 | 没有 |
+| 慢速重连 | DEBOUNCE 超时，RM_Enable 之前 | 没有 |
+| 快速重连 | Audio_Resume 在 LINK_ESTABLISHED 中 | 刚到，轻量恢复 |
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| [rm_app.c](../peripheral_server_sleep/code/rm_app.c) | `LINK_DISCONNECTED`: 完整关音频；`LINK_ESTABLISHED`: `rm_audio_shutdown` 时调 `Audio_Resume()` |
+| [app.c](../peripheral_server_sleep/app.c) | DEBOUNCE 超时：`Audio_Init()` → 清标志 → `RM_Enable()` |
+| [app_init.c](../peripheral_server_sleep/code/app_init.c) | 新增 `Audio_Resume()` — DSP resume + DMA 重配 + Timer Start |
+| [app.h](../peripheral_server_sleep/include/app.h) | 新增 `rm_audio_shutdown` 标志位 + `extern void Audio_Resume(void)` |

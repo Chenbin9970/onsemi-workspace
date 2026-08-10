@@ -160,7 +160,7 @@ void BLE_Initialize(void)
     /* Initialize GAPM configuration command to initialize the stack */
     gapmConfigCmd = malloc(sizeof(struct gapm_set_dev_config_cmd));
     gapmConfigCmd->operation = GAPM_SET_DEV_CONFIG;
-    gapmConfigCmd->role = GAP_ROLE_ALL;
+    gapmConfigCmd->role = (ear_side == RM_LEFT) ? GAP_ROLE_ALL : GAP_ROLE_PERIPHERAL;
     memcpy(gapmConfigCmd->addr.addr, bdaddr, sizeof(uint8_t) * BDADDR_LENGTH);
     gapmConfigCmd->addr_type = bdaddr_type;
     gapmConfigCmd->renew_dur = RENEW_DUR;
@@ -386,8 +386,7 @@ void DirectConnect_PeerEar(void)
     ble_env.state = APPM_CONNECTING;
     ble_env.peer_ear_state = PEER_EAR_CONNECTING;
     /* 3-second timeout: if peer is unreachable, GAPM may never respond */
-    ble_env.peer_ear_retry_ticks = 15;
-    ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+    ble_env.peer_ear_retry_ticks = 30;
 }
 
 /* ----------------------------------------------------------------------------

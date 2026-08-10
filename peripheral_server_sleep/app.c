@@ -140,20 +140,20 @@ void Main_Loop(void)
     (app_env.sleep_cycles)++;
 
 #ifdef APP_RM_ENABLE
-    /* Cold-boot RM init disabled for peer ear testing */
-    //{
-    //    static uint8_t rm_cold_boot_done = 0;
-    //    if (!rm_cold_boot_done) {
-    //        rm_cold_boot_done = 1;
-    //        app_env.saved_prog_before_rm = bs300_get_active_prog();
-    //        Audio_Init();
-    //        RF_SwitchToCPMode();
-    //        RM_Enable(500);
-    //        app_env.audio_streaming = 1;
-    //        app_env.rm_disc_state = RM_DISC_HEARING_AID;
-    //        app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
-    //    }
-    //}
+    /* Cold-boot RM start */
+    {
+        static uint8_t rm_cold_boot_done = 0;
+        if (!rm_cold_boot_done) {
+            rm_cold_boot_done = 1;
+            app_env.saved_prog_before_rm = bs300_get_active_prog();
+            Audio_Init();
+            RF_SwitchToCPMode();
+            RM_Enable(500);
+            app_env.audio_streaming = 1;
+            app_env.rm_disc_state = RM_DISC_HEARING_AID;
+            app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+        }
+    }
 #endif
 
     while (true)
@@ -266,48 +266,47 @@ void Main_Loop(void)
                     bs300_switch_program(app_env.saved_prog_before_rm);
                 }
                 bs300_active();
-                RM_Enable(500);
+                //RM_Enable(500);
+                PRINTF("[RM] reconnect: peer_connected=%d peer_state=%d retry_ticks=%d\r\n",
+                       ble_env.peer_ear_connected, ble_env.peer_ear_state,
+                       ble_env.peer_ear_retry_ticks);
             }
         }
 
-        /* 200ms tick: peer ear retry countdown + RM timeout.
-         * Re-arm here because handler self-re-arm fails in CP. */
+        /* Peer ear countdown — per Main_Loop iteration.
+         * Used during connection attempt (advertising at 100ms) and retry wait.
+         * When connected, retry_ticks is irrelevant; BLE stack handles heartbeat. */
+        if (ble_env.peer_ear_retry_ticks > 0) {
+            ble_env.peer_ear_retry_ticks--;
+        }
+
+        if (ble_env.peer_ear_retry_ticks == 0
+            && ble_env.peer_ear_state == PEER_EAR_CONNECTING)
+        {
+            PRINTF("[PEER_EAR] connect timeout, cancelling\r\n");
+            struct gapm_cancel_cmd *cancel;
+            cancel = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP,
+                                  gapm_cancel_cmd);
+            cancel->operation = GAPM_CANCEL;
+            ke_msg_send(cancel);
+        }
+
+        /* 200ms tick: RM timeout only (CP mode, CPU always awake) */
         if (app_env.timer_200ms) {
             app_env.timer_200ms = 0;
 
-            /* Peer ear retry countdown — driven by 200ms timer. */
-            if (ble_env.peer_ear_retry_ticks > 0) {
-                ble_env.peer_ear_retry_ticks--;
-            }
-
-            /* Connection attempt timeout: cancel if peer is unreachable */
-            if (ble_env.peer_ear_retry_ticks == 0
-                && ble_env.peer_ear_state == PEER_EAR_CONNECTING)
-            {
-                PRINTF("[PEER_EAR] connect timeout, cancelling\r\n");
-                struct gapm_cancel_cmd *cancel;
-                cancel = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP,
-                                      gapm_cancel_cmd);
-                cancel->operation = GAPM_CANCEL;
-                ke_msg_send(cancel);
-            }
-
-            if (app_env.audio_streaming) {
-                if (app_env.rm_timeout_ticks > 0
-                    && app_env.rm_disc_state != RM_DISC_NONE) {
-                    app_env.rm_timeout_ticks--;
-                    if (app_env.rm_timeout_ticks == 0) {
-                        app_env.rm_stop_requested = 1;
-                    }
+            if (app_env.audio_streaming
+                && app_env.rm_timeout_ticks > 0
+                && app_env.rm_disc_state != RM_DISC_NONE) {
+                app_env.rm_timeout_ticks--;
+                if (app_env.rm_timeout_ticks == 0) {
+                    app_env.rm_stop_requested = 1;
                 }
             }
 
-            /* Re-arm 200ms timer when either countdown is active */
-            if (ble_env.peer_ear_retry_ticks > 0
-                || (app_env.audio_streaming
-                    && app_env.rm_timeout_ticks > 0
-                    && app_env.rm_disc_state != RM_DISC_NONE))
-            {
+            if (app_env.audio_streaming
+                && app_env.rm_timeout_ticks > 0
+                && app_env.rm_disc_state != RM_DISC_NONE) {
                 ke_timer_set(APP_TEST_TIMER, TASK_APP,
                              TIMER_200MS_SETTING);
             }
@@ -331,14 +330,11 @@ void Main_Loop(void)
 
         /* Peer ear connection state machine (central role).
          * Only the left ear (ear_side == RM_LEFT) acts as Central.
-         * Countdown driven by 200ms timer. Skip when RM streaming. */
+         * Countdown driven by 200ms timer. */
         if (ear_side == RM_LEFT
             && ble_env.peer_ear_retry_ticks == 0 &&
             (ble_env.peer_ear_state == PEER_EAR_IDLE ||
              ble_env.peer_ear_state == PEER_EAR_RETRY_WAIT)
-#ifdef APP_RM_ENABLE
-            && !app_env.audio_streaming
-#endif
             )
         {
             ble_env.peer_ear_retry_ticks = 1;
@@ -535,8 +531,11 @@ void Main_Loop(void)
 #endif
 
 #ifndef DEBUG_UART_ENABLE
-        if (low_power_clk_param.low_power_enable ||
-            (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K))
+        /* Deep sleep breaks dual BLE connections. When peer ear is connected,
+         * use WFI instead so both phone and peer ear stay alive. */
+        if (!(ble_env.peer_ear_connected && ear_side == RM_LEFT) &&
+            (low_power_clk_param.low_power_enable ||
+            (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
         {
             Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_0);
 

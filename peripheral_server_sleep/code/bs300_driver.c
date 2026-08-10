@@ -72,7 +72,7 @@ bool bs300_driver_init(void)
         PRINTF("[BS300] I2C init FAIL\r\n");
         return false;
     }
-    bs300_delay_ms(2000);
+    bs300_delay_ms(6000);
 
     /* Step 2: Unlock chip */
     if (!bs300_startup()) {

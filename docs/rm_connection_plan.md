@@ -72,3 +72,40 @@
 2. **连接**：烧录后 BLE 连接手机，向 RM_ONOFF 特征值写 `0x01` → 观察 LED/Debug DIO 确认 RM 开始搜索
 3. **按键**：按 DIO2 按键 → 确认 RM 开关切换正常
 4. **休眠共存**：RM OFF 时设备正常休眠；RM ON 时跳过休眠（CPU 保持唤醒以保证 RM 协议时序）
+
+---
+
+## 2026-08-08 调试：左耳冷启动 RM + 双耳连接
+
+### 改动
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `include/app.h:121` | `RM_TIMEOUT_TICKS 150 → 150000` | 搜索超时 30s → ~8.3h |
+| `include/app.h:146` | `APP_RM_AUDIO_CHANNEL RM_RIGHT → RM_LEFT` | 左耳测试 |
+| `app.c:142-156` | 取消注释冷启动 RM 块 | 开机直接进 RM 搜索 |
+| `app.c:335-341` | 移除 `&& !app_env.audio_streaming` 守卫 | RM 模式下允许 BLE 连右耳 |
+
+### 冷启动 RM 流程
+
+```
+Main_Loop preamble:
+  bs300_get_active_prog() → saved_prog_before_rm
+  Audio_Init()
+  RF_SwitchToCPMode()
+  RM_Enable(500)
+  audio_streaming = 1
+  rm_disc_state = RM_DISC_HEARING_AID
+  rm_timeout_ticks = 150000 (≈8.3h)
+```
+
+开机即进 RM 搜索，BS300 保持在助听程序，搜索期间不会切程序 3（避免杂音）。搜到 TX (LINK_ESTABLISHED) 之后才 mute → 切程序 3 → active。
+
+### RM 模式 + 双耳连接共存
+
+移除 `!app_env.audio_streaming` 守卫后，左耳冷启 RM 搜索的同时会触发 `PeerEar_TryConnect()` 建 BLE 连接右耳。RF 时隙由 BBIF_COEX 硬件仲裁，测试验证可同时工作。
+
+### 验证结果
+
+- 冷启动 → RM 搜索 + BLE 连接右耳：**正常**
+- 左耳声道（`RM_LEFT`）：**正常**

@@ -344,7 +344,10 @@ void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
     if (active_prog == 3) active_prog = 0;
     s_cur_prog = active_prog;
     if (volume != NULL) {
-        for (i = 0; i < 4; i++) s_volumes[i] = volume[i];
+        for (i = 0; i < 4; i++) {
+            /* Default 0 (uninitialized) volumes to 9 */
+            s_volumes[i] = (volume[i] > 0) ? volume[i] : 9;
+        }
     }
     if (eq_low != NULL) {
         for (i = 0; i < 4; i++) s_eq_low[i] = eq_low[i];
@@ -442,6 +445,8 @@ void bs300_cache_boot_state(void)
     bs300_storage_load_program(s_cur_prog, bs300_work_buf);
     bs300_flash_to_struct(bs300_work_buf, &s_dsp_state);
     s_dsp_state.modules.volume_level = s_volumes[s_cur_prog];
+    PRINTF("[BS300] boot_cache: cur=%d volumes=[%d,%d,%d,%d]\r\n",
+           s_cur_prog, s_volumes[0], s_volumes[1], s_volumes[2], s_volumes[3]);
     s_dsp_state.modules.eq_low  = s_eq_low[s_cur_prog];
     s_dsp_state.modules.eq_mid  = s_eq_mid[s_cur_prog];
     s_dsp_state.modules.eq_high = s_eq_high[s_cur_prog];
@@ -1237,6 +1242,8 @@ int bs300_switch_program(uint8_t new_prog_idx)
 
     s_cur_prog = new_prog_idx;
     s_target.modules.volume_level = s_volumes[new_prog_idx];
+    PRINTF("[BS300] switch_program %d: s_volumes[%d]=%d\r\n",
+           new_prog_idx, new_prog_idx, s_volumes[new_prog_idx]);
 
     switch_diff_pre_enr(&s_target.wdrc, &s_target.modules, &calib, new_it, igd_changed,
                         NULL, &sent, &fail, data);

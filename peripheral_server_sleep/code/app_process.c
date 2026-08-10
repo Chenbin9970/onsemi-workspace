@@ -369,8 +369,13 @@ void Continue_Application(void)
     /* Stop masking interrupts */
     __enable_irq();
 
-    /* Stop forcing baseband wake-up */
-    BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_DEEP_SLEEP;
+    /* Stop forcing baseband wake-up. Keep BB awake if peer ear is connected
+     * so both BLE connections stay alive in deep sleep. */
+    if (ble_env.peer_ear_connected && ear_side == RM_LEFT) {
+        BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_WAKEUP;
+    } else {
+        BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_DEEP_SLEEP;
+    }
 
 #ifdef APP_RM_ENABLE
     SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;

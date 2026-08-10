@@ -51,9 +51,9 @@ extern "C"
 #define PEER_EAR_BD_ADDRESS_LEFT    { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB }  /* AB:89:67:45:23:01 */
 #define PEER_EAR_BD_ADDRESS_RIGHT   { 0x09, 0x80, 0x00, 0x09, 0x12, 0x00 }  /* 00:12:09:00:80:09 */
 
-/* Peer ear connection parameters (intv: 1.25ms, timeout: 10ms) */
-#define PEER_EAR_CON_INTERVAL_MIN   400
-#define PEER_EAR_CON_INTERVAL_MAX   400
+/* Peer ear connection parameters — 100ms heartbeat */
+#define PEER_EAR_CON_INTERVAL_MIN   80
+#define PEER_EAR_CON_INTERVAL_MAX   80
 #define PEER_EAR_CON_LATENCY        0
 #define PEER_EAR_SUP_TIMEOUT        600  /* 6 seconds */
 
@@ -62,8 +62,8 @@ extern "C"
 #define PEER_EAR_SCAN_WINDOW        50
 
 /* Peer ear connection retry interval (units: 200ms timer ticks) */
-#define PEER_EAR_RETRY_TICKS        25  /* 25 * 200ms = 5 seconds */
-#define PEER_EAR_INITIAL_DELAY      5   /* 5 * 200ms = 1 second */
+#define PEER_EAR_RETRY_TICKS        100  /* 100 * ~100ms advertising = ~10 seconds */
+#define PEER_EAR_INITIAL_DELAY      10  /* 10 * 100ms advertising = 1 second */
 
 /* Advertising channel map - 37, 38, 39 */
 #define APP_ADV_CHMAP                   0x07
@@ -139,7 +139,7 @@ extern "C"
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
 #ifndef APP_DFLT_DEVICE_NAME
-#define APP_DFLT_DEVICE_NAME            "cbtestfota"
+#define APP_DFLT_DEVICE_NAME            "cbtest"
 #endif
 #define APP_DEVICE_NAME_FLAG            '\x09'
 

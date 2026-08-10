@@ -216,6 +216,21 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
                 bs300_mute();
             }
+            ASRC_CTRL->ASRC_DISABLE_ALIAS = ASRC_DISABLED_BITBAND;
+
+            /* ASCC interrupt */
+            NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
+            NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
+
+            /* LPDSP32 interrupt */
+            NVIC_DisableIRQ(DSP1_IRQn);
+
+            NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
+
+            /* Timer interrupts */
+            NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
+            Sys_Timers_Stop(1U << TIMER_REGUL);
+
             app_env.rm_lostLink_counter++;
         }
         break;
@@ -236,6 +251,8 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             case RM_DISC_NONE:
             case RM_DISC_HEARING_AID:
                 /* BS300 on hearing aid program — switch to program 3 */
+                RM_PRINTF("[RM] LINK_ESTABLISHED: switching to prog 3\r\n");
+                bs300_set_prog_volume(3, 9);
                 bs300_mute();
                 if (app_env.saved_prog_before_rm != 3)
                     bs300_switch_program(3);
@@ -255,6 +272,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             audio_sink_cnt  = 0;
             flag_ascc_phase = false;
 
+            ASRC_CTRL->ASRC_ENABLE_ALIAS = ASRC_ENABLED_BITBAND;
             Sys_ASRC_Reset();
 
             NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
