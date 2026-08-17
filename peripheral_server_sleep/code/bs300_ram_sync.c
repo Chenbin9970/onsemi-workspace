@@ -344,10 +344,7 @@ void bs300_restore_settings(uint8_t active_prog, const uint8_t *volume,
     if (active_prog == 3) active_prog = 0;
     s_cur_prog = active_prog;
     if (volume != NULL) {
-        for (i = 0; i < 4; i++) {
-            /* Default 0 (uninitialized) volumes to 9 */
-            s_volumes[i] = (volume[i] > 0) ? volume[i] : 9;
-        }
+        for (i = 0; i < 4; i++) s_volumes[i] = volume[i];
     }
     if (eq_low != NULL) {
         for (i = 0; i < 4; i++) s_eq_low[i] = eq_low[i];
@@ -1610,6 +1607,7 @@ static int8_t  s_pending_switch = -1;          /* deferred switch target */
 static void (*s_pending_switch_on_done)(void) = NULL;
 static int8_t  s_pending_volume = -1;          /* deferred volume level */
 static void (*s_pending_volume_cb)(void) = NULL;
+static bool    s_pending_volume_tone;          /* play prompt tone on deferred volume */
 static void (*s_delayed_push_cb)(void) = NULL; /* one-shot callback after timer delay */
 
 static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd);
@@ -1688,10 +1686,12 @@ void bs300_process_deferred(void)
     if (s_pending_volume >= 0) {
         uint8_t vol = (uint8_t)s_pending_volume;
         void (*vol_cb)(void) = s_pending_volume_cb;
+        bool tone = s_pending_volume_tone;
         s_pending_volume = -1;
         s_pending_volume_cb = NULL;
+        s_pending_volume_tone = false;
         reencode_bin_gain_async_core(vol_cb,
-            (vol == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER);
+            tone ? ((vol == 0) ? BS300_TONE_VOL_0 : BS300_TONE_VOL_OTHER) : 0);
     }
 }
 
@@ -1847,6 +1847,7 @@ int bs300_set_volume_async(uint8_t level, void (*on_done)(void))
     if (bs300_sync_is_busy()) {
         s_pending_volume = (int8_t)level;
         s_pending_volume_cb = on_done;
+        s_pending_volume_tone = true;
         PRINTF("[BS300] volume=%d state saved, I2C deferred\r\n", level);
         return 0;
     }
@@ -1868,6 +1869,7 @@ int bs300_set_volume_notone_async(uint8_t level, void (*on_done)(void))
     if (bs300_sync_is_busy()) {
         s_pending_volume = (int8_t)level;
         s_pending_volume_cb = on_done;
+        s_pending_volume_tone = false;
         return 0;
     }
 
@@ -2055,4 +2057,14 @@ void bs300_play_prompt_tone(uint8_t program, uint8_t volume)
     inited       = 1;
 
     raw_write_packet(cmd, data);
+}
+
+void bs300_play_low_batt_tone(void)
+{
+    uint8_t data[48];
+
+    if (bs300_sync_is_busy()) return;
+
+    memset(data, 0, sizeof(data));
+    raw_write_packet(BS300_TONE_VOL_0, data);
 }

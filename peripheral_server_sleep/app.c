@@ -123,6 +123,8 @@ int main()
  * ------------------------------------------------------------------------- */
 void Main_Loop(void)
 {
+    static uint32_t low_batt_elapsed_ms = 0;
+
     Sys_Watchdog_Refresh();
 
     if ((cs_env.sentSuccess == 1) &&
@@ -155,6 +157,39 @@ void Main_Loop(void)
     while (true)
     {
         Kernel_Schedule();
+
+        /* Send next rempro response chunk if the previous notification completed */
+        rempro_tx_poll();
+
+        /* Low battery check — accumulate elapsed time per state.
+         * RM mode: +200ms per 200ms timer tick (CP kernel timer).
+         * BLE mode: +current wake interval per iteration (advertising 100ms,
+         * connected = negotiated (latency+1) × conn_interval × 1.25ms). */
+#ifdef APP_RM_ENABLE
+        if (app_env.audio_streaming) {
+            if (app_env.timer_200ms)
+                low_batt_elapsed_ms += 200;
+        } else
+#endif
+        {
+            uint32_t wake_ms;
+            if (ble_env.state == APPM_ADVERTISING || ble_env.is_advertising) {
+                wake_ms = CFG_ADV_INTERVAL_MS;
+            } else if (ble_env.state == APPM_CONNECTED) {
+                wake_ms = ((uint32_t)ble_env.actual_con_latency + 1)
+                        * ble_env.actual_con_interval * 125 / 100;
+            } else {
+                wake_ms = CFG_ADV_INTERVAL_MS;
+            }
+            low_batt_elapsed_ms += wake_ms;
+        }
+
+        if (low_batt_elapsed_ms >= LOW_BATT_CHECK_MS) {
+            low_batt_elapsed_ms = 0;
+            if (read_battery_raw() <= BAT_ADC_MIN) {
+                bs300_play_low_batt_tone();
+            }
+        }
 
 #ifdef APP_RM_ENABLE
         RM_StatusHandler();
@@ -300,9 +335,9 @@ void Main_Loop(void)
                 }
             }
 
-            if (app_env.audio_streaming
-                && app_env.rm_timeout_ticks > 0
-                && app_env.rm_disc_state != RM_DISC_NONE) {
+            /* Re-arm while RM active (even timeout disabled / connected streaming),
+             * so RM-side periodic tasks (low-batt check) keep running. */
+            if (app_env.audio_streaming && !app_env.rm_stop_requested) {
                 ke_timer_set(APP_TEST_TIMER, TASK_APP,
                              TIMER_200MS_SETTING);
             }

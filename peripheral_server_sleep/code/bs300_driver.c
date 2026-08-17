@@ -72,7 +72,7 @@ bool bs300_driver_init(void)
         PRINTF("[BS300] I2C init FAIL\r\n");
         return false;
     }
-    bs300_delay_ms(6000);
+    bs300_delay_ms(2000);
 
     /* Step 2: Unlock chip */
     if (!bs300_startup()) {
@@ -127,6 +127,10 @@ bool bs300_driver_init(void)
     bs300_mute();
     bs300_sync_program(bs300_get_dsp_state());
     bs300_active();
+
+    /* Step 7: Play current program prompt tone after RAM sync */
+    bs300_play_prompt_tone(bs300_get_active_prog(),
+                           bs300_get_module_volume(bs300_get_active_prog()));
     PRINTF("[BS300] init complete, DSP active\r\n");
 
     s_initialized = true;

@@ -117,8 +117,16 @@ extern "C"
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
 
-/* RM search timeout: 150000 * 200ms = 30000 seconds */
-#define RM_TIMEOUT_TICKS                150000
+/* RM timeout switch:
+ *   > 0 (valid):   count down 值×200ms, at 0 trigger rm_stop_requested →
+ *                  full cleanup → back to BLE low-power
+ *   0 (invalid):   no countdown, stay in RM mode indefinitely */
+#define RM_TIMEOUT_TICKS                0
+
+/* Low battery check interval: 1 minute (test value, product should be 600000=10min).
+ * Accumulated per state: RM mode +200ms per 200ms timer tick,
+ * BLE mode +current wake interval per iteration. */
+#define LOW_BATT_CHECK_MS               60000
 
 /* ----------------------------------------------------------------------------
  * Remote Microphone Defines
@@ -127,6 +135,7 @@ extern "C"
 
 /* Remote mic hopping list (Nordic channel/2 - 1) */
 #define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
+
 #define KEY_AES_128_ECB                 { 0x4138684C, \
                                           0xD874F539, \
                                           0x4EF3BC36, \

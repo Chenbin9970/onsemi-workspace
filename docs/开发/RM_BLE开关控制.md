@@ -9,12 +9,12 @@
 
 | 操作 | 触发方式 | 行为 |
 |------|---------|------|
-| 开机 | 冷启动 | 直接进 RM 搜索 + 助听模式，BS300 跑原程序，启动 1min 超时定时器 |
+| 开机 | 冷启动 | 直接进 RM 搜索 + 助听模式，BS300 跑原程序 |
 | RM 连上 | TX 连接 | 关定时器，切程序 3，DSP active，音频开始 |
 | TX 断开 | 自动 | 保持 RM 状态：mute → 消抖 1s → 切回助听 → RM_Enable 搜索；快速重连直接恢复 |
 | 停止 RM | BLE 写 0x00 | 完整清理：mute → 停管道 → RM_Disable → 切 BLE → 恢复原程序 → 低功耗睡眠 |
 | 启动 RM | BLE 写 0x01 | **仅 RM 完全关闭时有效**（`audio_streaming=0`）。不切程序，连接后才切。已连接/搜索中直接跳过 |
-| 超时退出 | 1min 无连接 | 自动走完整清理切回 BLE 低功耗 |
+| 超时退出 | **已关闭** | `RM_TIMEOUT_TICKS=0` 不倒计时，RM 常驻；超时退出功能 2026-08-17 起停用 |
 
 > **关键约束**：程序 3 是音频模式，RM 必须在程序 3 下运行。**统一在 LINK_ESTABLISHED 时切程序 3**（所有路径：冷启/BLE 0x01/搜索重连），搜索期间 BS300 跑助听程序防杂音。退出时先 mute 再拆硬件，防止噗声。
 
@@ -40,7 +40,11 @@ enum rm_disc_state {
 };
 
 #define RM_DISC_DEBOUNCE_THRESHOLD  500   // 消抖阈值（Main_Loop迭代次数，约1s）
-#define RM_TIMEOUT_TICKS            300   // 搜索超时 300×200ms = 1分钟
+
+/* RM timeout switch:
+ *   > 0: count down 值×200ms, at 0 → rm_stop_requested → 完整清理回 BLE
+ *   0:   no countdown, stay in RM indefinitely (当前配置) */
+#define RM_TIMEOUT_TICKS            0     // 2026-08-17 起关闭超时退出
 ```
 
 ---
@@ -154,29 +158,31 @@ if (app_env.rm_disc_state == RM_DISC_DEBOUNCE) {
 }
 ```
 
-#### 200ms 定时器驱动（timer_200ms 标志 + 搜索超时）
+#### 200ms 定时器驱动（timer_200ms 标志 + RM 侧周期任务）
 
 ```c
 if (app_env.timer_200ms) {
     app_env.timer_200ms = 0;
 
-    if (app_env.audio_streaming) {
-        if (app_env.rm_timeout_ticks > 0
-            && app_env.rm_disc_state != RM_DISC_NONE) {
-            app_env.rm_timeout_ticks--;
-            if (app_env.rm_timeout_ticks == 0) {
-                app_env.rm_stop_requested = 1;     // 到期不 re-arm
-            } else {
-                ke_timer_set(APP_TEST_TIMER, TASK_APP,
-                             TIMER_200MS_SETTING);
-            }
-        } else {
-            ke_timer_set(APP_TEST_TIMER, TASK_APP,
-                         TIMER_200MS_SETTING);      // CP 模式持续 re-arm
+    if (app_env.audio_streaming
+        && app_env.rm_timeout_ticks > 0
+        && app_env.rm_disc_state != RM_DISC_NONE) {
+        app_env.rm_timeout_ticks--;
+        if (app_env.rm_timeout_ticks == 0) {
+            app_env.rm_stop_requested = 1;
         }
     }
-    // BLE 模式: 不 re-arm，定时器自然死亡
+
+    /* Re-arm while RM active (even timeout disabled / connected streaming),
+     * so RM-side periodic tasks (low-batt check) keep running. */
+    if (app_env.audio_streaming && !app_env.rm_stop_requested) {
+        ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                     TIMER_200MS_SETTING);
+    }
 }
+```
+
+> **2026-08-17**：re-arm 条件从"仅超时倒计时中"放宽为"RM 活跃时常开"，保证 RM 模式下 200ms tick 持续触发，供**低电量检测**累积计时（见 `ADC电量检测开发记录.md` 低电量检测节）。由于 `RM_TIMEOUT_TICKS=0` 不倒计时，`rm_timeout_ticks > 0` 分支实际不触发，仅保留给将来重新开启超时时使用。
 ```
 
 > **设计要点**：`ke_timer_set` 在 **handler 内部 re-arm 自己会失败**（CP 模式下），因此 APP_Timer 只设 `timer_200ms = 1` 标志，真正的 `ke_timer_set` 重投在 Main_Loop 中执行。

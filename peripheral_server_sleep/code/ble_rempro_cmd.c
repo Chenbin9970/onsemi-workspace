@@ -34,8 +34,13 @@ void rempro_reasm_reset(void)
     reasm_pending = false;
 }
 
-#define TX_BUF_SIZE     100
+#define TX_BUF_SIZE     200
 static uint8_t tx_buf[TX_BUF_SIZE];
+
+static uint8_t s_tx_frame[TX_BUF_SIZE];   /* pending stuffed frame */
+static uint8_t s_tx_frame_len;
+static uint8_t s_tx_offset;
+static bool    s_tx_in_progress;
 
 /* -------- helpers -------- */
 
@@ -67,6 +72,8 @@ static uint8_t hdlc_stuff(uint8_t *dst, const uint8_t *src, uint8_t len)
     return w;
 }
 
+static void rempro_tx_send_next(void);
+
 /* Build, stuff, and send an HDLC response in ≤20B chunks. */
 static void hdlc_response(uint16_t cmd_id, uint8_t flag,
                           const uint8_t *data, uint8_t data_len)
@@ -92,20 +99,53 @@ static void hdlc_response(uint16_t cmd_id, uint8_t flag,
     *p++ = HDLC_SEPARATOR;
     uint8_t frame_len = (uint8_t)(p - tx_buf);
 
-    /* Step 3: split into ≤20B chunks and send */
+    /* Step 3: start chunked send — first chunk now, rest driven by
+     * rempro_env.sentSuccess (GATTC notification complete) in Main_Loop.
+     * No ke_timer, so low-power sleep is unaffected. */
     print_hex("TX frame", tx_buf, frame_len);
-    uint8_t offset = 0;
-    uint8_t idx = 0;
-    while (offset < frame_len) {
-        uint8_t chunk = frame_len - offset;
-        if (chunk > 20) chunk = 20;
-        print_hex("TX chunk", tx_buf + offset, chunk);
-        RemproService_SendNotification(ble_env.conidx,
-                                       REMPRO_IDX_ONOFF_VALUE_VAL,
-                                       tx_buf + offset, chunk);
-        offset += chunk;
-        idx++;
+    if (s_tx_in_progress) {
+        PRINTF("[REMPRO] TX busy — dropping previous pending frame\r\n");
     }
+    s_tx_frame_len = frame_len;
+    memcpy(s_tx_frame, tx_buf, frame_len);
+    s_tx_offset = 0;
+    s_tx_in_progress = true;
+    rempro_env.sentSuccess = 0;
+    rempro_tx_send_next();
+}
+
+/* Send next ≤20B chunk of the pending frame. */
+static void rempro_tx_send_next(void)
+{
+    if (ble_env.state != APPM_CONNECTED) {
+        s_tx_in_progress = false;
+        return;
+    }
+
+    uint8_t chunk = s_tx_frame_len - s_tx_offset;
+    if (chunk > 20) chunk = 20;
+
+    print_hex("TX chunk", s_tx_frame + s_tx_offset, chunk);
+    RemproService_SendNotification(ble_env.conidx,
+                                   REMPRO_IDX_ONOFF_VALUE_VAL,
+                                   s_tx_frame + s_tx_offset, chunk);
+    s_tx_offset += chunk;
+
+    if (s_tx_offset >= s_tx_frame_len)
+        s_tx_in_progress = false;
+}
+
+/* Poll from Main_Loop: send the next chunk once the previous notification
+ * completed (GATTC_CmpEvt sets rempro_env.sentSuccess). Each chunk then goes
+ * out in its own connection event — no ke_timer, no extra wake-ups. */
+void rempro_tx_poll(void)
+{
+    if (!s_tx_in_progress) return;
+    if (ble_env.state != APPM_CONNECTED) { s_tx_in_progress = false; return; }
+    if (!rempro_env.sentSuccess) return;
+
+    rempro_env.sentSuccess = 0;
+    rempro_tx_send_next();
 }
 
 /* HDLC byte-unstuffing: 7D 5E → 7E,  7D 5D → 7D.
@@ -394,11 +434,21 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
 }
 
+/* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
+ * Same sampling logic as GetBatteryInfo. */
+uint32_t read_battery_raw(void)
+{
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
+    Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
+                              ADC_NEG_INPUT_GND);
+    return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
+}
+
 /* ID:4  GetBatteryInfo */
 static void cmd_getbatteryinfo(void)
 {
     uint8_t resp_data[2];
-    uint32_t raw = ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
+    uint32_t raw = read_battery_raw();
     uint32_t pct;
     if (raw <= BAT_ADC_MIN) {
         pct = 1;
@@ -547,6 +597,53 @@ static int fitting_commit(uint8_t prog_idx, bool sync_dsp)
         PRINTF("[FITTING] flash-only, no I2C sync\r\n");
     }
     return 0;
+}
+
+/* ID:17  GetFittingData — read back gain/compress/MPO for one program.
+ * Response payload (hdlc adds SYS_ID/CMD_ID/Flag):
+ *   Scene_ID, LeftOrRight, Turn_Number, Gain_Number, Compress_Number,
+ *   MPO_Number, Gain[32], Compress[32] (kp1[16]+kp2[16]), MPO[16]
+ * Gain/MPO encoded as Flash raw (gain=value_in_MT+27, mpo=value_in_MT-30),
+ * same format as SET commands, so the App can round-trip. */
+static void cmd_getfittingdata(const uint8_t *data, uint8_t len)
+{
+    uint8_t d[86];
+    uint8_t pos = 0;
+    uint8_t i;
+
+    if (len < 2) { hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) {
+        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
+    }
+
+    uint8_t dev_type = data[0];
+    uint8_t scene_id = data[1];
+    if (scene_id >= 4) {
+        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
+    }
+
+    /* Load flash → struct (same data as SET gain/MPO/compress commands) */
+    bs300_prog_struct_t fit;
+    bs300_storage_load_program(scene_id, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &fit) < 0) {
+        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
+    }
+
+    d[pos++] = scene_id;         /* Scene_ID */
+    d[pos++] = dev_type;         /* LeftOrRight */
+    d[pos++] = 2;                /* Turn_Number */
+    d[pos++] = 32;               /* Gain_Number */
+    d[pos++] = 16;               /* Compress_Number */
+    d[pos++] = 16;               /* MPO_Number */
+
+    for (i = 0; i < 32; i++) d[pos++] = (uint8_t)(fit.wdrc.bin_gain[i] + 27);  /* Flash raw */
+    for (i = 0; i < 16; i++) d[pos++] = fit.wdrc.kp1_r_idx[i];
+    for (i = 0; i < 16; i++) d[pos++] = fit.wdrc.kp2_r_idx[i];
+    for (i = 0; i < 16; i++) d[pos++] = (uint8_t)(fit.wdrc.lmt_th_db[i] - 30); /* Flash raw */
+
+    PRINTF("[REMPRO] GetFittingData: dev=%u scene=%u → %u bytes\r\n",
+           dev_type, scene_id, pos);
+    hdlc_response(CMD_GETFITTINGDATA, 0, d, pos);
 }
 
 /* ID:6  SetGain */
@@ -947,6 +1044,10 @@ void rempro_cmd_process(void)
             break;
         case CMD_GETDEVICECONFIG:
             cmd_getdeviceconfig();
+            break;
+        case CMD_GETFITTINGDATA:
+            if (data) cmd_getfittingdata(data, data_len);
+            else hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0);
             break;
         case CMD_GETDEVICEONOFF:
             cmd_getdeviceonoff();

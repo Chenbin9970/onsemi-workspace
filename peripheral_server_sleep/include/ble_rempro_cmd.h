@@ -26,6 +26,7 @@ extern "C" {
 #define CMD_SETSTOPVOICE         14
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
+#define CMD_GETFITTINGDATA      17
 #define CMD_GETDEVICECONFIG     26
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
@@ -41,6 +42,14 @@ extern "C" {
 #define HDLC_SYS_ID_DEVICE      1
 
 void rempro_cmd_process(void);
+
+/* Call from Main_Loop: advance chunked rempro TX once the previous
+ * notification completed. No ke_timer — low-power safe. */
+void rempro_tx_poll(void);
+
+/* Re-trigger a fresh ADC conversion on the battery channel and return the raw
+ * count. Used by the low-battery check. */
+uint32_t read_battery_raw(void);
 
 /* Called from GATT callback — appends raw BLE chunk directly to
  * reassembly buffer.  Avoids the single-slot role_value race condition

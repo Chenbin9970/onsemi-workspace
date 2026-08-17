@@ -164,6 +164,10 @@ int bs300_is_connected(void);
  * ================================================================ */
 void bs300_play_prompt_tone(uint8_t program, uint8_t volume);
 
+/* Low-battery prompt tone — currently the max-volume prompt tone (0xFD12F2).
+ * Skips if a BS300 I2C session is in progress. */
+void bs300_play_low_batt_tone(void);
+
 /* ================================================================
  *  DSP state query (single source of truth)
  * ================================================================ */
