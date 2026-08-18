@@ -371,9 +371,12 @@ void Continue_Application(void)
 
     /* Stop forcing baseband wake-up. Keep BB awake if peer ear is connected
      * so both BLE connections stay alive in deep sleep. */
+#if defined(PEER_EAR_SYNC_ENABLE)
     if (ble_env.peer_ear_connected && ear_side == RM_LEFT) {
         BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_WAKEUP;
-    } else {
+    } else
+#endif /* PEER_EAR_SYNC_ENABLE */
+    {
         BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_VALUE | BB_DEEP_SLEEP;
     }
 

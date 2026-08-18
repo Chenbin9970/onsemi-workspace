@@ -11,7 +11,7 @@
  *
  * ----------------------------------------------------------------------------
  * startup.s
- * - GCC compatible CMSIS Cortex-M3 Core Device start-up file for the
+ * - GCC compatible CMSIS Cortex-M3 Core Device start-up file for the  
  *   ARM Cortex-M3 processor
  *
  * - Assumes the use of CodeSourcery/Mentor Sourcery G++ with its CodeSourcery
@@ -61,6 +61,13 @@ __heap_end:
 
 
 /* ----------------------------------------------------------------------------
+ * FOTA Image Descriptor
+ * ------------------------------------------------------------------------- */
+    .section ".rodata.fota.image-size"
+image_descriptor:
+    .long   __image_size
+
+/* ----------------------------------------------------------------------------
  * Vector Table
  * - Mapped to address 0 at Reset
  * ------------------------------------------------------------------------- */
@@ -78,8 +85,8 @@ ISR_Vector_Table:
     .long   MemManage_Handler               /*  4 Mem Manage Fault Handler */
     .long   BusFault_Handler                /*  5 Bus Fault Handler */
     .long   UsageFault_Handler              /*  6 Usage Fault Handler */
-    .long   0                               /*  7 Reserved */
-    .long   0                               /*  8 Reserved */
+    .long   Sys_Boot_app_version            /*  7 Pointer to version info */
+    .long   image_descriptor                /*  8 Pointer to image descriptor */
     .long   0                               /*  9 Reserved */
     .long   0                               /* 10 Reserved */
     .long   SVC_Handler                     /* 11 Supervisor Call Handler */
@@ -182,6 +189,8 @@ Reset_Handler:
     BFC R0, #2, #1
     MOV SP, R0
     LDR     R0, =SystemInit
+    BLX     R0
+    LDR     R0, =SystemFotaInit
     BLX     R0
     LDR     R0, =_start
     BX      R0
@@ -341,3 +350,4 @@ Default_Handler:
     IRQ     BLE_AUDIO2_IRQHandler
 #endif
     .end
+

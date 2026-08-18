@@ -128,9 +128,11 @@ void BLE_Initialize(void)
     ble_env.prev_state = APPM_INIT;
     ble_env.state = APPM_INIT;
 
+#ifdef PEER_EAR_SYNC_ENABLE
     /* Peer ear: initial delay before first connection attempt */
     ble_env.peer_ear_retry_ticks = PEER_EAR_INITIAL_DELAY;
     ble_env.peer_ear_conidx = GAP_INVALID_CONIDX;
+#endif /* PEER_EAR_SYNC_ENABLE */
 
     /* Set Bluetooth device type and address: depending on the device address
      * type selected by the application, either a public or private address is
@@ -160,7 +162,12 @@ void BLE_Initialize(void)
     /* Initialize GAPM configuration command to initialize the stack */
     gapmConfigCmd = malloc(sizeof(struct gapm_set_dev_config_cmd));
     gapmConfigCmd->operation = GAPM_SET_DEV_CONFIG;
+#ifdef PEER_EAR_SYNC_ENABLE
     gapmConfigCmd->role = (ear_side == RM_LEFT) ? GAP_ROLE_ALL : GAP_ROLE_PERIPHERAL;
+#else
+    /* PEER_EAR_SYNC_ENABLE off: 左耳不再作 Central，纯 Peripheral（取消双耳直连） */
+    gapmConfigCmd->role = GAP_ROLE_PERIPHERAL;
+#endif
     memcpy(gapmConfigCmd->addr.addr, bdaddr, sizeof(uint8_t) * BDADDR_LENGTH);
     gapmConfigCmd->addr_type = bdaddr_type;
     gapmConfigCmd->renew_dur = RENEW_DUR;
@@ -336,6 +343,7 @@ void Advertising_Start(void)
  * Peer Ear (Central Role) Connection Functions
  * ------------------------------------------------------------------------- */
 
+#ifdef PEER_EAR_SYNC_ENABLE
 /* ----------------------------------------------------------------------------
  * Function      : void DirectConnect_PeerEar(void)
  * ----------------------------------------------------------------------------
@@ -418,6 +426,7 @@ void PeerEar_TryConnect(void)
     }
     /* else: GAPM is busy (connecting), skip this attempt */
 }
+#endif /* PEER_EAR_SYNC_ENABLE */
 
 /* ----------------------------------------------------------------------------
  * Function      : int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
@@ -532,6 +541,7 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id,
         }
         break;
 
+#ifdef PEER_EAR_SYNC_ENABLE
         /* Connection attempt completed (success or failure) */
         case (GAPM_CONNECTION_DIRECT):
         {
@@ -578,6 +588,7 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id,
             }
         }
         break;
+#endif /* PEER_EAR_SYNC_ENABLE */
     }
 
     return (KE_MSG_CONSUMED);
@@ -700,6 +711,7 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         return (KE_MSG_CONSUMED);
     }
 
+#ifdef PEER_EAR_SYNC_ENABLE
     /* Determine connection type: peer ear (outgoing/central) vs phone (incoming/peripheral) */
     if (ble_env.peer_ear_state == PEER_EAR_CONNECTING)
     {
@@ -774,6 +786,7 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
             return (KE_MSG_CONSUMED);
         }
     }
+#endif /* PEER_EAR_SYNC_ENABLE */
 
     /* Phone connection (incoming, peripheral role) */
     ble_env.conidx = new_conidx;
@@ -909,6 +922,7 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
 {
     uint8_t conidx = KE_IDX_GET(src_id);
 
+#ifdef PEER_EAR_SYNC_ENABLE
     /* Check if this is the peer ear connection */
     if (ble_env.peer_ear_connected && conidx == ble_env.peer_ear_conidx)
     {
@@ -927,6 +941,7 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
         ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
         return (KE_MSG_CONSUMED);
     }
+#endif /* PEER_EAR_SYNC_ENABLE */
 
     /* Phone connection (peripheral role) */
     PRINTF("[DISCONNECT] reason=0x%02X\r\n", param->reason);

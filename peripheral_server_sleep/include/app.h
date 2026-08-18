@@ -29,9 +29,10 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-//#define CFG_FOTA
-#define DEBUG_UART_ENABLE
+#define CFG_FOTA
+//#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
+//#define PEER_EAR_SYNC_ENABLE   /* 左右耳同步 + 左耳 BLE Central 总开关；取消注释开启 */
 
 /* TX device MAC for BLE→RM fast switch */
 //#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */
@@ -151,8 +152,8 @@ extern "C"
 #define DEBUG_DIO_SECOND                11
 #define DEBUG_DIO_THIRD                 10
 
-/* Initial side channel */
-#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+/* Initial side channel — 0=左耳 1=右耳；烧左耳改 RM_LEFT，烧右耳改 RM_RIGHT */
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 
 #define DIO_SYNC_PULSE                  8

@@ -33,9 +33,12 @@ static void on_bs300_switch_done(void)
     bs300_async_done_callback();
     if (app_env.sync_from_remote > 0) {
         app_env.sync_from_remote--;
-    } else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+    }
+#ifdef PEER_EAR_SYNC_ENABLE
+    else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
         CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
     }
+#endif /* PEER_EAR_SYNC_ENABLE */
 }
 
 static void on_bs300_volume_done(void)
@@ -63,9 +66,12 @@ static void on_btn_switch_done(void)
     bs300_async_done_callback();
     if (app_env.sync_from_remote > 0) {
         app_env.sync_from_remote--;
-    } else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+    }
+#ifdef PEER_EAR_SYNC_ENABLE
+    else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
         CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
     }
+#endif /* PEER_EAR_SYNC_ENABLE */
     low_power_clk_param.low_power_enable = true;
 }
 
@@ -298,12 +304,15 @@ void Main_Loop(void)
                 }
                 bs300_active();
                 //RM_Enable(500);
+#ifdef PEER_EAR_SYNC_ENABLE
                 PRINTF("[RM] reconnect: peer_connected=%d peer_state=%d retry_ticks=%d\r\n",
                        ble_env.peer_ear_connected, ble_env.peer_ear_state,
                        ble_env.peer_ear_retry_ticks);
+#endif /* PEER_EAR_SYNC_ENABLE */
             }
         }
 
+#ifdef PEER_EAR_SYNC_ENABLE
         /* Peer ear countdown — per Main_Loop iteration.
          * Used during connection attempt (advertising at 100ms) and retry wait.
          * When connected, retry_ticks is irrelevant; BLE stack handles heartbeat. */
@@ -321,6 +330,7 @@ void Main_Loop(void)
             cancel->operation = GAPM_CANCEL;
             ke_msg_send(cancel);
         }
+#endif /* PEER_EAR_SYNC_ENABLE */
 
         /* 200ms tick: RM timeout only (CP mode, CPU always awake) */
         if (app_env.timer_200ms) {
@@ -359,6 +369,7 @@ void Main_Loop(void)
         /* Process deferred BS300 ops (aborted switch etc.) */
         bs300_process_deferred();
 
+#ifdef PEER_EAR_SYNC_ENABLE
         /* Peer ear connection state machine (central role).
          * Only the left ear (ear_side == RM_LEFT) acts as Central.
          * Countdown driven by 200ms timer. */
@@ -371,8 +382,13 @@ void Main_Loop(void)
             ble_env.peer_ear_retry_ticks = 1;
             PeerEar_TryConnect();
         }
+#endif /* PEER_EAR_SYNC_ENABLE */
 
+#if defined(PEER_EAR_SYNC_ENABLE)
         if (ble_env.state == APPM_CONNECTED || ble_env.peer_ear_connected)
+#else
+        if (ble_env.state == APPM_CONNECTED)
+#endif
         {
 #ifdef DEBUG_UART_ENABLE
             {
@@ -422,7 +438,12 @@ void Main_Loop(void)
             /* Update custom service characteristics, send notifications if
              * notification is enabled */
             if (cs_env.tx_value_changed
-                && ((cs_env.tx_cccd_value & 1) || ble_env.peer_ear_connected))
+#if defined(PEER_EAR_SYNC_ENABLE)
+                && ((cs_env.tx_cccd_value & 1) || ble_env.peer_ear_connected)
+#else
+                && (cs_env.tx_cccd_value & 1)
+#endif
+                )
             {
                 cs_env.tx_value_changed = 0;
 
@@ -438,13 +459,14 @@ void Main_Loop(void)
                                                    &cs_env.tx_value[0],
                                                    APP_CS_TX_VALUE_NOTF_LENGTH);
                 }
-
+#ifdef PEER_EAR_SYNC_ENABLE
                 if (ble_env.peer_ear_connected) {
                     CustomService_SendNotification(ble_env.peer_ear_conidx,
                                                    CS_IDX_TX_VALUE_VAL,
                                                    &cs_env.tx_value[0],
                                                    APP_CS_TX_VALUE_NOTF_LENGTH);
                 }
+#endif /* PEER_EAR_SYNC_ENABLE */
             }
         }
 
@@ -523,10 +545,12 @@ void Main_Loop(void)
                     cs_env.tx_value[3] = 0;
                     cs_env.tx_value[4] = 0;
                     cs_env.tx_value_changed = 1;
+#ifdef PEER_EAR_SYNC_ENABLE
                     if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
                         CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, next);
                         app_env.sync_from_remote++;
                     }
+#endif /* PEER_EAR_SYNC_ENABLE */
                     bs300_switch_program_async(next, on_btn_switch_done);
                     bs300_settings_persist();
                 }
@@ -560,9 +584,14 @@ void Main_Loop(void)
 #ifndef DEBUG_UART_ENABLE
         /* Deep sleep breaks dual BLE connections. When peer ear is connected,
          * use WFI instead so both phone and peer ear stay alive. */
+#if defined(PEER_EAR_SYNC_ENABLE)
         if (!(ble_env.peer_ear_connected && ear_side == RM_LEFT) &&
             (low_power_clk_param.low_power_enable ||
             (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
+#else
+        if ((low_power_clk_param.low_power_enable ||
+            (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
+#endif
         {
             Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_0);
 

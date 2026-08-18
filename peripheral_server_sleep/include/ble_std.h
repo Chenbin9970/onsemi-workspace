@@ -43,6 +43,7 @@ extern "C"
 /* Number of APP Task Instances */
 #define APP_IDX_MAX                     1
 
+#ifdef PEER_EAR_SYNC_ENABLE
 /* Peer ear (opposite side hearing aid) MAC addresses for central role connection.
  * Left ear connects to right ear MAC, right ear connects to left ear MAC.
  * Format: BLE little-endian (byte 0 = LSB of MAC), same as TX_BD_ADDRESS.
@@ -66,6 +67,7 @@ extern "C"
 /* Peer ear connection retry interval (units: 200ms timer ticks) */
 #define PEER_EAR_RETRY_TICKS        100  /* 100 * ~100ms advertising = ~10 seconds */
 #define PEER_EAR_INITIAL_DELAY      10  /* 10 * 100ms advertising = 1 second */
+#endif /* PEER_EAR_SYNC_ENABLE */
 
 /* Advertising channel map - 37, 38, 39 */
 #define APP_ADV_CHMAP                   0x07
@@ -192,9 +194,12 @@ enum appm_state
 enum ble_conn_type
 {
     BLE_CONN_TYPE_PHONE = 0,
+#ifdef PEER_EAR_SYNC_ENABLE
     BLE_CONN_TYPE_PEER_EAR = 1,
+#endif
 };
 
+#ifdef PEER_EAR_SYNC_ENABLE
 /* Peer ear connection flow states */
 enum peer_ear_state
 {
@@ -203,6 +208,7 @@ enum peer_ear_state
     PEER_EAR_CONNECTED,
     PEER_EAR_RETRY_WAIT,
 };
+#endif /* PEER_EAR_SYNC_ENABLE */
 
 /* List of message handlers that are used by the Bluetooth application manager */
 #define BLE_MESSAGE_HANDLER_LIST                                              \
@@ -271,6 +277,7 @@ struct ble_env_tag
     uint16_t actual_con_latency;
     uint16_t actual_sup_to;
 
+#ifdef PEER_EAR_SYNC_ENABLE
     /* Peer ear (opposite side) connection tracking */
     uint8_t peer_ear_conidx;
     bool    peer_ear_connected;
@@ -280,15 +287,19 @@ struct ble_env_tag
 
     /* Retry counter: counts 200ms Main_Loop iterations */
     uint16_t peer_ear_retry_ticks;
+#endif /* PEER_EAR_SYNC_ENABLE */
 
     /* Tracks whether GAPM is currently advertising (GAPM_STATE_ADVERTISING).
      * Set true in Advertising_Start, cleared on cancel/connection/disconnect. */
     bool    is_advertising;
 
+#ifdef PEER_EAR_SYNC_ENABLE
     /* GATT discovery complete for peer ear (Central→Peripheral) */
     bool    peer_ear_gatt_ready;
+#endif /* PEER_EAR_SYNC_ENABLE */
 };
 
+#ifdef PEER_EAR_SYNC_ENABLE
 /* Peer ear GATT Client environment — discovered service/characteristic handles */
 struct cs_peer_env_tag
 {
@@ -301,6 +312,7 @@ struct cs_peer_env_tag
 };
 
 extern struct cs_peer_env_tag cs_peer_env;
+#endif /* PEER_EAR_SYNC_ENABLE */
 
 /* Support for the application manager and the application environment */
 extern struct ble_env_tag ble_env;
@@ -325,6 +337,7 @@ extern void BLE_SetServiceState(bool enable, uint8_t conidx);
 
 extern bool Service_Enable(uint8_t conidx);
 
+#ifdef PEER_EAR_SYNC_ENABLE
 /* Peer ear (central role) connection functions */
 extern void DirectConnect_PeerEar(void);
 extern void PeerEar_TryConnect(void);
@@ -332,6 +345,7 @@ extern void PeerEar_TryConnect(void);
 /* Peer ear GATT Client functions */
 extern void CS_Peer_Enable(uint8_t conidx);
 extern void CS_Peer_WriteRX(uint8_t conidx, uint8_t cmd, uint8_t arg);
+#endif /* PEER_EAR_SYNC_ENABLE */
 
 /* Bluetooth event and message handlers */
 extern int GAPM_ProfileAddedInd(ke_msg_id_t const msgid,
