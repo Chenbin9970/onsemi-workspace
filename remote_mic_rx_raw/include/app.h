@@ -88,6 +88,25 @@ extern "C"
 #define ASRC_IN_IDX                     3
 #define ASRC_OUT_IDX                    4
 #define OD_DMA_NUM                      1
+#define PCM_DMA_NUM                     5
+
+/* PCM output: mono 12 kHz, each sample in word0, word1 = 0.
+   One frame = 120 mono samples = 240 words (word0/word1 pairs). */
+#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 2)
+
+/* pcm_tx_buf -> PCM->TX_DATA. One PCM_FRAME_WORDS transfer per arm; the
+   complete interrupt swaps the double buffer. */
+#define RX_DMA_PCM_STEREO               (DMA_DEST_PCM |             \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
 
 /* Timer number */
 #define TIMER_REGUL                     2
@@ -224,6 +243,55 @@ extern "C"
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
 
+/* Test switch: 1 = send a 1 kHz tone on word0 only (word1 = 0) to verify
+   whether the host reads word0 (mono) or both words (stereo). */
+#ifndef PCM_TEST_TONE
+#define PCM_TEST_TONE                   0
+#endif
+
+/* Test switch: 1 = 1k->10k stepped frequency sweep, one tone per second,
+   looping. Requires PCM_TEST_TONE = 1. */
+#ifndef PCM_TEST_SWEEP
+#define PCM_TEST_SWEEP                  0
+#endif
+
+/* Test switch: 1 = feed a synthetic 1 kHz sine into the Path B software
+   resample (bypassing the decoded data). Isolates whether the noise/pitch
+   problem is in the transport (resample + double buffer + PCM DMA) or in the
+   decoded data. Requires the RM link (DSP0_IRQ drives the resample). */
+#ifndef PCM_TEST_RESAMPLE_SINE
+#define PCM_TEST_RESAMPLE_SINE          0
+#endif
+
+#if (PCM_TEST_SWEEP) && !(PCM_TEST_TONE)
+#error "PCM_TEST_SWEEP requires PCM_TEST_TONE = 1"
+#endif
+
+#if (PCM_TEST_TONE)
+#define PCM_TEST_BUF_LEN                24
+/* 1 kHz tone on word0 only, word1 = 0. 24k word rate, 12 points per cycle.
+   If the host reproduces a clean 1 kHz tone it reads word0 (mono). */
+#define RX_DMA_PCM_TEST                 (DMA_DEST_PCM |            \
+                                         DMA_TRANSFER_M_TO_P |     \
+                                         DMA_LITTLE_ENDIAN |       \
+                                         DMA_COMPLETE_INT_DISABLE |\
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_DEST_WORD_SIZE_16 |   \
+                                         DMA_SRC_WORD_SIZE_16 |    \
+                                         DMA_SRC_ADDR_INC |        \
+                                         DMA_DEST_ADDR_STATIC |    \
+                                         DMA_ADDR_CIRC |           \
+                                         DMA_DISABLE)
+#endif    /* if (PCM_TEST_TONE) */
+
+#if (PCM_TEST_SWEEP)
+#define PCM_SWEEP_TONES                 10
+/* TIMER3: free in this project. TIMER0/1 belong to the RM radio library,
+   TIMER2 is the decode pacing timer. */
+#define PCM_SWEEP_TIMER                 3
+extern int16_t pcm_sweep_buf[PCM_SWEEP_TONES][PCM_TEST_BUF_LEN];
+#endif    /* if (PCM_TEST_SWEEP) */
+
 #define BUTTON_DIO                      5
 
 #if (OUTPUT_INTRF == OD_TX_RAW_OUTPUT)
@@ -328,6 +396,10 @@ extern void *ISR_Vector_Table;
 extern uint8_t ear_side;
 extern LPDSP32Context lpdsp32;
 extern int16_t BufferOut[];
+
+#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+extern int16_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* ----------------------------------------------------------------------------
  * Function prototype definitions

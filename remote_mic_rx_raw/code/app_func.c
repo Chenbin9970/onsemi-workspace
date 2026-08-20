@@ -76,6 +76,65 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX) (void)
     Sys_DMA_ClearChannelStatus(ASRC_IN_IDX);
 }
 
+#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+/* PCM double-buffer state. pcm_fill is the buffer the software resample
+   fills; pcm_active is the buffer PCM_DMA_NUM streams. */
+static uint8_t  pcm_active   = 0;
+static uint8_t  pcm_fill     = 1;
+static uint16_t pcm_fill_pos = 0;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void DMA_IRQ_FUNC(PCM_DMA_NUM)
+ * ----------------------------------------------------------------------------
+ * Description   : PCM TX DMA complete. The active buffer finished streaming
+ *                 to the PCM; if the software has filled the other buffer,
+ *                 swap to it and re-arm. Only re-armed after completion, so
+ *                 the DMA is never re-armed mid-transfer.
+ * ------------------------------------------------------------------------- */
+void DMA_IRQ_FUNC(PCM_DMA_NUM) (void)
+{
+    if (pcm_fill_pos >= PCM_FRAME_WORDS)
+    {
+        pcm_active = pcm_fill;
+        pcm_fill  = !pcm_fill;
+        pcm_fill_pos = 0;
+    }
+
+    Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM,
+                                     (uint32_t)&pcm_tx_buf[pcm_active][0]);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+}
+#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
+
+#if (PCM_TEST_TONE) && (PCM_TEST_SWEEP)
+/* Sweep DMA source index, advanced once per second by TIMER3. Starts at 0,
+   matching the 1 kHz table that DMA_ASRC_OUT_IDX is armed with at init. */
+static uint8_t pcm_sweep_idx = 0;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void TIMER_IRQ_FUNC(PCM_SWEEP_TIMER)(void)
+ * ----------------------------------------------------------------------------
+ * Description   : 1 s tick of the stepped sweep. Advance to the next tone
+ *                 (1k -> ... -> 10k -> 1k) and point the circular PCM DMA at
+ *                 its 24-word table. Only SRC_BASE_ADDR is updated: the
+ *                 ADDR_CIRC channel reloads its source from the base on the
+ *                 next wrap (within 1 ms), so the channel enable state is
+ *                 never touched.
+ * ------------------------------------------------------------------------- */
+void TIMER_IRQ_FUNC(PCM_SWEEP_TIMER)(void)
+{
+    pcm_sweep_idx++;
+    if (pcm_sweep_idx >= PCM_SWEEP_TONES)
+    {
+        pcm_sweep_idx = 0;
+    }
+
+    Sys_DMA_Set_ChannelSourceAddress(ASRC_OUT_IDX,
+                                     (uint32_t)&pcm_sweep_buf[pcm_sweep_idx][0]);
+}
+#endif    /* if (PCM_TEST_TONE) && (PCM_TEST_SWEEP) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void AUDIOSINK_PHASE_IRQHandler(void)
  * ----------------------------------------------------------------------------
@@ -273,12 +332,22 @@ void ASRC_Reconfig(void)
      * and the "ASRC Settings" formula
      */
 
+#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+    /* PCM path: down-sample 16k mono to 12k (DEC_MODE2, the only valid mode
+       for 12/16=0.75). The 12k stream goes straight to the 24k-word PCM
+       frame, so word1 underruns (known: T9). */
+    Ck = audio_sink_cnt;
+    int64_t asrc_inc_carrier = ((((Cr - Ck) << 28) / Ck) << 0);
+    asrc_inc_carrier &= 0xFFFFFFFF;
+    Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+#else    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
     /* Configure ASRC base on new Ck */
     int64_t asrc_inc_carrier = ((((Cr - Ck) << 29) / Ck) << 0);
     asrc_inc_carrier &= 0xFFFFFFFF;
 
     /* Configure the ASRC according to the expected range in wide band mode */
     Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 }
 
 /* ----------------------------------------------------------------------------

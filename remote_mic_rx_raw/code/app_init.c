@@ -34,6 +34,64 @@ int16_t BufferOut[2 * FRAME_LENGTH] =
     0, 49, 90, 117, 127, 117, 90, 49, 0, -49, -90, -117, -127, -117, -90, -49,
 };
 
+#if (PCM_TEST_TONE)
+/* Format probe: word0 = 0 (silence), word1 = 1 kHz sine. If the host
+   reproduces the 1 kHz tone, it reads word1 (stereo); if it stays silent, it
+   only reads word0 (mono + word1 padding). */
+int16_t pcm_test_buf[PCM_TEST_BUF_LEN] = {
+    0, 0, 0, 3000, 0, 5196, 0, 6000, 0, 5196, 0, 3000,
+    0, 0, 0, -3000, 0, -5196, 0, -6000, 0, -5196, 0, -3000,
+};
+
+#if (PCM_TEST_SWEEP)
+/* 1k->10k stepped sweep. Each row is one tone at the 24k word rate; 24 words
+   hold an exact integer number of cycles (1k=1, 2k=2, ..., 10k=10) so the
+   circular DMA has no phase jump. Every word carries the sine (word0 =
+   word1) so the full 1-10k range is present on the 24k word stream. */
+int16_t pcm_sweep_buf[PCM_SWEEP_TONES][PCM_TEST_BUF_LEN] = {
+    { 0, 1553, 3000, 4243, 5196, 5796, 6000, 5796, 5196, 4243, 3000, 1553,
+      0, -1553, -3000, -4243, -5196, -5796, -6000, -5796, -5196, -4243,
+      -3000, -1553 },                                       /* 1 kHz */
+    { 0, 3000, 5196, 6000, 5196, 3000, 0, -3000, -5196, -6000, -5196, -3000,
+      0, 3000, 5196, 6000, 5196, 3000, 0, -3000, -5196, -6000, -5196,
+      -3000 },                                              /* 2 kHz */
+    { 0, 4243, 6000, 4243, 0, -4243, -6000, -4243, 0, 4243, 6000, 4243,
+      0, -4243, -6000, -4243, 0, 4243, 6000, 4243, 0, -4243, -6000,
+      -4243 },                                              /* 3 kHz */
+    { 0, 5196, 5196, 0, -5196, -5196, 0, 5196, 5196, 0, -5196, -5196,
+      0, 5196, 5196, 0, -5196, -5196, 0, 5196, 5196, 0, -5196, -5196 },
+                                                            /* 4 kHz */
+    { 0, 5796, 3000, -4243, -5196, 1553, 6000, 1553, -5196, -4243, 3000,
+      5796, 0, -5796, -3000, 4243, 5196, -1553, -6000, -1553, 5196, 4243,
+      -3000, -5796 },                                       /* 5 kHz */
+    { 0, 6000, 0, -6000, 0, 6000, 0, -6000, 0, 6000, 0, -6000,
+      0, 6000, 0, -6000, 0, 6000, 0, -6000, 0, 6000, 0, -6000 },
+                                                            /* 6 kHz */
+    { 0, 5796, -3000, -4243, 5196, 1553, -6000, 1553, 5196, -4243, -3000,
+      5796, 0, -5796, 3000, 4243, -5196, -1553, 6000, -1553, -5196, 4243,
+      3000, -5796 },                                        /* 7 kHz */
+    { 0, 5196, -5196, 0, 5196, -5196, 0, 5196, -5196, 0, 5196, -5196,
+      0, 5196, -5196, 0, 5196, -5196, 0, 5196, -5196, 0, 5196, -5196 },
+                                                            /* 8 kHz */
+    { 0, 4243, -6000, 4243, 0, -4243, 6000, -4243, 0, 4243, -6000, 4243,
+      0, -4243, 6000, -4243, 0, 4243, -6000, 4243, 0, -4243, 6000,
+      -4243 },                                              /* 9 kHz */
+    { 0, 3000, -5196, 6000, -5196, 3000, 0, -3000, 5196, -6000, 5196,
+      -3000, 0, 3000, -5196, 6000, -5196, 3000, 0, -3000, 5196, -6000,
+      5196, -3000 },                                        /* 10 kHz */
+};
+#endif    /* if (PCM_TEST_SWEEP) */
+#endif    /* if (PCM_TEST_TONE) */
+
+#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+/* Double-buffered PCM output. Each buffer holds one 10 ms frame of mono
+   12 kHz audio as [sample, sample] word0/word1 pairs (stereo copy, so the
+   2-word frame is fully populated). The software resample fills the idle
+   buffer; PCM_DMA_NUM sends the active one, and its complete interrupt
+   swaps them. */
+int16_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void App_CodecInitialize(void)
  * ----------------------------------------------------------------------------
@@ -249,13 +307,21 @@ void Initialize_ASRC(uint32_t AsrcOutDest)
     Sys_DMA_ClearChannelStatus(ASRC_IN_IDX);
 
     /* Setup DMA channel for transferring data from ASRC to a port. */
+#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+    /* PCM: ASRC INT_MODE outputs 24k words/s, so one 10 ms frame = 240 words
+       (3*FRAME_LENGTH/2). The 16k-era length 2*FRAME_LENGTH=320 would make the
+       circular DMA's counter cross frame boundaries and scramble data. */
+    uint32_t asrc_out_len = 3 * FRAME_LENGTH / 2;
+#else
+    uint32_t asrc_out_len = 2 * FRAME_LENGTH;
+#endif
     Sys_DMA_ChannelConfig(
         ASRC_OUT_IDX,
         RX_DMA_ASRC_OUT,
-        2 * FRAME_LENGTH,
+        asrc_out_len,
         0,
         (uint32_t)&ASRC->OUT,
-        AsrcOutDest //SPI or OD
+        AsrcOutDest //SPI or OD or PCM
         );
 
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
@@ -276,6 +342,38 @@ void Initialize_Receiver_Audio_Output(void)
     /* Enable DSP interrupt. */
     NVIC_SetPriority(DSP0_IRQn, 2);
     NVIC_EnableIRQ(DSP0_IRQn);
+
+#if (PCM_TEST_TONE)
+    /* Test mode: bypass decode + ASRC, stream generated tones straight to
+     * the PCM slave output. */
+    Initialize_Raw_PCM_Output_Type();
+
+#if (PCM_TEST_SWEEP)
+    /* 1k->10k stepped sweep: stream the 1 kHz table first; TIMER3 advances
+       the DMA source to the next tone every second. */
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_PCM_TEST, PCM_TEST_BUF_LEN, 0,
+                          (uint32_t)&pcm_sweep_buf[0][0], (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    /* SLOWCLK = 2 MHz, /2 -> 1 MHz, timeout 10,000,000 -> ~10 s tick. */
+    Sys_Timer_Set_Control(PCM_SWEEP_TIMER, TIMER_FREE_RUN |
+                          (10000000 - 1) | TIMER_SLOWCLK_DIV2);
+    NVIC_SetPriority(TIMER_IRQn(PCM_SWEEP_TIMER), 3);
+    NVIC_ClearPendingIRQ(TIMER_IRQn(PCM_SWEEP_TIMER));
+    NVIC_EnableIRQ(TIMER_IRQn(PCM_SWEEP_TIMER));
+    Sys_Timers_Start(1 << PCM_SWEEP_TIMER);
+#else    /* if (PCM_TEST_SWEEP) */
+    /* Verify whether the host reads word0 (mono) or both words (stereo):
+     * send a 1 kHz tone on word0 only, word1 = 0, bypassing the decode +
+     * ASRC pipeline. */
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_PCM_TEST, PCM_TEST_BUF_LEN, 0,
+                          (uint32_t)pcm_test_buf, (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#endif    /* if (PCM_TEST_SWEEP) */
+    return;
+#else    /* if (PCM_TEST_TONE) */
 
     /* Initialize Codec Framework and load code into LPDSP32 */
 	App_CodecInitialize();
@@ -299,6 +397,7 @@ void Initialize_Receiver_Audio_Output(void)
 
     /* Configure the ASRC and the required DMA channels */
 	Initialize_ASRC(AsrcOutDest);
+#endif    /* if (PCM_TEST_TONE) */
 }
 
 /* ----------------------------------------------------------------------------
