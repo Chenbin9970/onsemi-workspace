@@ -90,19 +90,20 @@ extern "C"
 #define OD_DMA_NUM                      1
 #define PCM_DMA_NUM                     5
 
-/* PCM output: mono 12 kHz, each sample in word0, word1 = 0.
-   One frame = 120 mono samples = 240 words (word0/word1 pairs). */
-#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 2)
+/* PCM output: mono 12 kHz. Each 32-bit PCM->TX_DATA write is one 2x16-bit
+   frame [word0=s, word1=s] at 12k FS, so one 10 ms buffer = 120 writes
+   (= 120 mono samples). */
+#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
 
-/* pcm_tx_buf -> PCM->TX_DATA. One PCM_FRAME_WORDS transfer per arm; the
-   complete interrupt swaps the double buffer. */
+/* pcm_tx_buf -> PCM->TX_DATA. One PCM_FRAME_WORDS (32-bit frame) transfer
+   per arm; the complete interrupt swaps the double buffer. */
 #define RX_DMA_PCM_STEREO               (DMA_DEST_PCM |             \
                                          DMA_TRANSFER_M_TO_P |      \
                                          DMA_LITTLE_ENDIAN |        \
                                          DMA_COMPLETE_INT_ENABLE |  \
                                          DMA_COUNTER_INT_DISABLE |  \
-                                         DMA_DEST_WORD_SIZE_16 |    \
-                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
                                          DMA_SRC_ADDR_INC |         \
                                          DMA_DEST_ADDR_STATIC |     \
                                          DMA_ADDR_LIN |             \
@@ -139,17 +140,19 @@ extern "C"
                                          DMA_ADDR_CIRC |            \
                                          DMA_DISABLE)
 #elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+/* ASRC->OUT -> pcm_raw_buf (P_TO_M). One-shot linear transfer; the DMA4
+   complete handler packs the 16-bit mono samples into 32-bit frames and
+   re-arms this channel. */
 #define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
-                                         DMA_DEST_PCM |             \
-                                         DMA_TRANSFER_P_TO_P |      \
+                                         DMA_TRANSFER_P_TO_M |      \
                                          DMA_LITTLE_ENDIAN |        \
-                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COMPLETE_INT_ENABLE |  \
                                          DMA_COUNTER_INT_DISABLE |  \
                                          DMA_DEST_WORD_SIZE_16 |    \
                                          DMA_SRC_WORD_SIZE_16 |     \
                                          DMA_SRC_ADDR_STATIC |      \
-                                         DMA_DEST_ADDR_STATIC |     \
-                                         DMA_ADDR_CIRC |            \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_LIN |             \
                                          DMA_DISABLE)
 #else    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
 
@@ -398,7 +401,8 @@ extern LPDSP32Context lpdsp32;
 extern int16_t BufferOut[];
 
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-extern int16_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+extern int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
+extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
 #endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* ----------------------------------------------------------------------------

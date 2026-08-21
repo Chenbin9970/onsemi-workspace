@@ -78,10 +78,12 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX) (void)
 
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
 /* PCM double-buffer state. pcm_fill is the buffer the software resample
-   fills; pcm_active is the buffer PCM_DMA_NUM streams. */
-static uint8_t  pcm_active   = 0;
-static uint8_t  pcm_fill     = 1;
-static uint16_t pcm_fill_pos = 0;
+   fills; pcm_active is the buffer PCM_DMA_NUM streams. pcm_raw_active is the
+   raw ASRC sink buffer DMA4 is currently filling. */
+static uint8_t  pcm_active     = 0;
+static uint8_t  pcm_fill       = 1;
+static uint16_t pcm_fill_pos   = 0;
+static uint8_t  pcm_raw_active = 0;
 
 /* ----------------------------------------------------------------------------
  * Function      : void DMA_IRQ_FUNC(PCM_DMA_NUM)
@@ -105,6 +107,35 @@ void DMA_IRQ_FUNC(PCM_DMA_NUM) (void)
     Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
     Sys_DMA_ChannelEnable(PCM_DMA_NUM);
 }
+
+#if !(PCM_TEST_TONE)
+/* ----------------------------------------------------------------------------
+ * Function      : void DMA_IRQ_FUNC(ASRC_OUT_IDX)
+ * ----------------------------------------------------------------------------
+ * Description   : ASRC output DMA complete. One 10 ms frame of 12 kHz mono
+ *                 has landed in pcm_raw_buf. Pack each 16-bit sample into a
+ *                 32-bit PCM frame [word0=s, word1=s] in the idle buffer, then
+ *                 re-arm this channel for the next frame.
+ * ------------------------------------------------------------------------- */
+void DMA_IRQ_FUNC(ASRC_OUT_IDX) (void)
+{
+    /* Re-arm ch4 to the other raw buffer first so the ASRC keeps being
+       drained with no loss window, then pack the just-filled buffer. */
+    pcm_raw_active ^= 1;
+    Sys_DMA_Set_ChannelDestAddress(ASRC_OUT_IDX,
+                                   (uint32_t)&pcm_raw_buf[pcm_raw_active][0]);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    uint8_t done = pcm_raw_active ^ 1;
+    for (uint16_t i = 0; i < PCM_FRAME_WORDS; i++)
+    {
+        uint32_t s = (uint16_t)pcm_raw_buf[done][i];
+        pcm_tx_buf[pcm_fill][i] = (s << 16) | s;
+    }
+    pcm_fill_pos = PCM_FRAME_WORDS;
+}
+#endif    /* if !(PCM_TEST_TONE) */
 #endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 #if (PCM_TEST_TONE) && (PCM_TEST_SWEEP)
@@ -454,6 +485,16 @@ void App_Process_Link_Disconnected(void)
     NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
     Sys_Timers_Stop(1 << TIMER_REGUL);
 
+#if !(PCM_TEST_TONE)
+    /* Freeze the PCM output pipeline and silence the double buffer so the
+       last frame is not repeated. */
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+    NVIC_DisableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_DisableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    memset(pcm_tx_buf, 0, sizeof(pcm_tx_buf));
+#endif    /* if !(PCM_TEST_TONE) */
+
     /* Reset content of the output buffer to prevent the last packet over-run */
     ClearBufferOut();
 }
@@ -480,6 +521,28 @@ void App_Process_Connected(void)
 
     /* Enable ASRC IN DMA interrupts */
     NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
+
+#if !(PCM_TEST_TONE)
+    /* Enable the PCM output DMA interrupts and start the double-buffer
+       pipeline: ch4 (ASRC->pcm_raw_buf) and ch5 (pcm_tx_buf->PCM). */
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+
+    pcm_active     = 0;
+    pcm_fill       = 1;
+    pcm_fill_pos   = 0;
+    pcm_raw_active = 0;
+
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+    Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM, (uint32_t)&pcm_tx_buf[0][0]);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+#endif    /* if !(PCM_TEST_TONE) */
 
     /* Enable LPDSP32 interrupt */
     NVIC_EnableIRQ(DSP0_IRQn);

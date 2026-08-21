@@ -84,12 +84,17 @@ int16_t pcm_sweep_buf[PCM_SWEEP_TONES][PCM_TEST_BUF_LEN] = {
 #endif    /* if (PCM_TEST_TONE) */
 
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+/* Raw 12 kHz mono sink from the ASRC (16-bit samples), double buffered so
+   DMA4 can re-arm to one buffer while its complete handler packs the other,
+   avoiding an ASRC sample-loss window. Each buffer is one 10 ms frame. */
+int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
+
 /* Double-buffered PCM output. Each buffer holds one 10 ms frame of mono
-   12 kHz audio as [sample, sample] word0/word1 pairs (stereo copy, so the
-   2-word frame is fully populated). The software resample fills the idle
-   buffer; PCM_DMA_NUM sends the active one, and its complete interrupt
-   swaps them. */
-int16_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+   12 kHz audio packed as one 32-bit write per PCM frame: [word0=s, word1=s]
+   (stereo copy, so the 2x16-bit frame is fully populated). DMA4 packs the
+   idle buffer; PCM_DMA_NUM (ch5) sends the active one, and its complete
+   interrupt swaps them. */
+uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
 #endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* ----------------------------------------------------------------------------
@@ -251,6 +256,14 @@ void Initialize_Raw_PCM_Output_Type(void)
                       PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
     Sys_PCM_Config(PCM_CFG_TX);
     Sys_PCM_Enable();
+
+#if !(PCM_TEST_TONE)
+    /* Path B output DMA: pcm_tx_buf -> PCM->TX_DATA (M_TO_P, 32-bit frame
+       writes). Configured here, armed at link connect so test-tone mode
+       (which drives ASRC_OUT_IDX straight to PCM) is unaffected. */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
+#endif    /* if !(PCM_TEST_TONE) */
 }
 
 /* ----------------------------------------------------------------------------
@@ -308,10 +321,10 @@ void Initialize_ASRC(uint32_t AsrcOutDest)
 
     /* Setup DMA channel for transferring data from ASRC to a port. */
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* PCM: ASRC INT_MODE outputs 24k words/s, so one 10 ms frame = 240 words
-       (3*FRAME_LENGTH/2). The 16k-era length 2*FRAME_LENGTH=320 would make the
-       circular DMA's counter cross frame boundaries and scramble data. */
-    uint32_t asrc_out_len = 3 * FRAME_LENGTH / 2;
+    /* PCM: ASRC outputs 12k mono samples/s, so one 10 ms frame = 120 samples
+       into pcm_raw_buf (P_TO_M, linear). DMA4 completes, the handler packs
+       them to 32-bit frames, then re-arms. */
+    uint32_t asrc_out_len = PCM_FRAME_WORDS;
 #else
     uint32_t asrc_out_len = 2 * FRAME_LENGTH;
 #endif
@@ -385,7 +398,7 @@ void Initialize_Receiver_Audio_Output(void)
     AsrcOutDest = (uint32_t)&SPI0->TX_DATA;
     Initialize_Raw_SPI_Output_Type();
 #elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    AsrcOutDest = (uint32_t)&PCM->TX_DATA;
+    AsrcOutDest = (uint32_t)pcm_raw_buf;
     Initialize_Raw_PCM_Output_Type();
 #else    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
     AsrcOutDest = (uint32_t)BufferOut;
