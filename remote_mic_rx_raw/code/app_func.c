@@ -95,6 +95,18 @@ static uint8_t  pcm_raw_active = 0;
  * ------------------------------------------------------------------------- */
 void DMA_IRQ_FUNC(PCM_DMA_NUM) (void)
 {
+    Sys_GPIO_Toggle(9);   /* debug: ch5 PCM complete */
+
+#if (PCM_TEST_TONE)
+    /* Test mode: re-arm ch5 from pcm_test_buf. Full reconfig reloads the
+       transfer counter so the one-shot LIN channel restarts cleanly. */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_TEST, PCM_TEST_BUF_LEN, 0,
+                          (uint32_t)pcm_test_buf, (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    return;
+#endif    /* if (PCM_TEST_TONE) */
+
     if (pcm_fill_pos >= PCM_FRAME_WORDS)
     {
         pcm_active = pcm_fill;
@@ -102,8 +114,9 @@ void DMA_IRQ_FUNC(PCM_DMA_NUM) (void)
         pcm_fill_pos = 0;
     }
 
-    Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM,
-                                     (uint32_t)&pcm_tx_buf[pcm_active][0]);
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[pcm_active][0],
+                          (uint32_t)&PCM->TX_DATA);
     Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
     Sys_DMA_ChannelEnable(PCM_DMA_NUM);
 }
@@ -119,19 +132,26 @@ void DMA_IRQ_FUNC(PCM_DMA_NUM) (void)
  * ------------------------------------------------------------------------- */
 void DMA_IRQ_FUNC(ASRC_OUT_IDX) (void)
 {
+    Sys_GPIO_Toggle(8);  /* debug: ch4 ASRC->raw complete (DIO15 is RM debug) */
+
     /* Re-arm ch4 to the other raw buffer first so the ASRC keeps being
-       drained with no loss window, then pack the just-filled buffer. */
+       drained with no loss window, then pack the just-filled buffer. Full
+       reconfig reloads the transfer counter (a completed LIN channel may not
+       reload on re-enable alone, causing a spurious immediate re-complete). */
     pcm_raw_active ^= 1;
-    Sys_DMA_Set_ChannelDestAddress(ASRC_OUT_IDX,
-                                   (uint32_t)&pcm_raw_buf[pcm_raw_active][0]);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT,
+                          (uint32_t)&pcm_raw_buf[pcm_raw_active][0]);
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
 
     uint8_t done = pcm_raw_active ^ 1;
     for (uint16_t i = 0; i < PCM_FRAME_WORDS; i++)
     {
+        /* Host reads one 32-bit word per FS at 12k: [sample in high 16 bits,
+           0 in low 16 bits] (one channel = audio, other = silence). */
         uint32_t s = (uint16_t)pcm_raw_buf[done][i];
-        pcm_tx_buf[pcm_fill][i] = (s << 16) | s;
+        pcm_tx_buf[pcm_fill][i] = s << 16;
     }
     pcm_fill_pos = PCM_FRAME_WORDS;
 }
@@ -240,6 +260,8 @@ void AUDIOSINK_PERIOD_IRQHandler(void)
  * ------------------------------------------------------------------------- */
 void DSP0_IRQHandler(void)
 {
+    Sys_GPIO_Toggle(6);   /* debug: decode done */
+
     if (lpdsp32.state == DSP_STARTING)
     {
         lpdsp32.state = DSP_IDLE;
@@ -364,9 +386,7 @@ void ASRC_Reconfig(void)
      */
 
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* PCM path: down-sample 16k mono to 12k (DEC_MODE2, the only valid mode
-       for 12/16=0.75). The 12k stream goes straight to the 24k-word PCM
-       frame, so word1 underruns (known: T9). */
+    /* PCM path: down-sample 16k to 12k (DEC_MODE2). */
     Ck = audio_sink_cnt;
     int64_t asrc_inc_carrier = ((((Cr - Ck) << 28) / Ck) << 0);
     asrc_inc_carrier &= 0xFFFFFFFF;

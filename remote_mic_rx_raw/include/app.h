@@ -237,11 +237,11 @@ extern "C"
    (12 kHz, 32 BCLK/frame). 16-bit x 2 words, short frame. */
 #define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_16 |        \
-                                         PCM_FRAME_ALIGN_LAST |    \
+                                         PCM_WORD_SIZE_32 |        \
+                                         PCM_FRAME_ALIGN_FIRST |   \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
-                                         PCM_SUBFRAME_DISABLE |    \
+										           PCM_SUBFRAME_ENABLE |    \
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
@@ -249,7 +249,7 @@ extern "C"
 /* Test switch: 1 = send a 1 kHz tone on word0 only (word1 = 0) to verify
    whether the host reads word0 (mono) or both words (stereo). */
 #ifndef PCM_TEST_TONE
-#define PCM_TEST_TONE                   0
+#define PCM_TEST_TONE                   1
 #endif
 
 /* Test switch: 1 = 1k->10k stepped frequency sweep, one tone per second,
@@ -271,19 +271,19 @@ extern "C"
 #endif
 
 #if (PCM_TEST_TONE)
-#define PCM_TEST_BUF_LEN                24
-/* 1 kHz tone on word0 only, word1 = 0. 24k word rate, 12 points per cycle.
-   If the host reproduces a clean 1 kHz tone it reads word0 (mono). */
+#define PCM_TEST_BUF_LEN                240
+/* Data transmission test: 32-bit frames to match the output path. Buffer
+   filled with 0x5555 (word0 = 0x5555, word1 = 0). */
 #define RX_DMA_PCM_TEST                 (DMA_DEST_PCM |            \
                                          DMA_TRANSFER_M_TO_P |     \
                                          DMA_LITTLE_ENDIAN |       \
-                                         DMA_COMPLETE_INT_DISABLE |\
+                                         DMA_COMPLETE_INT_ENABLE | \
                                          DMA_COUNTER_INT_DISABLE | \
-                                         DMA_DEST_WORD_SIZE_16 |   \
-                                         DMA_SRC_WORD_SIZE_16 |    \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
                                          DMA_SRC_ADDR_INC |        \
                                          DMA_DEST_ADDR_STATIC |    \
-                                         DMA_ADDR_CIRC |           \
+                                         DMA_ADDR_LIN |            \
                                          DMA_DISABLE)
 #endif    /* if (PCM_TEST_TONE) */
 
@@ -294,6 +294,10 @@ extern "C"
 #define PCM_SWEEP_TIMER                 3
 extern int16_t pcm_sweep_buf[PCM_SWEEP_TONES][PCM_TEST_BUF_LEN];
 #endif    /* if (PCM_TEST_SWEEP) */
+
+#if (PCM_TEST_TONE)
+extern int32_t pcm_test_buf[PCM_TEST_BUF_LEN];
+#endif    /* if (PCM_TEST_TONE) */
 
 #define BUTTON_DIO                      5
 

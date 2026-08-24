@@ -35,13 +35,9 @@ int16_t BufferOut[2 * FRAME_LENGTH] =
 };
 
 #if (PCM_TEST_TONE)
-/* Format probe: word0 = 0 (silence), word1 = 1 kHz sine. If the host
-   reproduces the 1 kHz tone, it reads word1 (stereo); if it stays silent, it
-   only reads word0 (mono + word1 padding). */
-int16_t pcm_test_buf[PCM_TEST_BUF_LEN] = {
-    0, 0, 0, 3000, 0, 5196, 0, 6000, 0, 5196, 0, 3000,
-    0, 0, 0, -3000, 0, -5196, 0, -6000, 0, -5196, 0, -3000,
-};
+/* Data transmission test: every entry is a 32-bit frame [word0=0x5555,
+   word1=0x0000] (value 0x5555), so the output should be constant 0x55550000. */
+int32_t pcm_test_buf[PCM_TEST_BUF_LEN] = { 0 };
 
 #if (PCM_TEST_SWEEP)
 /* 1k->10k stepped sweep. Each row is one tone at the 24k word rate; 24 words
@@ -249,9 +245,8 @@ void Initialize_Raw_OD_Output_Type(void)
  * ------------------------------------------------------------------------- */
 void Initialize_Raw_PCM_Output_Type(void)
 {
-    /* The external device is the clock master and provides BCLK and FS.
-     * RSL10 is the PCM slave: CLK=DIO2, FRAME=DIO3 are inputs, SERO=DIO14
-     * shifts audio data out, SERI=DIO4 is an unused input. */
+    /* Slave mode: the external device (or signal generator) provides BCLK and
+       FS on DIO2/DIO3; RSL10 shifts data out on SERO. */
     Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
                       PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
     Sys_PCM_Config(PCM_CFG_TX);
@@ -377,13 +372,27 @@ void Initialize_Receiver_Audio_Output(void)
     NVIC_EnableIRQ(TIMER_IRQn(PCM_SWEEP_TIMER));
     Sys_Timers_Start(1 << PCM_SWEEP_TIMER);
 #else    /* if (PCM_TEST_SWEEP) */
-    /* Verify whether the host reads word0 (mono) or both words (stereo):
-     * send a 1 kHz tone on word0 only, word1 = 0, bypassing the decode +
-     * ASRC pipeline. */
-    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_PCM_TEST, PCM_TEST_BUF_LEN, 0,
+    /* 1 kHz pure tone test: stream a 12-point sine at 12k, packed [s,0]
+       (sample in high 16 bits, low 16 bits = 0), via ch5 32-bit writes.
+       SAI-style start: disable PCM, fill buffer, pre-load, start DMA, enable
+       PCM last. */
+    Sys_PCM_Config(PCM_CFG_TX);             /* disable (PCM_DISABLE) */
+    static const int16_t sine_1k[12] = {
+        0, 3000, 5196, 6000, 5196, 3000, 0, -3000, -5196, -6000, -5196, -3000
+    };
+    for (uint32_t i = 0; i < PCM_TEST_BUF_LEN; i++)
+    {
+        pcm_test_buf[i] = (uint32_t)((uint16_t)sine_1k[i % 12]) << 16;
+    }
+    PCM->TX_DATA = pcm_test_buf[0];         /* pre-load first word */
+
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_TEST, PCM_TEST_BUF_LEN, 0,
                           (uint32_t)pcm_test_buf, (uint32_t)&PCM->TX_DATA);
-    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
-    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));  /* re-arm on completion */
+
+    Sys_PCM_Enable();                       /* enable LAST */
 #endif    /* if (PCM_TEST_SWEEP) */
     return;
 #else    /* if (PCM_TEST_TONE) */
@@ -520,6 +529,13 @@ void App_Initialize(void)
     Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
     Sys_DIO_Config(DEBUG_DIO_THIRD, DIO_MODE_GPIO_OUT_0);
     Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
+
+    /* Audio-path debug DIOs (scope these to find the restart): DIO6 = DSP0
+       (decode done), DIO8 = ch4 (ASRC->raw complete, DIO15 is RM debug),
+       DIO9 = ch5 (PCM complete). */
+    Sys_DIO_Config(6, DIO_MODE_GPIO_OUT_0);
+    Sys_DIO_Config(8, DIO_MODE_GPIO_OUT_0);
+    Sys_DIO_Config(9, DIO_MODE_GPIO_OUT_0);
 
     /* Initialize Receiver Audio Input Source */
     Initialize_Receiver_Audio_Output();
