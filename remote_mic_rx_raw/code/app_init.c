@@ -91,6 +91,12 @@ int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
    idle buffer; PCM_DMA_NUM (ch5) sends the active one, and its complete
    interrupt swaps them. */
 uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+#if (PCM_TEST_ASRC)
+/* 1 kHz sine at 16 kHz: 16 samples/period, 10 periods per 10 ms frame.
+   Filled in Initialize_Receiver_Audio_Output() from the 16-sample table. */
+int16_t pcm_asrc_sine_16k[PCM_ASRC_SINE_LEN];
+#endif    /* if (PCM_TEST_ASRC) */
 #endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* ----------------------------------------------------------------------------
@@ -377,12 +383,13 @@ void Initialize_Receiver_Audio_Output(void)
        SAI-style start: disable PCM, fill buffer, pre-load, start DMA, enable
        PCM last. */
     Sys_PCM_Config(PCM_CFG_TX);             /* disable (PCM_DISABLE) */
-    static const int16_t sine_1k[12] = {
-        0, 3000, 5196, 6000, 5196, 3000, 0, -3000, -5196, -6000, -5196, -3000
-    };
+    /* 诊断 pattern：0x8000 = 只有 bit15(符号位)=1，其余 0。
+       word0 = TX_DATA 高 16 位（MSB first 先移出），故数据打包在高 16 位。
+       逻辑分析仪预期（若干净配置正确）：FS 高电平段第 1 个 BCLK = 1，
+       其余全 0 —— 应与 baseline（WORD_SIZE_32 配置）完全一致。 */
     for (uint32_t i = 0; i < PCM_TEST_BUF_LEN; i++)
     {
-        pcm_test_buf[i] = (uint32_t)((uint16_t)sine_1k[i % 12]) << 16;
+        pcm_test_buf[i] = (uint32_t)0x8000U << 16;    /* 高16=0x8000，低16=0 */
     }
     PCM->TX_DATA = pcm_test_buf[0];         /* pre-load first word */
 
@@ -394,6 +401,67 @@ void Initialize_Receiver_Audio_Output(void)
 
     Sys_PCM_Enable();                       /* enable LAST */
 #endif    /* if (PCM_TEST_SWEEP) */
+    return;
+#elif (PCM_TEST_ASRC)
+    /* Isolated ASRC test: no wireless / G722 decode. A 1 kHz sine at 16 kHz is
+       fed into the ASRC by a 500 us timer (8 samples/tick), down-sampled to
+       12 kHz, and streamed to the PCM slave output through the real ch4/ch5
+       double-buffer pipeline. */
+    Initialize_Raw_PCM_Output_Type();       /* slave; PCM_CFG_TX = disabled */
+    Sys_PCM_Config(PCM_CFG_TX);             /* keep disabled until PCM last */
+
+    /* 1 kHz sine at 16 kHz: 16 samples/period, 10 periods per 10 ms frame. */
+    static const int16_t sine_1k_16k[16] = {
+        0, 2296, 4243, 5544, 6000, 5544, 4243, 2296,
+        0, -2296, -4243, -5544, -6000, -5544, -4243, -2296
+    };
+    for (uint16_t i = 0; i < PCM_ASRC_SINE_LEN; i++)
+    {
+        pcm_asrc_sine_16k[i] = sine_1k_16k[i % 16];
+    }
+
+    /* ch4: ASRC->OUT -> pcm_raw_buf (120 samples / 10 ms frame). */
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_raw_buf[0][0]);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+
+    /* ch5: pcm_tx_buf -> PCM->TX_DATA (32-bit frames). */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    PCM->TX_DATA = pcm_tx_buf[0][0];        /* pre-load first frame */
+
+    /* Initial 16k->12k ASRC ratio (ideal). ASCC measures the real 12 kHz FS on
+       DIO3 and the pacing timer re-locks it via ASRC_Reconfig(). */
+    int64_t cr = FRAME_LENGTH << SHIFT_BIT;           /* 160 << 20 */
+    int64_t ck = (3 * FRAME_LENGTH / 4) << SHIFT_BIT; /* 120 << 20 */
+    Sys_ASRC_Config((uint32_t)((((cr - ck) << 28) / ck) & 0xFFFFFFFF),
+                    WIDE_BAND | ASRC_DEC_MODE2);
+    Initialize_ASCC();
+
+    /* NVIC for ch4/ch5 (ch3 is re-armed by the pacing timer). */
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_IN_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
+
+    /* Start the double-buffer pipeline, then PCM last (SAI-style). */
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+
+    /* Pacing timer: 500 us free-run feeds 8 samples (16 kHz) into the ASRC. */
+    Sys_Timer_Set_Control(TIMER_REGUL, TIMER_FREE_RUN | (500 - 1) |
+                          TIMER_SLOWCLK_DIV2);
+    NVIC_SetPriority(TIMER_IRQn(TIMER_REGUL), 2);
+    NVIC_ClearPendingIRQ(TIMER_IRQn(TIMER_REGUL));
+    NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
+    Sys_Timers_Start(1 << TIMER_REGUL);
+
+    Sys_PCM_Enable();                       /* enable PCM LAST */
     return;
 #else    /* if (PCM_TEST_TONE) */
 

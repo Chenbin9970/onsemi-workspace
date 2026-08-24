@@ -237,11 +237,11 @@ extern "C"
    (12 kHz, 32 BCLK/frame). 16-bit x 2 words, short frame. */
 #define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_32 |        \
-                                         PCM_FRAME_ALIGN_FIRST |   \
+                                         PCM_WORD_SIZE_16 |        \
+                                         PCM_FRAME_ALIGN_LAST |    \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
-										           PCM_SUBFRAME_ENABLE |    \
+										 PCM_SUBFRAME_DISABLE |    \
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
@@ -266,6 +266,23 @@ extern "C"
 #define PCM_TEST_RESAMPLE_SINE          0
 #endif
 
+/* Test switch: 1 = isolated ASRC test. A 1 kHz sine at 16 kHz is fed into the
+   ASRC (no wireless / G722 decode) to verify the 16k->12k resample in
+   isolation. A 500 us free-run timer feeds 8 samples per tick; the real ch4/ch5
+   double-buffer pipeline streams the 12 kHz result to the PCM slave output. */
+#ifndef PCM_TEST_ASRC
+#define PCM_TEST_ASRC                   0
+#endif
+
+#if (PCM_TEST_TONE) && (PCM_TEST_ASRC)
+#error "PCM_TEST_TONE and PCM_TEST_ASRC are mutually exclusive"
+#endif
+
+#if (PCM_TEST_ASRC)
+/* One 10 ms input frame of 1 kHz sine at 16 kHz = 160 samples. */
+#define PCM_ASRC_SINE_LEN               FRAME_LENGTH
+#endif
+
 #if (PCM_TEST_SWEEP) && !(PCM_TEST_TONE)
 #error "PCM_TEST_SWEEP requires PCM_TEST_TONE = 1"
 #endif
@@ -286,6 +303,23 @@ extern "C"
                                          DMA_ADDR_LIN |            \
                                          DMA_DISABLE)
 #endif    /* if (PCM_TEST_TONE) */
+
+#if (PCM_TEST_ASRC)
+/* ch3 DMA for the isolated ASRC test: int16_t sine table -> ASRC->IN. Same as
+   RX_DMA_ASRC_IN but reads 16-bit source words (the sine table is int16_t,
+   unlike Buffer.output which is 32-bit-word-aligned). */
+#define RX_DMA_ASRC_SINE                (DMA_DEST_ASRC |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+#endif    /* if (PCM_TEST_ASRC) */
 
 #if (PCM_TEST_SWEEP)
 #define PCM_SWEEP_TONES                 10
@@ -408,6 +442,10 @@ extern int16_t BufferOut[];
 extern int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
 extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
 #endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
+
+#if (PCM_TEST_ASRC)
+extern int16_t pcm_asrc_sine_16k[PCM_ASRC_SINE_LEN];
+#endif    /* if (PCM_TEST_ASRC) */
 
 /* ----------------------------------------------------------------------------
  * Function prototype definitions

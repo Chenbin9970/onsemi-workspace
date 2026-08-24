@@ -331,6 +331,33 @@ void DSP0_IRQHandler(void)
  * Outputs       : None
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
+#if (PCM_TEST_ASRC)
+/* Pacing timer for the isolated ASRC test: every 500 us, feed the next 8-sample
+   chunk of the 16 kHz sine into the ASRC (replacing the DSP0 decode cadence)
+   and re-lock the output rate to the 12 kHz FS measured by the ASCC. */
+static uint16_t pcm_asrc_sine_pos = 0;
+
+void TIMER_IRQ_FUNC(TIMER_REGUL)(void)
+{
+    if (flag_ascc_phase)
+    {
+        ASRC_Reconfig();
+        flag_ascc_phase = false;
+    }
+
+    Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_SINE, SUBFRAME_LENGTH, 0,
+                          (uint32_t)&pcm_asrc_sine_16k[pcm_asrc_sine_pos],
+                          (uint32_t)&ASRC->IN);
+    pcm_asrc_sine_pos += SUBFRAME_LENGTH;
+    if (pcm_asrc_sine_pos >= PCM_ASRC_SINE_LEN)
+    {
+        pcm_asrc_sine_pos = 0;
+    }
+    Sys_DMA_ClearChannelStatus(ASRC_IN_IDX);
+    Sys_DMA_ChannelEnable(ASRC_IN_IDX);
+    Sys_ASRC_StatusConfig(ASRC_ENABLE);
+}
+#else    /* if (PCM_TEST_ASRC) */
 void TIMER_IRQ_FUNC(TIMER_REGUL)(void)
 {
     if (frame_idx < ENCODED_FRAME_LENGTH)
@@ -339,6 +366,7 @@ void TIMER_IRQ_FUNC(TIMER_REGUL)(void)
         frame_idx += ENCODED_SUBFRAME_LENGTH;
     }
 }
+#endif    /* if (PCM_TEST_ASRC) */
 
 /* ----------------------------------------------------------------------------
  * Function      : void DIO0_IRQHandler(void)
@@ -491,6 +519,7 @@ void App_Process_Incoming_Data(uint8_t *data, uint8_t length)
  * ------------------------------------------------------------------------- */
 void App_Process_Link_Disconnected(void)
 {
+#if !(PCM_TEST_ASRC)
     /* Stop audio transmission to avoid repeatedly processing same audio data */
     NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
     NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
@@ -517,6 +546,7 @@ void App_Process_Link_Disconnected(void)
 
     /* Reset content of the output buffer to prevent the last packet over-run */
     ClearBufferOut();
+#endif    /* if !(PCM_TEST_ASRC) */
 }
 
 /* ----------------------------------------------------------------------------
@@ -533,6 +563,8 @@ void App_Process_Connected(void)
     audio_sink_cnt  = 0;
     flag_ascc_phase = false;
 
+#if !(PCM_TEST_ASRC)
+    /* ASRC test mode arms its own pipeline at init; do not touch it here. */
     Sys_ASRC_Reset();
 
     /* ASCC interrupts */
@@ -569,6 +601,7 @@ void App_Process_Connected(void)
 
     /* Enable Timer interrupt */
     NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
+#endif    /* if !(PCM_TEST_ASRC) */
 #if CRY_AES_128_ECB
     uint32_t key[4] = KEY_AES_128_ECB;
     memcpy(round_key, key, sizeof(uint32_t) * 4);
