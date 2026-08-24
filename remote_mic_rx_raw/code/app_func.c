@@ -85,6 +85,32 @@ static uint8_t  pcm_fill       = 1;
 static uint16_t pcm_fill_pos   = 0;
 static uint8_t  pcm_raw_active = 0;
 
+#if (PCM_TEST_SW_RESAMPLE)
+/* Software 16k->12k resample: every subframe 8 x 16kHz samples -> 6 x 12kHz
+   samples (4:3 Catmull-Rom cubic interpolation), accumulated into pcm_raw_buf. */
+static uint16_t pcm_raw_pos = 0;
+
+static int16_t cubic_4pt(int16_t p0, int16_t p1, int16_t p2, int16_t p3, float t)
+{
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float r = 0.5f * (2.0f * p1 + (-p0 + p2) * t +
+                      (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t2 +
+                      (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t3);
+    return (int16_t)r;
+}
+
+static void resample_8_to_6(const int16_t *in8, int16_t *out6)
+{
+    out6[0] = in8[0];
+    out6[1] = cubic_4pt(in8[0], in8[1], in8[2], in8[3], 1.0f / 3.0f);
+    out6[2] = cubic_4pt(in8[1], in8[2], in8[3], in8[4], 2.0f / 3.0f);
+    out6[3] = in8[4];
+    out6[4] = cubic_4pt(in8[4], in8[5], in8[6], in8[7], 1.0f / 3.0f);
+    out6[5] = cubic_4pt(in8[5], in8[6], in8[7], in8[7], 2.0f / 3.0f);
+}
+#endif
+
 /* ----------------------------------------------------------------------------
  * Function      : void DMA_IRQ_FUNC(PCM_DMA_NUM)
  * ----------------------------------------------------------------------------
@@ -148,10 +174,10 @@ void DMA_IRQ_FUNC(ASRC_OUT_IDX) (void)
     uint8_t done = pcm_raw_active ^ 1;
     for (uint16_t i = 0; i < PCM_FRAME_WORDS; i++)
     {
-        /* Host reads one 32-bit word per FS at 12k: [sample in high 16 bits,
-           0 in low 16 bits] (one channel = audio, other = silence). */
+        /* TX_ALIGN_LSB: both words read the low 16 bits of TX_DATA, so packing
+           the sample in the low 16 bits replicates it to both channels. */
         uint32_t s = (uint16_t)pcm_raw_buf[done][i];
-        pcm_tx_buf[pcm_fill][i] = s << 16;
+        pcm_tx_buf[pcm_fill][i] = s;
     }
     pcm_fill_pos = PCM_FRAME_WORDS;
 }
@@ -268,11 +294,40 @@ void DSP0_IRQHandler(void)
         return;
     }
 
+#if (PCM_TEST_SW_RESAMPLE)
+    /* Software resample: read the 8 decoded 16kHz samples from Buffer.output,
+       resample 8->6 (4:3), and accumulate into pcm_raw_buf. */
+    {
+        int16_t sub16k[SUBFRAME_LENGTH];
+        int16_t sub12k[SUBFRAME_LENGTH * 3 / 4];
+        for (uint8_t i = 0; i < SUBFRAME_LENGTH; i++)
+        {
+            sub16k[i] = ((int16_t *)Buffer.output)[i];
+        }
+        resample_8_to_6(sub16k, sub12k);
+        for (uint8_t i = 0; i < (SUBFRAME_LENGTH * 3 / 4); i++)
+        {
+            pcm_raw_buf[pcm_raw_active][pcm_raw_pos + i] = sub12k[i];
+        }
+        pcm_raw_pos += (SUBFRAME_LENGTH * 3 / 4);
+        if (pcm_raw_pos >= PCM_FRAME_WORDS)
+        {
+            for (uint16_t i = 0; i < PCM_FRAME_WORDS; i++)
+            {
+                pcm_tx_buf[pcm_fill][i] = (uint16_t)pcm_raw_buf[pcm_raw_active][i];
+            }
+            pcm_fill_pos = PCM_FRAME_WORDS;
+            pcm_raw_active ^= 1;
+            pcm_raw_pos = 0;
+        }
+    }
+#else
     if (flag_ascc_phase)
     {
         ASRC_Reconfig();
         flag_ascc_phase = false;
     }
+#endif
 
     if (frame_idx < ENCODED_FRAME_LENGTH)
     {
@@ -311,6 +366,7 @@ void DSP0_IRQHandler(void)
     /* Assert SPI_CS. */
     SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_0_BITBAND;
 
+#if !(PCM_TEST_SW_RESAMPLE)
     /* Clear DMA channel status. */
     Sys_DMA_ClearChannelStatus(ASRC_IN_IDX);
 
@@ -319,6 +375,7 @@ void DSP0_IRQHandler(void)
 
     /* Enable ASRC block. */
     Sys_ASRC_StatusConfig(ASRC_ENABLE);
+#endif
 
     lpdsp32.state = DSP_IDLE;
 }
@@ -414,11 +471,19 @@ void ASRC_Reconfig(void)
      */
 
 #if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
+#if (PCM_TEST_FIXED_ASRC)
+    /* Fixed phase increment: ideal 4:3 (16k->12k) = ((160-120)<<28)/120.
+       Disables the dynamic rate lock to isolate rate-lock jitter. */
+    (void)Cr;
+    (void)Ck;
+    Sys_ASRC_Config(89478485, WIDE_BAND | ASRC_DEC_MODE2);
+#else
     /* PCM path: down-sample 16k to 12k (DEC_MODE2). */
     Ck = audio_sink_cnt;
     int64_t asrc_inc_carrier = ((((Cr - Ck) << 28) / Ck) << 0);
     asrc_inc_carrier &= 0xFFFFFFFF;
     Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+#endif
 #else    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
     /* Configure ASRC base on new Ck */
     int64_t asrc_inc_carrier = ((((Cr - Ck) << 29) / Ck) << 0);
@@ -524,8 +589,10 @@ void App_Process_Link_Disconnected(void)
     NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
     NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
 
+#if !(PCM_TEST_SW_RESAMPLE)
     /* Disable ASRC IN DMA interrupts */
     NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
+#endif
 
     /* Disable LPDSP32 interrupt */
     NVIC_DisableIRQ(DSP0_IRQn);
@@ -537,9 +604,11 @@ void App_Process_Link_Disconnected(void)
 #if !(PCM_TEST_TONE)
     /* Freeze the PCM output pipeline and silence the double buffer so the
        last frame is not repeated. */
+#if !(PCM_TEST_SW_RESAMPLE)
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
-    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
     NVIC_DisableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+#endif
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
     NVIC_DisableIRQ(DMA_IRQn(PCM_DMA_NUM));
     memset(pcm_tx_buf, 0, sizeof(pcm_tx_buf));
 #endif    /* if !(PCM_TEST_TONE) */
@@ -565,6 +634,7 @@ void App_Process_Connected(void)
 
 #if !(PCM_TEST_ASRC)
     /* ASRC test mode arms its own pipeline at init; do not touch it here. */
+#if !(PCM_TEST_SW_RESAMPLE)
     Sys_ASRC_Reset();
 
     /* ASCC interrupts */
@@ -573,24 +643,30 @@ void App_Process_Connected(void)
 
     /* Enable ASRC IN DMA interrupts */
     NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
+#endif
 
 #if !(PCM_TEST_TONE)
     /* Enable the PCM output DMA interrupts and start the double-buffer
        pipeline: ch4 (ASRC->pcm_raw_buf) and ch5 (pcm_tx_buf->PCM). */
-    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
     NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
-    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
-    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
 
     pcm_active     = 0;
     pcm_fill       = 1;
     pcm_fill_pos   = 0;
     pcm_raw_active = 0;
+#if (PCM_TEST_SW_RESAMPLE)
+    pcm_raw_pos    = 0;
+#endif
 
+#if !(PCM_TEST_SW_RESAMPLE)
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#endif
     Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM, (uint32_t)&pcm_tx_buf[0][0]);
     Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
     Sys_DMA_ChannelEnable(PCM_DMA_NUM);

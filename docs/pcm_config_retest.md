@@ -1,5 +1,7 @@
 # PCM 配置重测记录（进行中）
 
+> **已过时**：本文档重测方向（`SUBFRAME_DISABLE`）有误。最终正确配置见 [pcm_config_final.md](pcm_config_final.md)。
+
 > 文档版本：2026-08-24
 > 状态：**未完成** —— 换电脑继续调试，下一步见文末。
 > 起因：怀疑之前 `WORD_SIZE_32 + SUBFRAME_ENABLE` 的 PCM 配置是"绕弯"的，改为从 SVD 手册和官方 SAI 参考重新验证一个干净配置。

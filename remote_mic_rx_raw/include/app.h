@@ -238,10 +238,10 @@ extern "C"
 #define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
                                          PCM_WORD_SIZE_16 |        \
-                                         PCM_FRAME_ALIGN_LAST |    \
+                                         PCM_FRAME_ALIGN_FIRST |   \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
-										 PCM_SUBFRAME_DISABLE |    \
+										 PCM_SUBFRAME_ENABLE |     \
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
@@ -249,7 +249,7 @@ extern "C"
 /* Test switch: 1 = send a 1 kHz tone on word0 only (word1 = 0) to verify
    whether the host reads word0 (mono) or both words (stereo). */
 #ifndef PCM_TEST_TONE
-#define PCM_TEST_TONE                   1
+#define PCM_TEST_TONE                   0
 #endif
 
 /* Test switch: 1 = 1k->10k stepped frequency sweep, one tone per second,
@@ -272,6 +272,20 @@ extern "C"
    double-buffer pipeline streams the 12 kHz result to the PCM slave output. */
 #ifndef PCM_TEST_ASRC
 #define PCM_TEST_ASRC                   0
+#endif
+
+/* Test switch: 1 = fixed ASRC phase increment (disable dynamic rate lock).
+   Ideal 4:3 down-sample phase increment = ((160-120)<<28)/120 = 89478485.
+   Isolates whether "mosquito" noise comes from rate-lock jitter. */
+#ifndef PCM_TEST_FIXED_ASRC
+#define PCM_TEST_FIXED_ASRC              0
+#endif
+
+/* Test switch: 1 = software resample 16k->12k in DSP0_IRQ (linear interp),
+   bypassing the ASRC DEC_MODE2 hardware whose large-ratio downsampling adds
+   the "mosquito" artifact. 0 = use ASRC hardware (original path). */
+#ifndef PCM_TEST_SW_RESAMPLE
+#define PCM_TEST_SW_RESAMPLE              0
 #endif
 
 #if (PCM_TEST_TONE) && (PCM_TEST_ASRC)

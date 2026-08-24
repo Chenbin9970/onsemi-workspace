@@ -307,6 +307,7 @@ void Initialize_ASCC(void)
  * ------------------------------------------------------------------------- */
 void Initialize_ASRC(uint32_t AsrcOutDest)
 {
+#if !(PCM_TEST_SW_RESAMPLE)
     /* Setup DMA channel for transferring data from memory to ASRC interface. */
     Sys_DMA_ChannelConfig(
         ASRC_IN_IDX,
@@ -339,6 +340,9 @@ void Initialize_ASRC(uint32_t AsrcOutDest)
         );
 
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#else
+    (void)AsrcOutDest;
+#endif
 }
 
 /* ----------------------------------------------------------------------------
@@ -387,9 +391,13 @@ void Initialize_Receiver_Audio_Output(void)
        word0 = TX_DATA 高 16 位（MSB first 先移出），故数据打包在高 16 位。
        逻辑分析仪预期（若干净配置正确）：FS 高电平段第 1 个 BCLK = 1，
        其余全 0 —— 应与 baseline（WORD_SIZE_32 配置）完全一致。 */
+    /* 1 kHz sine @ 12 kHz sampling (12 samples/period), bypasses ASRC */
+    static const int16_t sine_1k_12k[12] = {
+        0, 3000, 5196, 6000, 5196, 3000, 0, -3000, -5196, -6000, -5196, -3000
+    };
     for (uint32_t i = 0; i < PCM_TEST_BUF_LEN; i++)
     {
-        pcm_test_buf[i] = (uint32_t)0x8000U << 16;    /* 高16=0x8000，低16=0 */
+        pcm_test_buf[i] = (uint32_t)(uint16_t)sine_1k_12k[i % 12];  /* 低16=正弦，两声道复制 */
     }
     PCM->TX_DATA = pcm_test_buf[0];         /* pre-load first word */
 
