@@ -19,6 +19,7 @@
 #include "bs300_storage.h"
 #include "ble_rempro_cmd.h"
 #include "i2c_7100_hal.h"
+#include "dsp_7100_init.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -105,6 +106,9 @@ int main()
 
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
+
+    /* 7160test: 上电对 7100 做分阶段初始化（对照 star.csv），收发经 UART 打印 */
+    dsp_7100_boot_init();
 
     /* 7160test: DIO12 改作 UART 打印口（printf.c UART_TX=12），按键禁用 */
     //Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);

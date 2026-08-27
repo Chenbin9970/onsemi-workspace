@@ -853,22 +853,8 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
 
     BLE_SetServiceState(true, ble_env.conidx);
 
-    /* Request relaxed parameters for phone compatibility */
-    {
-        struct gapc_param_update_cmd *update;
-        update = KE_MSG_ALLOC(GAPC_PARAM_UPDATE_CMD,
-                              KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
-                              TASK_APP, gapc_param_update_cmd);
-        update->operation = GAPC_UPDATE_PARAMS;
-        update->pkt_id    = 0;
-        update->intv_min  = PREF_SLV_MIN_CON_INTERVAL;
-        update->intv_max  = PREF_SLV_MAX_CON_INTERVAL;
-        update->latency   = PREF_SLV_LATENCY;
-        update->time_out  = PREF_SLV_SUP_TIMEOUT;
-        update->ce_len_min = 0xffff;
-        update->ce_len_max = 0xffff;
-        ke_msg_send(update);
-    }
+    /* 7160test：不再主动请求参数更新，直接使用手机（central）建立的连接参数。
+     * 手机后续主动发起的参数更新由 GAPC_ParamUpdateReqInd 接受（accept=1）。 */
 
     return (KE_MSG_CONSUMED);
 }

@@ -17,6 +17,15 @@ static uint8_t        s_tx_idx;
 static volatile bool  s_tx_done;
 static volatile bool  s_tx_ok;
 static volatile bool  s_tx_active;
+
+/* 读状态（I2C_IRQHandler 使用，master read） */
+static uint8_t       *s_rx_buf;
+static uint8_t        s_rx_len;
+static uint8_t        s_rx_idx;
+static volatile bool  s_rx_done;
+static volatile bool  s_rx_ok;
+static volatile bool  s_rx_active;
+
 static bool           s_hw_init_done;
 
 static void hw_ensure_init(void)
@@ -43,7 +52,7 @@ static void hw_ensure_init(void)
     NVIC_EnableIRQ(I2C_IRQn);
 }
 
-/* I2C 中断：master 写，每字节事件推进（参考样例 I2C_IRQHandler） */
+/* I2C 中断：master 写/读，每字节事件推进（参考样例 I2C_IRQHandler + CMSIS 驱动） */
 void I2C_IRQHandler(void)
 {
     uint32_t st = Sys_I2C_Get_Status();
@@ -52,14 +61,36 @@ void I2C_IRQHandler(void)
         Sys_I2C_Reset();
         s_tx_ok = false;
         s_tx_done = true;
+        s_rx_ok = false;
+        s_rx_done = true;
         return;
     }
     if (st & I2C_STOP_DETECTED) {
-        s_tx_done = true;               /* 传输完成 */
+        /* 读方向：未收满 len 字节就 STOP → 地址 NACK 或传输失败 */
+        if (s_rx_active && s_rx_idx != s_rx_len) s_rx_ok = false;
+        s_tx_done = true;
+        s_rx_done = true;
         return;
     }
+
+    if (st & I2C_IS_READ) {
+        /* ---- master read：每字节 ACK，最后一字节 NACKAndStop ---- */
+        if (!s_rx_active) return;
+        if (st & I2C_BUFFER_FULL) {
+            if (s_rx_idx < s_rx_len - 1) {
+                Sys_I2C_ACK();
+            } else {
+                Sys_I2C_NACKAndStop();
+            }
+            s_rx_buf[s_rx_idx++] = (uint8_t)I2C->DATA;
+        } else if (st & I2C_DATA_EVENT) {
+            Sys_I2C_ACK();   /* 数据事件 → 允许开始接收 */
+        }
+        return;
+    }
+
+    /* ---- master write ---- */
     if (!s_tx_active) return;
-    if ((st >> I2C_STATUS_READ_WRITE_Pos) & 1) return;  /* 非写方向忽略 */
 
     if ((st >> I2C_STATUS_ACK_STATUS_Pos) & 1) {
         /* ACK_STATUS=1 → NACK（从机不应答） */
@@ -90,7 +121,7 @@ bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint8_t len)
 
     /* 等上次传输结束 */
     t = 0;
-    while (s_tx_active && t < I2C_7100_TIMEOUT_MAX) {
+    while ((s_tx_active || s_rx_active) && t < I2C_7100_TIMEOUT_MAX) {
         t++;
         Sys_Watchdog_Refresh();
     }
@@ -113,21 +144,42 @@ bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint8_t len)
     return s_tx_ok;
 }
 
-/* 当前未使用（仅 5s 心跳 write）。如需 read，需同 write 改成中断驱动。 */
 bool i2c_7100_read(uint8_t addr, uint8_t *data, uint8_t len)
 {
     uint32_t t;
     if (!data || !len) return false;
     hw_ensure_init();
 
+    /* 等上次传输结束 */
     t = 0;
-    while (s_tx_active && t < I2C_7100_TIMEOUT_MAX) {
+    while ((s_tx_active || s_rx_active) && t < I2C_7100_TIMEOUT_MAX) {
         t++;
         Sys_Watchdog_Refresh();
     }
-    return false;
+
+    s_rx_buf    = data;
+    s_rx_len    = len;
+    s_rx_idx    = 0;
+    s_rx_done   = false;
+    s_rx_ok     = true;
+    s_rx_active = true;
+
+    Sys_I2C_StartRead(addr);
+
+    t = 0;
+    while (!s_rx_done && t < I2C_7100_TIMEOUT_MAX) {
+        t++;
+        Sys_Watchdog_Refresh();
+    }
+    s_rx_active = false;
+    return s_rx_ok;
 }
 
-/* 硬件 I2C 速度由 prescale 固定（410kHz），这两个接口保留以兼容调用方 */
+/* 硬件 I2C 速度由 prescale 固定（410kHz），此接口保留以兼容调用方 */
 void i2c_7100_set_speed(uint32_t delay) { (void)delay; }
-void i2c_7100_delay_ms(uint32_t ms)     { (void)ms; }
+
+/* 忙等毫秒延时（ROM 循环，保 CPU 唤醒）——I2C 包间延时用 */
+void i2c_7100_delay_ms(uint32_t ms)
+{
+    Sys_Delay_ProgramROM(ms * SystemCoreClock / 1000);
+}

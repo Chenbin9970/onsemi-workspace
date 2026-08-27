@@ -4,6 +4,7 @@
 #include "bs300_ram_sync.h"
 #include "bs300_startup.h"
 #include "bs300_storage.h"
+#include "dsp_7100_cmd.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -955,6 +956,97 @@ static void cmd_iicdatacommunity(const uint8_t *data, uint8_t len)
 }
 #endif /* BS300_ENABLE */
 
+#ifndef BS300_ENABLE
+/* ================================================================
+ * 7100 Command Handlers（BS300 关闭时生效）
+ * ================================================================ */
+
+/* ID:4  GetBatteryInfo — 固定返回 100%（7100 无电量读取，先写死） */
+static void cmd_getbatteryinfo_7100(void)
+{
+    uint8_t resp_data[2];
+    resp_data[0] = 100;   /* Left_Battery */
+    resp_data[1] = 100;   /* Right_Battery (single device) */
+    PRINTF("[REMPRO] GetBatteryInfo7100: 100%%\r\n");
+    hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
+}
+
+/* ID:26  GetDeviceConfig — 7100 设备信息（Product_Type 等值可按需调整） */
+static void cmd_getdeviceconfig_7100(void)
+{
+    uint8_t d[32];
+    uint8_t pos = 0;
+
+    d[pos++] = 1; d[pos++] = 0; d[pos++] = 0; d[pos++] = 0; /* Device_Version 1.0.0.0 */
+    d[pos++] = 4;                                           /* Program_Num (程序 1-4) */
+
+    /* Left side */
+    memcpy(d + pos, bdaddr, 6); pos += 6;                   /* Address_Left MAC */
+    d[pos++] = 20; d[pos++] = 0;                            /* Product_Type = 20 */
+    d[pos++] = 6;                                           /* Chip_Type = 6 (E7160SL) */
+    d[pos++] = 2;                                           /* Turn_Number */
+    d[pos++] = 16;                                          /* Channel_Number */
+
+    /* Right side (same as left) */
+    memcpy(d + pos, bdaddr, 6); pos += 6;                   /* Address_Right MAC */
+    d[pos++] = 20; d[pos++] = 0;                            /* Product_Type = 20 */
+    d[pos++] = 6;                                           /* Chip_Type = 6 (E7160SL) */
+    d[pos++] = 2;                                           /* Turn_Number */
+    d[pos++] = 16;                                          /* Channel_Number */
+
+    d[pos++] = 5;   /* Volume_Number (App 音量 0-5 = 6 档) */
+
+    PRINTF("[REMPRO] GetDeviceConfig7100: %u bytes\r\n", pos);
+    hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);
+}
+
+/* ID:2  SetVolume — App vol 0-5 → 7100 档位 1-6（Volume_Number=5） */
+static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
+{
+    if (len < 3) { hdlc_response(CMD_SETVOLUME, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t volume   = data[1];
+
+    if (dev_type != 0 && dev_type != 1) {   /* 仅左右/左，右耳不支持 */
+        uint8_t status = 1;
+        hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+        return;
+    }
+    if (volume > 5) volume = 5;
+
+    uint8_t level = (uint8_t)(volume + 1);   /* App 0-5 → 档位 1-6 */
+
+    bool ok = dsp_7100_set_volume(level);
+    PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u\r\n",
+           volume, level, ok);
+
+    uint8_t status = 1;
+    hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+}
+
+/* ID:16  SetCurrentScene — App scene 0-3 → 7100 程序 1-4 */
+static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
+{
+    if (len < 2) { hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t scene_id = data[1];
+
+    if (scene_id >= 4) {
+        hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+        return;
+    }
+
+    bool ok = dsp_7100_switch_program((uint8_t)(scene_id + 1));
+    PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u\r\n",
+           scene_id, scene_id + 1, ok);
+
+    uint8_t status = 1;
+    hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
+}
+#endif /* !BS300_ENABLE */
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
@@ -1063,6 +1155,26 @@ void rempro_cmd_process(void)
         case CMD_IICDATACOMMUNITY:
             if (data) cmd_iicdatacommunity(data, data_len);
             else hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
+            break;
+        default:
+            PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);
+            break;
+        }
+#else /* !BS300_ENABLE */
+        switch (cmd_id) {
+        case CMD_GETBATTERYINFO:
+            cmd_getbatteryinfo_7100();
+            break;
+        case CMD_GETDEVICECONFIG:
+            cmd_getdeviceconfig_7100();
+            break;
+        case CMD_SETVOLUME:
+            if (data) cmd_setvolume_7100(data, data_len);
+            else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
+            break;
+        case CMD_SETCURRENTSCENE:
+            if (data) cmd_setcurrentscene_7100(data, data_len);
+            else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
             break;
         default:
             PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);
