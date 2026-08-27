@@ -50,7 +50,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths.424353910" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -59,7 +62,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.systempaths.299620918" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.systempaths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -74,7 +80,10 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source/codecs}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -107,7 +116,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.314093051" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -123,7 +135,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.1881559342" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -132,7 +147,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.772445803" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -326,7 +344,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths.524881089" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -335,7 +356,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.systempaths.1832297830" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.systempaths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -350,7 +374,10 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/source/codecs}&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -383,7 +410,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1685084108" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -399,7 +429,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.444249170" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -408,7 +441,10 @@
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.1015236427" name="Include system paths (-isystem)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
+									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/kernel&quot;"/>
+										<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble/profiles&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/printf&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/source/firmware/rtt&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
@@ -584,7 +620,7 @@
 		</configuration>
 	</storageModule>
 	<storageModule moduleId="com.arm.cmsis.project">
-		<rteConfig name="peripheral_server_sleep.rteconfig"/>
+		<rteConfig name="peripheral_server_sleep7160test.rteconfig"/>
 		<toolChainAdapter id="com.arm.cmsis.pack.build.gnuarmeclipse.toolChainAdapter" name="Cross ARM GCC Toolchain Adapter"/>
 		<device Dclock="48000000" Dcore="Cortex-M3" DcoreVersion="r2p1" Dendian="Little-endian" Dfamily="RSL10 Series" Dfpu="NO_FPU" Dmpu="NO_MPU" Dname="RSL10" Dvendor="ONSemiconductor:141" Pname=""/>
 		<files>

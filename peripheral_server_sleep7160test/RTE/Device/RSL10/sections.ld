@@ -79,18 +79,12 @@ __VTOR = 0xE000ED08;
 
 SECTIONS
 {
-    __rom_start = DEFINED(__app_rom_start) ? __app_rom_start : 0x00130800;
-    __image_size = __data_init__ + SIZEOF(.data) - __rom_start;
-    .text __rom_start :
+    .text :
     {
         . = ALIGN(4);
         KEEP(*(.interrupt_vector))
 
         KEEP(*(.reset))
-
-        *(.rodata.fota.image-size)
-        KEEP(*(.rodata.fota.build-id))
-        *(.rodata.boot.version)
 
         /* Pre-initialization Code */
         . = ALIGN(4);
@@ -156,8 +150,7 @@ SECTIONS
      * It is one task of the startup to copy the initial values from
      * FLASH to RAM.
      */
-    __ram_start = DEFINED(__app_ram_start) ? __app_ram_start : .;
-    .data __ram_start : AT ( __data_init__ )
+    .data : AT ( __data_init__ )
     {
         . = ALIGN(4);
 
@@ -217,9 +210,9 @@ SECTIONS
     ._stack (NOLOAD) :
     {
         . = ALIGN(4);
-        
+
         . = . + __Main_Stack_Size ;
-        
+
         . = ALIGN(4);
     } >DRAM
 
