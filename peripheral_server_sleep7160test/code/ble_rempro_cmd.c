@@ -304,6 +304,7 @@ void rempro_push_audiometry_exit(void)
     hdlc_push(CMD_PUSH_INITIAL_STATUS, d, 2);
 }
 
+#ifdef BS300_ENABLE
 /* ================================================================
  * Command Handlers
  * ================================================================ */
@@ -434,6 +435,7 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
 }
 
+#endif /* BS300_ENABLE */
 /* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
  * Same sampling logic as GetBatteryInfo. */
 uint32_t read_battery_raw(void)
@@ -444,6 +446,7 @@ uint32_t read_battery_raw(void)
     return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
 }
 
+#ifdef BS300_ENABLE
 /* ID:4  GetBatteryInfo */
 static void cmd_getbatteryinfo(void)
 {
@@ -950,6 +953,7 @@ static void cmd_iicdatacommunity(const uint8_t *data, uint8_t len)
 
     hdlc_response(CMD_IICDATACOMMUNITY, 0, resp, pos);
 }
+#endif /* BS300_ENABLE */
 
 /* ================================================================
  * Main dispatcher
@@ -987,6 +991,7 @@ void rempro_cmd_process(void)
         print_hex("RX frame", reasm_buf, consumed);
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
 
+#ifdef BS300_ENABLE
         switch (cmd_id) {
         case CMD_SETVOLUME:
             if (data) cmd_setvolume(data, data_len);
@@ -1063,6 +1068,7 @@ void rempro_cmd_process(void)
             PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);
             break;
         }
+#endif /* BS300_ENABLE */
 
         /* Remove processed frame from buffer */
         reasm_len -= consumed;

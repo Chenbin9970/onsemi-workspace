@@ -29,8 +29,8 @@
 
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
-#define CFG_FOTA
-//#define DEBUG_UART_ENABLE
+//#define CFG_FOTA
+#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 //#define PEER_EAR_SYNC_ENABLE   /* 左右耳同步 + 左耳 BLE Central 总开关；取消注释开启 */
 

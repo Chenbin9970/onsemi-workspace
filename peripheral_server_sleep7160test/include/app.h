@@ -30,9 +30,13 @@
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
 //#define CFG_FOTA
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 //#define PEER_EAR_SYNC_ENABLE   /* 左右耳同步 + 左耳 BLE Central 总开关；取消注释开启 */
+
+/* BS300 DSP 功能总开关。7160test 改用 7100 通讯，BS300 暂时关闭；
+ * 取消注释开启。关闭时所有 bs300 外部调用点被 #ifdef 剔除。 */
+//#define BS300_ENABLE
 
 /* TX device MAC for BLE→RM fast switch */
 //#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */
@@ -92,8 +96,9 @@ extern "C"
 #include "printf.h"
 #endif
 
-/* DIO number that is used for easy re-flashing (recovery mode) */
-#define RECOVERY_DIO                    12
+/* DIO number that is used for easy re-flashing (recovery mode).
+ * 7160test: 原 DIO12 改作 UART 打印口，恢复按钮挪到 DIO7（空闲） */
+#define RECOVERY_DIO                    7
 
 /* DIO number that is connected to LED of EVB */
 #define LED_DIO                         6
@@ -149,7 +154,7 @@ extern "C"
 #define RM_RIGHT                        1
 
 #define DEBUG_DIO_FIRST                 15
-#define DEBUG_DIO_SECOND                11
+#define DEBUG_DIO_SECOND                5    /* 7160test: 打印口回 DIO12，RM 调试回 DIO5（4-8 区间） */
 #define DEBUG_DIO_THIRD                 10
 
 /* Initial side channel — 0=左耳 1=右耳；烧左耳改 RM_LEFT，烧右耳改 RM_RIGHT */
@@ -180,12 +185,12 @@ extern "C"
 #define OD_N_DIO                        1
 #define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
                                                     AUDIO_CFG_DEC_RATE_Pos))
+/* 7160test: OD_ENABLE 已去掉（OD 输出关闭），DIO0/DIO1 让给 7100 I2C */
 #define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
                                          OD_UNDERRUN_PROTECT_ENABLE         | \
                                          OD_DMA_REQ_ENABLE                  | \
                                          OD_INT_GEN_DISABLE                 | \
-                                         DECIMATE_BY_200                    | \
-                                         OD_ENABLE)
+                                         DECIMATE_BY_200)
 
 #define RX_DMA_OD                      (DMA_LITTLE_ENDIAN |        \
                                         DMA_ENABLE |               \

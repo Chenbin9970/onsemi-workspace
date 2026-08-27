@@ -672,6 +672,7 @@ int GATTC_EvtInd(ke_msg_id_t const msg_id,
     uint8_t conidx = KE_IDX_GET(src_id);
     if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
 
+#ifdef BS300_ENABLE
     if (param->handle == cs_peer_env.tx_hdl && param->length >= 3)
     {
         uint8_t prog = param->value[1];
@@ -688,6 +689,7 @@ int GATTC_EvtInd(ke_msg_id_t const msg_id,
             cs_env.rx_value_changed = 1;
         }
     }
+#endif /* BS300_ENABLE */
 #endif /* PEER_EAR_SYNC_ENABLE */
     return (KE_MSG_CONSUMED);
 }

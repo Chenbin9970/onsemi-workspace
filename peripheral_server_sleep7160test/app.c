@@ -18,11 +18,13 @@
 #include "bs300_ram_sync.h"
 #include "bs300_storage.h"
 #include "ble_rempro_cmd.h"
+#include "i2c_7100_hal.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
 #endif
 
+#ifdef BS300_ENABLE
 /* Called when async BS300 program switch completes — re-activate DSP + notify */
 static void on_bs300_switch_done(void)
 {
@@ -88,12 +90,13 @@ static void on_btn_volume_done(void)
     }
     low_power_clk_param.low_power_enable = true;
 }
+#endif /* BS300_ENABLE */
 
 int main()
 {
     App_Initialize();
 
-#ifdef BS300_TEST_ENABLE
+#if defined(BS300_ENABLE) && defined(BS300_TEST_ENABLE)
     bs300_test_run();
 #endif
 
@@ -103,8 +106,8 @@ int main()
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
 
-    /* Button DIO12: must be re-init after each wakeup (see Continue_Application) */
-    Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+    /* 7160test: DIO12 改作 UART 打印口（printf.c UART_TX=12），按键禁用 */
+    //Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 
 #ifndef DEBUG_UART_ENABLE
     /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
@@ -137,8 +140,13 @@ void Main_Loop(void)
         (app_env.sleep_cycles % APP_CS_TX_VALUE_NOTF_SLEEP_CYCLE == 0))
     {
         cs_env.sentSuccess = 0;
+#ifdef BS300_ENABLE
         cs_env.tx_value[1] = bs300_get_active_prog();
         cs_env.tx_value[2] = bs300_get_module_volume(cs_env.tx_value[1]);
+#else
+        cs_env.tx_value[1] = 0;
+        cs_env.tx_value[2] = 0;
+#endif
         cs_env.tx_value_changed = 1;
     }
     (app_env.sleep_cycles)++;
@@ -149,7 +157,11 @@ void Main_Loop(void)
         static uint8_t rm_cold_boot_done = 0;
         if (!rm_cold_boot_done) {
             rm_cold_boot_done = 1;
+#ifdef BS300_ENABLE
             app_env.saved_prog_before_rm = bs300_get_active_prog();
+#else
+            app_env.saved_prog_before_rm = 0;
+#endif
             Audio_Init();
             RF_SwitchToCPMode();
             RM_Enable(500);
@@ -193,7 +205,9 @@ void Main_Loop(void)
         if (low_batt_elapsed_ms >= LOW_BATT_CHECK_MS) {
             low_batt_elapsed_ms = 0;
             if (read_battery_raw() <= BAT_ADC_MIN) {
+#ifdef BS300_ENABLE
                 bs300_play_low_batt_tone();
+#endif
             }
         }
 
@@ -208,7 +222,11 @@ void Main_Loop(void)
             {
                 app_env.rm_disc_state = RM_DISC_NONE;
                 app_env.rm_timeout_ticks = 0;
+#ifdef BS300_ENABLE
                 app_env.saved_prog_before_rm = bs300_get_active_prog();
+#else
+                app_env.saved_prog_before_rm = 0;
+#endif
 
                 APP_RM_Init(ear_side);
                 Audio_Init();
@@ -231,7 +249,11 @@ void Main_Loop(void)
             {
                 app_env.rm_disc_state = RM_DISC_NONE;
                 app_env.rm_timeout_ticks = 0;
+#ifdef BS300_ENABLE
                 app_env.saved_prog_before_rm = bs300_get_active_prog();
+#else
+                app_env.saved_prog_before_rm = 0;
+#endif
 
                 APP_RM_Init(ear_side);
                 Audio_Init();
@@ -247,12 +269,14 @@ void Main_Loop(void)
             app_env.rm_disc_state = RM_DISC_NONE;
             app_env.rm_timeout_ticks = 0;
 
+#ifdef BS300_ENABLE
             /* BS300 mute/active only needed if actually on program 3.
              * During link-establish window, BS300 is still on hearing aid program. */
             if (bs300_get_active_prog() == 3)
             {
                 bs300_mute();
             }
+#endif
 
             /* Stop audio pipeline before RF switch */
             NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
@@ -276,6 +300,7 @@ void Main_Loop(void)
             Sys_RFFE_SetTXPower(0);
 #endif
 
+#ifdef BS300_ENABLE
             /* Restore pre-RM program for normal hearing aid operation */
             if (bs300_get_active_prog() == 3
                 && app_env.saved_prog_before_rm != 3)
@@ -283,6 +308,7 @@ void Main_Loop(void)
                 bs300_switch_program(app_env.saved_prog_before_rm);
                 bs300_active();
             }
+#endif
 
             /* Restart BLE advertising so phone can reconnect */
             ble_env.is_advertising = false;
@@ -299,10 +325,12 @@ void Main_Loop(void)
             app_env.rm_disc_counter++;
             if (app_env.rm_disc_counter >= RM_DISC_DEBOUNCE_THRESHOLD) {
                 app_env.rm_disc_state = RM_DISC_HEARING_AID;
+#ifdef BS300_ENABLE
                 if (app_env.saved_prog_before_rm != 3) {
                     bs300_switch_program(app_env.saved_prog_before_rm);
                 }
                 bs300_active();
+#endif
                 //RM_Enable(500);
 #ifdef PEER_EAR_SYNC_ENABLE
                 PRINTF("[RM] reconnect: peer_connected=%d peer_state=%d retry_ticks=%d\r\n",
@@ -336,6 +364,14 @@ void Main_Loop(void)
         if (app_env.timer_200ms) {
             app_env.timer_200ms = 0;
 
+            /* 每 5s (25×200ms) 向 7100 发送 0x88 0x01（从机地址 I2C_7100_ADDR=0x04） */
+            static uint8_t s_7100_hb_cnt = 0;
+            if (++s_7100_hb_cnt >= 25) {
+                s_7100_hb_cnt = 0;
+                uint8_t pkt[2] = {0x88, 0x01};
+                i2c_7100_write(I2C_7100_ADDR, pkt, sizeof(pkt));
+            }
+
             if (app_env.audio_streaming
                 && app_env.rm_timeout_ticks > 0
                 && app_env.rm_disc_state != RM_DISC_NONE) {
@@ -366,8 +402,10 @@ void Main_Loop(void)
         }
 #endif
 
+#ifdef BS300_ENABLE
         /* Process deferred BS300 ops (aborted switch etc.) */
         bs300_process_deferred();
+#endif
 
 #ifdef PEER_EAR_SYNC_ENABLE
         /* Peer ear connection state machine (central role).
@@ -401,6 +439,7 @@ void Main_Loop(void)
             }
 #endif
 
+#ifdef BS300_ENABLE
             /* Handle BS300 commands from BLE RX characteristic */
             if (cs_env.rx_value_changed)
             {
@@ -431,6 +470,7 @@ void Main_Loop(void)
                     PRINTF("[BS300] cache cleared, reset to reload\r\n");
                 }
             }
+#endif
 
             /* Handle REMPRO (RT App) commands from ROLE characteristic */
             rempro_cmd_process();
@@ -473,6 +513,7 @@ void Main_Loop(void)
         Sys_Watchdog_Refresh();
 
 
+#if 0  /* 7160test: 按键功能已注释（DIO12 改作 UART 打印口） */
         /* Button on DIO2 (active low, pull-up).
          * Short press (< 1.5s):  volume +1, 0→1→...→9→0
          * Long  press (>= 1.5s): switch program, 0→1→2→0, skip Program 3 */
@@ -520,16 +561,24 @@ void Main_Loop(void)
                 {
                     pending_action = BTN_SHORT;
                 }
+#ifdef BS300_ENABLE
                 else if (!bs300_sync_is_busy())
                 {
                     /* Long press I2C already done — safe to sleep now */
                     low_power_clk_param.low_power_enable = true;
                 }
+#else
+                else
+                {
+                    low_power_clk_param.low_power_enable = true;
+                }
+#endif
             }
             btn_prev = btn_now;
 
             /* Process pending action when I2C is free.
              * Block button actions in program 3 (RM audio mode). */
+#ifdef BS300_ENABLE
             if (pending_action != BTN_NONE && !bs300_sync_is_busy()
                 && bs300_get_active_prog() != 3)
             {
@@ -571,7 +620,9 @@ void Main_Loop(void)
                 }
                 pending_action = BTN_NONE;
             }
+#endif /* BS300_ENABLE */
         }
+#endif /* 按键功能注释 */
 
         /* If not in the middle of a period measurement for RSOSC, allow the
          * application to go to sleep power mode.

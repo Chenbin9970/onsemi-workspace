@@ -10,6 +10,7 @@
 
 #include "bs300_program_read.h"
 #include "bs300_startup.h"
+#include "bs300_hal.h"
 #include <string.h>
 
 /* ============================================================

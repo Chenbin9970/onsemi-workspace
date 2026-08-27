@@ -7,14 +7,15 @@
   </device>
   <toolchain Tcompiler="GCC" Toutput="exe"/>
   <components>
-    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="Fota" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="BLE Stack" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
       <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.9.1182"/>
-      <file category="doc" deviceDependent="1" name="documentation/RSL10_fota_users_guide.pdf"/>
-      <file category="header" deviceDependent="1" name="include/sys_fota.h"/>
-      <file category="header" deviceDependent="1" name="include/sys_boot.h"/>
-      <file attr="config" category="utility" deviceDependent="1" name="source/firmware/fota/tools/mkfotaimg.py" version="1.0.0"/>
-      <file attr="config" category="utility" deviceDependent="1" name="lib/Release/fota.bin" version="1.0.0"/>
-      <file category="library" deviceDependent="1" name="lib/Release/libfota.a"/>
+      <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
+      <file category="library" deviceDependent="1" name="lib/ble_core/Release/libblelib.a"/>
+    </component>
+    <component Capiversion="1.0.0" Cclass="Device" Cgroup="Bluetooth Core" Csub="Kernel" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
+      <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.9.1182"/>
+      <file category="doc" deviceDependent="1" name="documentation/RSL10_firmware_reference.pdf"/>
+      <file category="library" deviceDependent="1" name="lib/ble_core/Release/libkelib.a"/>
     </component>
     <component Cclass="Device" Cgroup="Bluetooth Profiles" Csub="BASS" Cvariant="release" Cvendor="ONSemiconductor" Cversion="3.9.1182" deviceDependent="1">
       <package name="RSL10" url="www.onsemi.com/" vendor="ONSemiconductor" version="3.9.1182"/>

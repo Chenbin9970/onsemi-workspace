@@ -214,7 +214,9 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 app_env.rm_disc_counter = 0;
                 app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
                 ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+#ifdef BS300_ENABLE
                 bs300_mute();
+#endif
             }
             ASRC_CTRL->ASRC_DISABLE_ALIAS = ASRC_DISABLED_BITBAND;
 
@@ -252,17 +254,21 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             case RM_DISC_HEARING_AID:
                 /* BS300 on hearing aid program — switch to program 3 */
                 RM_PRINTF("[RM] LINK_ESTABLISHED: switching to prog 3\r\n");
+#ifdef BS300_ENABLE
                 bs300_set_prog_volume(3, 9);
                 bs300_mute();
                 if (app_env.saved_prog_before_rm != 3)
                     bs300_switch_program(3);
                 bs300_active();
+#endif
                 app_env.rm_disc_state = RM_DISC_NONE;
                 break;
 
             case RM_DISC_DEBOUNCE:
                 /* Quick reconnect — program 3 still loaded, just re-activate */
+#ifdef BS300_ENABLE
                 bs300_active();
+#endif
                 app_env.rm_disc_state = RM_DISC_NONE;
                 break;
             }

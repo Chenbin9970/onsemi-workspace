@@ -955,9 +955,11 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
 
     BLE_SetServiceState(false, ble_env.conidx);
 
+#ifdef BS300_ENABLE
     /* Persist BS300 settings (program + volume) on disconnect —
      * Flash_EraseSector is unsafe during connected state. */
     bs300_settings_persist();
+#endif
 
     /* Clear HDLC reassembly buffer so stale frames don't leak
      * into the next connection. */

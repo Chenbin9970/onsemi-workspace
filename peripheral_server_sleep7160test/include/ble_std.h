@@ -143,7 +143,7 @@ extern "C"
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
 #ifndef APP_DFLT_DEVICE_NAME
-#define APP_DFLT_DEVICE_NAME            "cbtest"
+#define APP_DFLT_DEVICE_NAME            "cb7160test"
 #endif
 #define APP_DEVICE_NAME_FLAG            '\x09'
 

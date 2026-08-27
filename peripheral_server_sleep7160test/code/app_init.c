@@ -390,8 +390,9 @@ void Audio_Init(void)
     AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
     AUDIO->SDM_CFG = 0x00002;
     AUDIO->OD_GAIN = 0xfff;
-    Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
-                   DIO_NO_PULL | DIO_MODE_OD_P);
+    /* 7100: OD 输出关闭，DIO0 让给 I2C SCL（见 app.h OD_ENABLE） */
+    //Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
+    //               DIO_NO_PULL | DIO_MODE_OD_P);
 
     Sys_DMA_ChannelDisable(OD_DMA_NUM);
     Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,

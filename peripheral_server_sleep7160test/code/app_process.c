@@ -40,7 +40,9 @@ int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
     (void)dest_id;
     (void)src_id;
         /* DEBUG: timer tick disabled for BS300 flow tracing */
+#ifdef BS300_ENABLE
     bs300_sync_timer_handler();
+#endif
     return (KE_MSG_CONSUMED);
 }
 
@@ -310,7 +312,8 @@ void Continue_Application(void)
 
     /* Turn LED on */
     Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
-    Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+    /* 7160test: DIO12 改作 UART 打印口，按键禁用 */
+    //Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 #ifndef DEBUG_UART_ENABLE
     /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
     Sys_DIO_Config(4, DIO_MODE_DISABLE | DIO_NO_PULL);

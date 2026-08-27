@@ -1,50 +1,22 @@
 #ifndef BS300_HAL_H
 #define BS300_HAL_H
 
-#include <stdint.h>
-#include <stdbool.h>
+/* 兼容头：I2C bit-bang 驱动已改名 i2c_7100_hal（7100 通讯）。
+ * BS300 协议层（bs300_driver/startup/ram_sync）沿用旧符号名，这里统一映射到新名。 */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "i2c_7100_hal.h"
 
-/* BS300 I2C slave address (7-bit), bus byte = (0x01<<1)|R/W → 0x02/0x03 */
-#define BS300_I2C_ADDR  0x01
+#define BS300_I2C_ADDR         I2C_7100_ADDR
+#define BS300_I2C_DELAY_FAST   I2C_7100_DELAY_FAST
+#define BS300_I2C_DELAY_ACTIVE I2C_7100_DELAY_ACTIVE
+#define BS300_I2C_DELAY_NORMAL I2C_7100_DELAY_NORMAL
+#define BS300_I2C_SCL_DIO      I2C_7100_SCL_DIO
+#define BS300_I2C_SDA_DIO      I2C_7100_SDA_DIO
 
-/* I2C speed presets (bit_delay loop count) */
-#define BS300_I2C_DELAY_FAST    10   /* DSP stopped, fast I2C */
-#define BS300_I2C_DELAY_ACTIVE  500  /* DSP running, slow & reliable */
-#define BS300_I2C_DELAY_NORMAL  500  /* DSP active, slow & reliable */
-
-/* I2C clock multiplier (RSL10 hardware constant) */
-#define I2C_CLK_MUL  3
-
-/* I2C pin assignments — must match RTE_Device.h */
-#define BS300_I2C_SCL_DIO  8
-#define BS300_I2C_SDA_DIO  7
-
-/* Initialize I2C hardware for BS300 communication.
- * Configures DIO pins and I2C peripheral as master.
- * Returns true on success. */
-bool bs300_hal_init(void);
-
-/* Write len bytes to I2C slave. Returns true on success. */
-bool bs300_i2c_write(uint8_t addr, const uint8_t *data, uint8_t len);
-
-/* Read len bytes from I2C slave. Returns true on success. */
-bool bs300_i2c_read(uint8_t addr, uint8_t *data, uint8_t len);
-
-/* Set I2C bus speed by bit-delay loop count.
- * Use BS300_I2C_DELAY_FAST (25) when DSP is stopped.
- * Use BS300_I2C_DELAY_NORMAL (500) before critical commands and when DSP is active.
- * ack_delay is always 5x bit_delay. */
-void bs300_i2c_set_speed(uint32_t delay);
-
-/* Delay milliseconds (polling, not sleep). */
-void bs300_delay_ms(uint32_t ms);
-
-#ifdef __cplusplus
-}
-#endif
+#define bs300_hal_init       i2c_7100_hal_init
+#define bs300_i2c_write      i2c_7100_write
+#define bs300_i2c_read       i2c_7100_read
+#define bs300_i2c_set_speed  i2c_7100_set_speed
+#define bs300_delay_ms       i2c_7100_delay_ms
 
 #endif /* BS300_HAL_H */
