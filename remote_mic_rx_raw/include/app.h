@@ -271,7 +271,7 @@ extern "C"
    isolation. A 500 us free-run timer feeds 8 samples per tick; the real ch4/ch5
    double-buffer pipeline streams the 12 kHz result to the PCM slave output. */
 #ifndef PCM_TEST_ASRC
-#define PCM_TEST_ASRC                   0
+#define PCM_TEST_ASRC                   1
 #endif
 
 /* Test switch: 1 = fixed ASRC phase increment (disable dynamic rate lock).
