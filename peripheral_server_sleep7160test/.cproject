@@ -598,17 +598,17 @@
 	<storageModule moduleId="org.eclipse.cdt.make.core.buildtargets"/>
 	<storageModule moduleId="refreshScope" versionNumber="2">
 		<configuration configurationName="Release_Light">
-			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep"/>
+			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep7160test"/>
 		</configuration>
 		<configuration configurationName="Debug_Light">
-			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep"/>
+			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep7160test"/>
 		</configuration>
 		<configuration configurationName="Debug_L⁬ight"/>
 		<configuration configurationName="Debug">
-			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep"/>
+			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep7160test"/>
 		</configuration>
 		<configuration configurationName="Release">
-			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep"/>
+			<resource resourceType="PROJECT" workspacePath="/peripheral_server_sleep7160test"/>
 		</configuration>
 	</storageModule>
 	<storageModule moduleId="com.arm.cmsis.project">
