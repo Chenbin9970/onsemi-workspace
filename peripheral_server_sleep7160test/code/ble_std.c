@@ -1,0 +1,1102 @@
+/* ----------------------------------------------------------------------------
+ * Copyright (c) 2015-2017 Semiconductor Components Industries, LLC (d/b/a
+ * ON Semiconductor), All Rights Reserved
+ *
+ * Copyright (C) RivieraWaves 2009-2016
+ *
+ * This module is derived in part from example code provided by RivieraWaves
+ * and as such the underlying code is the property of RivieraWaves [a member
+ * of the CEVA, Inc. group of companies], together with additional code which
+ * is the property of ON Semiconductor. The code (in whole or any part) may not
+ * be redistributed in any form without prior written permission from
+ * ON Semiconductor.
+ *
+ * The terms of use and warranty for this code are covered by contractual
+ * agreements between ON Semiconductor and the licensee.
+ *
+ * This is Reusable Code.
+ *
+ * ----------------------------------------------------------------------------
+ * ble_std.c
+ * - Bluetooth standard functions and message handlers
+ * ----------------------------------------------------------------------------
+ * $Revision: 1.30 $
+ * $Date: 2019/05/09 20:23:31 $
+ * ------------------------------------------------------------------------- */
+
+#include "app.h"
+#include "ble_rempro_cmd.h"
+
+#ifdef CFG_FOTA
+SYS_FOTA_VERSION(VER_ID, VER_MAJOR, VER_MINOR, VER_REVISION);
+#endif
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* Bluetooth Environment Structure */
+struct ble_env_tag ble_env;
+
+/* List of functions used to create the database */
+const appm_add_svc_func_t appm_add_svc_func_list[] = {
+    SERVICE_ADD_FUNCTION_LIST, NULL
+};
+
+/* List of functions used to enable client services */
+const appm_enable_svc_func_t appm_enable_svc_func_list[] = {
+    SERVICE_ENABLE_FUNCTION_LIST, NULL
+};
+
+/* Bluetooth Device Address */
+uint8_t bdaddr[BDADDR_LENGTH];
+uint8_t bdaddr_type;
+
+static struct gapm_set_dev_config_cmd *gapmConfigCmd;
+
+/* ----------------------------------------------------------------------------
+ * Function      : Device_Param_Prepare(struct app_device_param *param)
+ * ----------------------------------------------------------------------------
+ * Description   : Configure the device related stack parameters
+ * Inputs        : - param    - Pointer to the parameters to be configured
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Device_Param_Prepare(app_device_param_t *param)
+{
+    param->device_param_src_type = FLASH_PROVIDED_or_DFLT;
+
+    if (param->device_param_src_type == APP_PROVIDED)
+    {
+        uint8_t temp_bleAddress[6] = APP_PUBLIC_BDADDR;
+
+        memcpy(param->bleAddress, temp_bleAddress, 6);
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Standard Functions
+ * ------------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------------
+ * Function      : void BLE_Initialize(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Initialize the BLE baseband and application manager
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void BLE_Initialize(void)
+{
+    struct gapm_reset_cmd *cmd;
+    uint8_t default_addr[BDADDR_LENGTH] = PRIVATE_BDADDR;
+
+    /* Seed the random number generator */
+    srand(1);
+
+    BLE_DeviceParam_Set_ClockAccuracy(RADIO_CLOCK_ACCURACY);
+
+#if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE)
+    BLE_DeviceParam_Set_ADV_IFS(1300);
+#elif (APP_ADV_CONNECTABILITY_MODE == ADV_NON_CONNECTABLE_MODE)
+    BLE_DeviceParam_Set_ADV_IFS(530);
+#endif    /* if (APP_ADV_CONNECTIVITY_MODE == ADV_CONNECTABLE_MODE) */
+
+    if (RTC_CLK_SRC == RTC_CLK_SRC_RC_OSC)
+    {
+        BLE_DeviceParam_Set_ForcedClockAccuracy(800);
+    }
+
+    /* Initialize the kernel and Bluetooth stack */
+    Kernel_Init(0);
+    BLE_InitNoTL(0);
+
+    /* Enable the Bluetooth related interrupts needed */
+    NVIC_EnableIRQ(BLE_EVENT_IRQn);
+    NVIC_EnableIRQ(BLE_RX_IRQn);
+    NVIC_EnableIRQ(BLE_CRYPT_IRQn);
+    NVIC_EnableIRQ(BLE_ERROR_IRQn);
+    NVIC_EnableIRQ(BLE_SW_IRQn);
+    NVIC_EnableIRQ(BLE_GROSSTGTIM_IRQn);
+    NVIC_EnableIRQ(BLE_FINETGTIM_IRQn);
+    NVIC_EnableIRQ(BLE_CSCNT_IRQn);
+    NVIC_EnableIRQ(BLE_SLP_IRQn);
+
+    /* Reset the Bluetooth environment */
+    memset(&ble_env, 0, sizeof(ble_env));
+
+    /* Initialize task state */
+    ble_env.prev_state = APPM_INIT;
+    ble_env.state = APPM_INIT;
+
+#ifdef PEER_EAR_SYNC_ENABLE
+    /* Peer ear: initial delay before first connection attempt */
+    ble_env.peer_ear_retry_ticks = PEER_EAR_INITIAL_DELAY;
+    ble_env.peer_ear_conidx = GAP_INVALID_CONIDX;
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+    /* Set Bluetooth device type and address: depending on the device address
+     * type selected by the application, either a public or private address is
+     * used:
+     *     - In case public address type is selected: (i) If a public address is
+     *       provided by the application, it is used; (ii) Otherwise the device
+     *       public address available in DEVICE_INFO_BLUETOOTH_ADDR (located in
+     *       NVR3) is used. If no public address is available in NVR3, a default
+     *       public address pre-defined in the stack is used instead.
+     *     - In case private address type is selected: the private address
+     *       provided by the application is used. */
+#if (BD_ADDRESS_TYPE == BD_TYPE_PUBLIC)
+    bdaddr_type = GAPM_CFG_ADDR_PUBLIC;
+    if (Device_Param_Read(PARAM_ID_PUBLIC_BLE_ADDRESS, (uint8_t *)&bdaddr))
+    {
+        /* Use app-provided or NVR3 public address */
+    }
+    else
+    {
+        memcpy(bdaddr, &co_default_bdaddr, sizeof(uint8_t) * BDADDR_LENGTH);
+    }
+#else    /* if (BD_ADDRESS_TYPE == BD_TYPE_PUBLIC) */
+    memcpy(bdaddr, default_addr, sizeof(uint8_t) * BDADDR_LENGTH);
+    bdaddr_type = GAPM_CFG_ADDR_PRIVATE;
+#endif    /* if (BD_ADDRESS_TYPE == BD_TYPE_PUBLIC) */
+
+    /* Initialize GAPM configuration command to initialize the stack */
+    gapmConfigCmd = malloc(sizeof(struct gapm_set_dev_config_cmd));
+    gapmConfigCmd->operation = GAPM_SET_DEV_CONFIG;
+#ifdef PEER_EAR_SYNC_ENABLE
+    gapmConfigCmd->role = (ear_side == RM_LEFT) ? GAP_ROLE_ALL : GAP_ROLE_PERIPHERAL;
+#else
+    /* PEER_EAR_SYNC_ENABLE off: 左耳不再作 Central，纯 Peripheral（取消双耳直连） */
+    gapmConfigCmd->role = GAP_ROLE_PERIPHERAL;
+#endif
+    memcpy(gapmConfigCmd->addr.addr, bdaddr, sizeof(uint8_t) * BDADDR_LENGTH);
+    gapmConfigCmd->addr_type = bdaddr_type;
+    gapmConfigCmd->renew_dur = RENEW_DUR;
+    memset(&gapmConfigCmd->irk.key[0], 0, KEY_LEN);
+    gapmConfigCmd->pairing_mode = GAPM_PAIRING_DISABLE;
+    gapmConfigCmd->gap_start_hdl = 0;
+    gapmConfigCmd->gatt_start_hdl = 0;
+    gapmConfigCmd->max_mtu = MTU_MAX;
+    gapmConfigCmd->max_mps = MPS_MAX;
+    gapmConfigCmd->att_and_ext_cfg = ATT_CFG;
+    gapmConfigCmd->sugg_max_tx_octets = TX_OCT_MAX;
+    gapmConfigCmd->sugg_max_tx_time = TX_TIME_MAX;
+    gapmConfigCmd->tx_pref_rates = GAP_RATE_ANY;
+    gapmConfigCmd->rx_pref_rates = GAP_RATE_ANY;
+    gapmConfigCmd->max_nb_lecb = 0;
+    gapmConfigCmd->audio_cfg = 0;
+
+    /* Reset the stack */
+    cmd = KE_MSG_ALLOC(GAPM_RESET_CMD, TASK_GAPM, TASK_APP, gapm_reset_cmd);
+    cmd->operation = GAPM_RESET;
+
+    /* Send the message */
+    ke_msg_send(cmd);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : bool Service_Add(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Add the next service in the service list,
+ *                 calling the appropriate add service function
+ * Inputs        : None
+ * Outputs       : return value - Indicates if any service has not yet been
+ *                                added
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+bool Service_Add(void)
+{
+    /* Check if another should be added in the database */
+    if (appm_add_svc_func_list[ble_env.next_svc] != NULL)
+    {
+        /* Call the function used to add the required service */
+        appm_add_svc_func_list[ble_env.next_svc] ();
+
+        /* Select the next service to add */
+        ble_env.next_svc++;
+        return (true);
+    }
+
+    return (false);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Advertising_Start(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Send a start advertising
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Advertising_Start(void)
+{
+    uint8_t device_name_length;
+    uint8_t device_name_avail_space;
+    uint8_t scan_rsp[SCAN_RSP_DATA_LEN] = APP_SCNRSP_DATA;
+    uint8_t company_id[APP_COMPANY_ID_DATA_LEN] = APP_COMPANY_ID_DATA;
+
+    /* Set ear side at runtime (macro is compile-time only, shared by both ears) */
+    company_id[10] = (ear_side == RM_RIGHT) ? 0x02 : 0x01;
+
+    /* Fill device MAC into advertising data at offset 12 (after 1E FF header + 10 data bytes) */
+    company_id[12] = bdaddr[5];
+    company_id[13] = bdaddr[4];
+    company_id[14] = bdaddr[3];
+    company_id[15] = bdaddr[2];
+    company_id[16] = bdaddr[1];
+    company_id[17] = bdaddr[0];
+
+    /* Prepare the GAPM_START_ADVERTISE_CMD message */
+    struct gapm_start_advertise_cmd *cmd;
+
+    /* If the application is ready, start advertising */
+    if (ble_env.state == APPM_READY)
+    {
+        /* Prepare the start advertisement command message */
+        cmd = KE_MSG_ALLOC(GAPM_START_ADVERTISE_CMD, TASK_GAPM, TASK_APP,
+                           gapm_start_advertise_cmd);
+        cmd->op.addr_src = GAPM_STATIC_ADDR;
+        cmd->channel_map = APP_ADV_CHMAP;
+
+        cmd->intv_min = APP_ADV_INT_MIN;
+        cmd->intv_max = APP_ADV_INT_MAX;
+
+#if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE)
+        cmd->op.code = GAPM_ADV_UNDIRECT;
+#elif (APP_ADV_CONNECTABILITY_MODE == ADV_NON_CONNECTABLE_MODE)
+        cmd->op.code = GAPM_ADV_NON_CONN;
+#endif    /* if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE) */
+
+        cmd->op.state = 0;
+
+#if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE)
+        cmd->info.host.mode = GAP_GEN_DISCOVERABLE;
+#elif (APP_ADV_CONNECTABILITY_MODE == ADV_NON_CONNECTABLE_MODE)
+        cmd->info.host.mode = GAP_BROADCASTER_MODE;
+#endif    /* if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE) */
+
+        cmd->info.host.adv_filt_policy = 0;
+
+        /* Set the scan response data */
+#if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE)
+        cmd->info.host.scan_rsp_data_len = APP_SCNRSP_DATA_LEN;
+#elif (APP_ADV_CONNECTABILITY_MODE == ADV_NON_CONNECTABLE_MODE)
+        cmd->info.host.scan_rsp_data_len = 0;
+#endif    /* if (APP_ADV_CONNECTABILITY_MODE == ADV_CONNECTABLE_MODE) */
+
+        memcpy(&cmd->info.host.scan_rsp_data[0],
+               scan_rsp, cmd->info.host.scan_rsp_data_len);
+
+        /* Get remaining space in the advertising data -
+         * 2 bytes are used for name length/flag */
+        cmd->info.host.adv_data_len = 0;
+        device_name_avail_space = (ADV_DATA_LEN - 3) - 2;
+
+        /* Check if data can be added to the advertising data */
+        if (device_name_avail_space > 0)
+        {
+            /* Add as much of the device name as possible */
+            device_name_length = strlen(APP_DFLT_DEVICE_NAME);
+            if (device_name_length > 0)
+            {
+                /* Check available space */
+                device_name_length = co_min(device_name_length,
+                                            device_name_avail_space);
+                cmd->info.host.adv_data[cmd->info.host.adv_data_len] =
+                    device_name_length + 1;
+
+                /* Fill device name flag */
+                cmd->info.host.adv_data[cmd->info.host.adv_data_len + 1] =
+                    APP_DEVICE_NAME_FLAG;
+
+                /* Copy device name */
+                memcpy(&cmd->info.host.adv_data[cmd->info.host.adv_data_len +
+                                                2],
+                       APP_DFLT_DEVICE_NAME, device_name_length);
+
+                /* Update advertising data length */
+                cmd->info.host.adv_data_len += (device_name_length + 2);
+            }
+
+            /* If there is still space, add company ID */
+            if (((ADV_DATA_LEN - 3) - cmd->info.host.adv_data_len - 2) >=
+                APP_COMPANY_ID_DATA_LEN)
+            {
+                memcpy(&cmd->info.host.adv_data[cmd->info.host.adv_data_len],
+                       company_id, APP_COMPANY_ID_DATA_LEN);
+                cmd->info.host.adv_data_len += APP_COMPANY_ID_DATA_LEN;
+            }
+        }
+
+        /* Send the message */
+        ke_msg_send(cmd);
+
+        /* Save the existing state */
+        ble_env.prev_state = ble_env.state;
+
+        /* Set the state of the task to APPM_ADVERTISING  */
+        ble_env.state = APPM_ADVERTISING;
+        ble_env.is_advertising = true;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Peer Ear (Central Role) Connection Functions
+ * ------------------------------------------------------------------------- */
+
+#ifdef PEER_EAR_SYNC_ENABLE
+/* ----------------------------------------------------------------------------
+ * Function      : void DirectConnect_PeerEar(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Initiate a direct BLE connection to the opposite ear device
+ *                using a hardcoded MAC address (central role).
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : GAPM must be in READY state before calling.
+ * ------------------------------------------------------------------------- */
+void DirectConnect_PeerEar(void)
+{
+    struct gapm_start_connection_cmd *cmd;
+    uint8_t peer_mac[BDADDR_LENGTH];
+
+    /* Select peer MAC based on local ear side */
+    if (ear_side == RM_RIGHT)
+    {
+        uint8_t mac[BDADDR_LENGTH] = PEER_EAR_BD_ADDRESS_LEFT;
+        memcpy(peer_mac, mac, BDADDR_LENGTH);
+    }
+    else
+    {
+        uint8_t mac[BDADDR_LENGTH] = PEER_EAR_BD_ADDRESS_RIGHT;
+        memcpy(peer_mac, mac, BDADDR_LENGTH);
+    }
+
+    PRINTF("[PEER_EAR] DirectConnect to %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+           peer_mac[5], peer_mac[4], peer_mac[3],
+           peer_mac[2], peer_mac[1], peer_mac[0]);
+
+    cmd = KE_MSG_ALLOC_DYN(GAPM_START_CONNECTION_CMD, TASK_GAPM, TASK_APP,
+                           gapm_start_connection_cmd,
+                           sizeof(struct gap_bdaddr));
+
+    cmd->op.code       = GAPM_CONNECTION_DIRECT;
+    cmd->op.addr_src   = GAPM_STATIC_ADDR;
+    cmd->op.state      = 0;
+    cmd->scan_interval = PEER_EAR_SCAN_INTERVAL;
+    cmd->scan_window   = PEER_EAR_SCAN_WINDOW;
+    cmd->con_intv_min  = PEER_EAR_CON_INTERVAL_MIN;
+    cmd->con_intv_max  = PEER_EAR_CON_INTERVAL_MAX;
+    cmd->con_latency   = PEER_EAR_CON_LATENCY;
+    cmd->superv_to     = PEER_EAR_SUP_TIMEOUT;
+    cmd->nb_peers      = 1;
+    cmd->peers[0].addr_type = BD_ADDRESS_TYPE;
+    memcpy(cmd->peers[0].addr.addr, peer_mac, BDADDR_LENGTH);
+
+    ke_msg_send(cmd);
+
+    ble_env.prev_state = ble_env.state;
+    ble_env.state = APPM_CONNECTING;
+    ble_env.peer_ear_state = PEER_EAR_CONNECTING;
+    /* 3-second timeout: if peer is unreachable, GAPM may never respond */
+    ble_env.peer_ear_retry_ticks = 30;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void PeerEar_TryConnect(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Attempt to connect to the opposite ear. Cancels advertising
+ *                if active, otherwise initiates connection directly.
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : Called from Main_Loop context.
+ * ------------------------------------------------------------------------- */
+void PeerEar_TryConnect(void)
+{
+    if (ble_env.is_advertising)
+    {
+        struct gapm_cancel_cmd *cmd;
+        PRINTF("[PEER_EAR] stopping advertising to connect\r\n");
+        cmd = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP,
+                           gapm_cancel_cmd);
+        cmd->operation = GAPM_CANCEL;
+        ke_msg_send(cmd);
+    }
+    else if (ble_env.state != APPM_CONNECTING)
+    {
+        DirectConnect_PeerEar();
+    }
+    /* else: GAPM is busy (connecting), skip this attempt */
+}
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
+ *                                          struct gapm_profile_added_ind
+ *                                          const *param,
+ *                                          ke_task_id_t const dest_id,
+ *                                          ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle the received result of adding a profile to the
+ *                 attribute database
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapm_profile_added_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPM_ProfileAddedInd(ke_msg_id_t const msg_id,
+                         struct gapm_profile_added_ind const *param,
+                         ke_task_id_t const dest_id,
+                         ke_task_id_t const src_id)
+{
+    /* If the application is creating its attribute database, continue to add
+     * services; otherwise do nothing. */
+    if (ble_env.state == APPM_CREATE_DB)
+    {
+        /* Add the next requested service */
+        if (!Service_Add())
+        {
+            /* Save the existing state */
+            ble_env.prev_state = ble_env.state;
+
+            /* If there are no more services to add, go to the ready state */
+            ble_env.state = APPM_READY;
+
+            /* No more services to add, start advertising */
+            Advertising_Start();
+        }
+    }
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPM_CmpEvt(ke_msg_id_t const msg_id,
+ *                                 struct gapm_cmp_evt
+ *                                 const *param,
+ *                                 ke_task_id_t const dest_id,
+ *                                 ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle the reception of a GAPM complete event
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapm_cmp_evt
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPM_CmpEvt(ke_msg_id_t const msg_id,
+                struct gapm_cmp_evt const *param,
+                ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    struct gapm_set_dev_config_cmd *cmd;
+
+    switch (param->operation)
+    {
+        /* A reset has occurred, configure the device and
+         * start a kernel timer for the application */
+        case (GAPM_RESET):
+        {
+            if (param->status == GAP_ERR_NO_ERROR)
+            {
+                /* Set the device configuration */
+                cmd = KE_MSG_ALLOC(GAPM_SET_DEV_CONFIG_CMD, TASK_GAPM, TASK_APP,
+                                   gapm_set_dev_config_cmd);
+                memcpy(cmd, gapmConfigCmd, sizeof(struct
+                                                  gapm_set_dev_config_cmd));
+                free(gapmConfigCmd);
+
+                /* Send message */
+                ke_msg_send(cmd);
+            }
+        }
+        break;
+
+        /* Device configuration updated */
+        case (GAPM_SET_DEV_CONFIG):
+        {
+            /* Save the existing state */
+            ble_env.prev_state = ble_env.state;
+
+            /* Start creating the GATT database */
+            ble_env.state = APPM_CREATE_DB;
+
+            /* Add the first required service in the database */
+            if (!Service_Add())
+            {
+                /* Save the existing state */
+                ble_env.prev_state = ble_env.state;
+
+                /* Go to the ready state */
+                ble_env.state = APPM_READY;
+
+                /* Start advertising since there are no services to add
+                 * to the attribute database */
+                Advertising_Start();
+            }
+        }
+        break;
+
+#ifdef PEER_EAR_SYNC_ENABLE
+        /* Connection attempt completed (success or failure) */
+        case (GAPM_CONNECTION_DIRECT):
+        {
+            if (param->status != GAP_ERR_NO_ERROR)
+            {
+                /* Connection failed — restore state and retry later */
+                PRINTF("[PEER_EAR] connection failed (status=%d)\r\n",
+                       param->status);
+                ble_env.is_advertising = false;
+                ble_env.peer_ear_state = PEER_EAR_RETRY_WAIT;
+                ble_env.peer_ear_retry_ticks = PEER_EAR_RETRY_TICKS;
+                ble_env.prev_state = ble_env.state;
+                ble_env.state = APPM_READY;
+                Advertising_Start();
+                ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+            }
+            /* On success, GAPC_ConnectionReqInd handles the transition */
+        }
+        break;
+
+        default:
+        {
+            /* Advertising cancelled to initiate peer ear connection */
+            if (param->status == GAP_ERR_CANCELED
+                && (ble_env.peer_ear_state == PEER_EAR_IDLE
+                    || ble_env.peer_ear_state == PEER_EAR_RETRY_WAIT))
+            {
+                PRINTF("[PEER_EAR] advertising cancelled, initiating connection\r\n");
+                ble_env.is_advertising = false;
+                ble_env.peer_ear_state = PEER_EAR_CONNECTING;
+                DirectConnect_PeerEar();
+            }
+            /* Connection attempt cancelled due to timeout */
+            else if (param->status == GAP_ERR_CANCELED
+                     && ble_env.peer_ear_state == PEER_EAR_CONNECTING)
+            {
+                PRINTF("[PEER_EAR] connect cancelled, retrying later\r\n");
+                ble_env.is_advertising = false;
+                ble_env.peer_ear_state = PEER_EAR_RETRY_WAIT;
+                ble_env.peer_ear_retry_ticks = PEER_EAR_RETRY_TICKS;
+                ble_env.state = APPM_READY;
+                Advertising_Start();
+                ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+            }
+        }
+        break;
+#endif /* PEER_EAR_SYNC_ENABLE */
+    }
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_GetDevInfoReqInd(ke_msg_id_t const msg_id,
+ *                                           struct gapc_get_dev_info_req_ind
+ *                                           const *param,
+ *                                           ke_task_id_t const dest_id,
+ *                                           ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle message device info request received from GAP
+ *                 controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapc_get_dev_info_req_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPC_GetDevInfoReqInd(ke_msg_id_t const msg_id,
+                          struct gapc_get_dev_info_req_ind const *param,
+                          ke_task_id_t const dest_id,
+                          ke_task_id_t const src_id)
+{
+    uint8_t len = strlen(APP_DFLT_DEVICE_NAME);
+
+    /* Allocate message */
+    struct gapc_get_dev_info_cfm *cfm = KE_MSG_ALLOC_DYN(GAPC_GET_DEV_INFO_CFM,
+                                                         src_id, dest_id,
+                                                         gapc_get_dev_info_cfm,
+                                                         len);
+
+    switch (param->req)
+    {
+        case GAPC_DEV_NAME:
+        {
+            cfm->req = GAPC_DEV_NAME;
+            memcpy(&cfm->info.name.value[0], APP_DFLT_DEVICE_NAME, len);
+            cfm->info.name.length = len;
+        }
+        break;
+
+        case GAPC_DEV_APPEARANCE:
+        {
+            /* Set the device appearance (no appearance) */
+            cfm->info.appearance = 0;
+            cfm->req = GAPC_DEV_APPEARANCE;
+            cfm->info.appearance = GAPM_WRITE_DISABLE;
+        }
+        break;
+
+        case GAPC_DEV_SLV_PREF_PARAMS:
+        {
+            /* Slave preferred connection interval (minimum) */
+            cfm->info.slv_params.con_intv_min = PREF_SLV_MIN_CON_INTERVAL;
+
+            /* Slave preferred connection interval (maximum) */
+            cfm->info.slv_params.con_intv_max = PREF_SLV_MAX_CON_INTERVAL;
+
+            /* Slave preferred connection latency */
+            cfm->info.slv_params.slave_latency = PREF_SLV_LATENCY;
+
+            /* Slave preferred link supervision timeout */
+            cfm->info.slv_params.conn_timeout = PREF_SLV_SUP_TIMEOUT;
+
+            cfm->req = GAPC_DEV_SLV_PREF_PARAMS;
+        }
+        break;
+
+        default:
+        {
+            /* No action required for other requests */
+        }
+        break;
+    }
+
+    /* Send message */
+    ke_msg_send(cfm);
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_ConnectionReqInd(ke_msg_idd_t const msg_id,
+ *                                           struct gapc_connection_req_ind
+ *                                           const *param,
+ *                                           ke_task_id_t const dest_id,
+ *                                           ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle connection indication message received from GAP
+ *                 controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapc_connection_req_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
+                          struct gapc_connection_req_ind const *param,
+                          ke_task_id_t const dest_id,
+                          ke_task_id_t const src_id)
+{
+    struct gapc_connection_cfm *cfm;
+    uint8_t new_conidx = KE_IDX_GET(src_id);
+
+    /* Check if the received connection handle was valid */
+    if (new_conidx == GAP_INVALID_CONIDX)
+    {
+        ble_env.prev_state = ble_env.state;
+        ble_env.state = APPM_READY;
+        ble_env.is_advertising = false;
+        Advertising_Start();
+        return (KE_MSG_CONSUMED);
+    }
+
+#ifdef PEER_EAR_SYNC_ENABLE
+    /* Determine connection type: peer ear (outgoing/central) vs phone (incoming/peripheral) */
+    if (ble_env.peer_ear_state == PEER_EAR_CONNECTING)
+    {
+        /* This is the peer ear connection we initiated */
+        ble_env.peer_ear_conidx = new_conidx;
+        ble_env.peer_ear_connected = true;
+        ble_env.peer_ear_state = PEER_EAR_CONNECTED;
+
+        PRINTF("[PEER_EAR] connected: conidx=%d interval=%u (%.2fms)\r\n",
+               new_conidx, param->con_interval, param->con_interval * 1.25f);
+
+        cfm = KE_MSG_ALLOC(GAPC_CONNECTION_CFM,
+                           KE_BUILD_ID(TASK_GAPC, new_conidx), TASK_APP,
+                           gapc_connection_cfm);
+        cfm->pairing_lvl = GAP_AUTH_REQ_NO_MITM_NO_BOND;
+        cfm->svc_changed_ind_enable = 0;
+        ke_msg_send(cfm);
+
+        /* Start GATT discovery on peer ear for program/volume sync */
+        CS_Peer_Enable(new_conidx);
+
+        /* Restore ble_env.state and restart advertising so phone can find us.
+         * Save state before Advertising_Start (which overwrites prev_state). */
+        {
+            uint8_t saved = ble_env.prev_state;  /* pre-DirectConnect state */
+            ble_env.is_advertising = false;
+            ble_env.state = APPM_READY;
+            Advertising_Start();
+            /* Advertising_Start overwrote prev_state → put back the original */
+            ble_env.prev_state = saved;
+            if (saved == APPM_CONNECTED) {
+                ble_env.state = APPM_CONNECTED;
+            }
+        }
+
+        return (KE_MSG_CONSUMED);
+    }
+
+    /* Check if incoming connection is from peer ear (opposite side runs same firmware).
+     * If MAC matches, this is a peer ear connection, not a phone connection. */
+    {
+        const uint8_t peer_mac_left[BDADDR_LENGTH]  = PEER_EAR_BD_ADDRESS_LEFT;
+        const uint8_t peer_mac_right[BDADDR_LENGTH] = PEER_EAR_BD_ADDRESS_RIGHT;
+        const uint8_t *peer_mac = (ear_side == RM_RIGHT) ? peer_mac_left : peer_mac_right;
+
+        if (memcmp(peer_mac, param->peer_addr.addr, BDADDR_LENGTH) == 0)
+        {
+            PRINTF("[PEER_EAR] incoming connection from opposite ear, conidx=%d\r\n",
+                   new_conidx);
+            ble_env.peer_ear_conidx = new_conidx;
+            ble_env.peer_ear_connected = true;
+            ble_env.peer_ear_state = PEER_EAR_CONNECTED;
+
+            cfm = KE_MSG_ALLOC(GAPC_CONNECTION_CFM,
+                               KE_BUILD_ID(TASK_GAPC, new_conidx), TASK_APP,
+                               gapc_connection_cfm);
+            cfm->pairing_lvl = GAP_AUTH_REQ_NO_MITM_NO_BOND;
+            cfm->svc_changed_ind_enable = 0;
+            ke_msg_send(cfm);
+
+            /* Keep advertising so phone can still connect */
+            {
+                uint8_t saved_state = ble_env.state;
+                ble_env.is_advertising = false;
+                ble_env.state = APPM_READY;
+                Advertising_Start();
+                if (saved_state == APPM_CONNECTED) {
+                    ble_env.state = APPM_CONNECTED;
+                }
+            }
+
+            return (KE_MSG_CONSUMED);
+        }
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+    /* Phone connection (incoming, peripheral role) */
+    ble_env.conidx = new_conidx;
+    ble_env.is_advertising = false;  /* connection stops advertising */
+
+#ifdef APP_RM_ENABLE
+    /* TX fast-switch: if peer is TX device, skip BLE, go RM */
+    {
+        uint8_t tx_mac[BDADDR_LENGTH] = TX_BD_ADDRESS;
+        if (tx_mac[0] == param->peer_addr.addr[0] &&
+            tx_mac[1] == param->peer_addr.addr[1] &&
+            tx_mac[2] == param->peer_addr.addr[2] &&
+            tx_mac[3] == param->peer_addr.addr[3] &&
+            tx_mac[4] == param->peer_addr.addr[4] &&
+            tx_mac[5] == param->peer_addr.addr[5])
+        {
+            PRINTF("[BLE] TX detected %02X:%02X:%02X:%02X:%02X:%02X — RM\n",
+                   param->peer_addr.addr[5], param->peer_addr.addr[4],
+                   param->peer_addr.addr[3], param->peer_addr.addr[2],
+                   param->peer_addr.addr[1], param->peer_addr.addr[0]);
+            app_env.tx_connect_detected = 1;
+            ble_env.is_advertising = false;
+            ble_env.state = APPM_READY;
+            Advertising_Start();
+            return (KE_MSG_CONSUMED);
+        }
+        PRINTF("[BLE] unknown peer %02X:%02X:%02X:%02X:%02X:%02X — accept\n",
+               param->peer_addr.addr[5], param->peer_addr.addr[4],
+               param->peer_addr.addr[3], param->peer_addr.addr[2],
+               param->peer_addr.addr[1], param->peer_addr.addr[0]);
+    }
+#endif
+    /* Save the existing state */
+    ble_env.prev_state = ble_env.state;
+
+    ble_env.state = APPM_CONNECTED;
+
+    /* Retrieve the connection info from the parameters */
+    ble_env.conidx = param->conhdl;
+
+    /* Save the connection parameters */
+    ble_env.con_interval = param->con_interval;
+    ble_env.con_latency = param->con_latency;
+    ble_env.sup_to = param->sup_to;
+    PRINTF("[BLE] connected: interval=%u (%.2fms) latency=%u timeout=%u\r\n",
+           param->con_interval, param->con_interval * 1.25f,
+           param->con_latency, param->sup_to);
+
+    /* Set the actual connection parameters */
+    ble_env.actual_con_interval = param->con_interval;
+    ble_env.actual_con_latency  = param->con_latency;
+    ble_env.actual_sup_to       = param->sup_to;
+    /* Send connection confirmation */
+    cfm = KE_MSG_ALLOC(GAPC_CONNECTION_CFM,
+                       KE_BUILD_ID(TASK_GAPC, ble_env.conidx), TASK_APP,
+                       gapc_connection_cfm);
+
+    cfm->pairing_lvl = GAP_AUTH_REQ_NO_MITM_NO_BOND;
+
+    cfm->svc_changed_ind_enable = 0;
+
+    /* Send the message */
+    ke_msg_send(cfm);
+
+    BLE_SetServiceState(true, ble_env.conidx);
+
+    /* Request relaxed parameters for phone compatibility */
+    {
+        struct gapc_param_update_cmd *update;
+        update = KE_MSG_ALLOC(GAPC_PARAM_UPDATE_CMD,
+                              KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
+                              TASK_APP, gapc_param_update_cmd);
+        update->operation = GAPC_UPDATE_PARAMS;
+        update->pkt_id    = 0;
+        update->intv_min  = PREF_SLV_MIN_CON_INTERVAL;
+        update->intv_max  = PREF_SLV_MAX_CON_INTERVAL;
+        update->latency   = PREF_SLV_LATENCY;
+        update->time_out  = PREF_SLV_SUP_TIMEOUT;
+        update->ce_len_min = 0xffff;
+        update->ce_len_max = 0xffff;
+        ke_msg_send(update);
+    }
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_CmpEvt(ke_msg_id_t const msg_id,
+ *                                 struct gapc_cmp_evt
+ *                                 const *param,
+ *                                 ke_task_id_t const dest_id,
+ *                                 ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle received GAPC complete event
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapc_cmp_evt
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPC_CmpEvt(ke_msg_id_t const msg_id,
+                struct gapc_cmp_evt const *param,
+                ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    /* No operations in this application use this event */
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
+ *                                        struct gapc_disconnect_ind
+ *                                        const *param,
+ *                                        ke_task_id_t const dest_id,
+ *                                        ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle disconnect indication message from GAP controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapc_disconnect_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
+                       struct gapc_disconnect_ind const *param,
+                       ke_task_id_t const dest_id,
+                       ke_task_id_t const src_id)
+{
+    uint8_t conidx = KE_IDX_GET(src_id);
+
+#ifdef PEER_EAR_SYNC_ENABLE
+    /* Check if this is the peer ear connection */
+    if (ble_env.peer_ear_connected && conidx == ble_env.peer_ear_conidx)
+    {
+        PRINTF("[PEER_EAR] disconnected (conidx=%d, reason=%d)\r\n",
+               conidx, param->reason);
+        ble_env.peer_ear_connected = false;
+        ble_env.peer_ear_conidx = GAP_INVALID_CONIDX;
+        ble_env.peer_ear_state = PEER_EAR_RETRY_WAIT;
+        ble_env.peer_ear_retry_ticks = PEER_EAR_RETRY_TICKS;
+        ble_env.peer_ear_gatt_ready = false;
+        memset(&cs_peer_env, 0, sizeof(cs_peer_env));
+        /* Restart advertising so peer ear can find us again */
+        ble_env.is_advertising = false;
+        ble_env.state = APPM_READY;
+        Advertising_Start();
+        ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+        return (KE_MSG_CONSUMED);
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+    /* Phone connection (peripheral role) */
+    PRINTF("[DISCONNECT] reason=0x%02X\r\n", param->reason);
+
+    /* Save the existing state */
+    ble_env.prev_state = ble_env.state;
+
+    /* Go to the ready state */
+    ble_env.state = APPM_READY;
+    ble_env.is_advertising = false;
+
+    BLE_SetServiceState(false, ble_env.conidx);
+
+    /* Persist BS300 settings (program + volume) on disconnect —
+     * Flash_EraseSector is unsafe during connected state. */
+    bs300_settings_persist();
+
+    /* Clear HDLC reassembly buffer so stale frames don't leak
+     * into the next connection. */
+    rempro_reasm_reset();
+
+    Advertising_Start();
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_ParamUpdatedInd(ke_msg_id_t const msg_id,
+ *                                          struct gapc_param_updated_ind
+ *                                          const *param,
+ *                                          ke_task_id_t const dest_id,
+ *                                          ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle message parameter updated indication received from GAP
+ *                 controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gapc_param_updated_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GAPC_ParamUpdatedInd(ke_msg_id_t const msg_id,
+                         struct gapc_param_updated_ind const *param,
+                         ke_task_id_t const dest_id,
+                         ke_task_id_t const src_id)
+{
+    PRINTF("[PARAM_UPDATED] intv=%d lat=%d to=%d\r\n",
+           param->con_interval, param->con_latency, param->sup_to);
+
+    /* Save the updated connection parameters */
+    ble_env.updated_con_interval = param->con_interval;
+    ble_env.updated_con_latency = param->con_latency;
+    ble_env.updated_sup_to = param->sup_to;
+
+    ble_env.actual_con_interval = param->con_interval;
+    ble_env.actual_con_latency  = param->con_latency;
+    ble_env.actual_sup_to       = param->sup_to;
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
+ *                         struct gapc_param_update_req_ind const *param,
+ *                         ke_task_id_t const dest_id,
+ *                         ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   :
+ * ------------------------------------------------------------------------- */
+int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
+                           struct gapc_param_update_req_ind const *param,
+                           ke_task_id_t const dest_id,
+                           ke_task_id_t const src_id)
+{
+    struct gapc_param_update_cfm *cfm;
+
+    PRINTF("[PARAM_UPDATE_REQ] intv=%d..%d lat=%d to=%d\r\n",
+           param->intv_min, param->intv_max, param->latency, param->time_out);
+
+    cfm = KE_MSG_ALLOC(GAPC_PARAM_UPDATE_CFM,
+                       KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
+                       TASK_APP,
+                       gapc_param_update_cfm);
+    cfm->accept = 1;
+    cfm->ce_len_max = 0xffff;
+    cfm->ce_len_min = 0xffff;
+
+    /* Send message */
+    ke_msg_send(cfm);
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void BLE_SetServiceState(bool enable, uint8_t conidx)
+ * ----------------------------------------------------------------------------
+ * Description   : Set Bluetooth application environment state to enabled
+ * Inputs        : enable    - Indicates that enable request should be sent
+ *                             for all services/profiles or their status should
+ *                             be set to disabled
+ *                 conidx    - Connection index
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void BLE_SetServiceState(bool enable, uint8_t conidx)
+{
+    /* All standard services should be send enable request to the stack,
+     * for custom services, application should decide if it would want
+     * to do a specific action
+     * all services should be disabled once the link is lost
+     */
+    if (enable == true)
+    {
+        /* To enable standard Bluetooth services, an enable request should be
+         * sent to the stack (for related profile) and at receiving the
+         * response the enable flag can be set. For custom service it is
+         * application implementation dependent. Here, it starts service
+         * discovery, and if the service UUID and characteristics UUID are
+         * discovered, then it goes to an state that is equivalent to the
+         * enable flag of standard profiles
+         */
+        ble_env.next_svc_enable = 0;
+        Service_Enable(conidx);
+    }
+    else
+    {
+        bass_support_env.enable = false;
+        cs_env.state = CS_INIT;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : bool Service_Enable(uint8_t conidx)
+ * ----------------------------------------------------------------------------
+ * Description   : Enable the next service in the service list,
+ *                 calling the appropriate enable service function
+ * Inputs        : - conidx     - Connection index
+ * Outputs       : return value - Indicates if any service has not yet been
+ *                                added
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+bool Service_Enable(uint8_t conidx)
+{
+    /* Check if another should be added in the database */
+    if (appm_enable_svc_func_list[ble_env.next_svc_enable] != NULL)
+    {
+        /* Call the function used to enable the required service */
+        appm_enable_svc_func_list[ble_env.next_svc_enable] (conidx);
+
+        /* Select the next service to enable */
+        ble_env.next_svc_enable++;
+        return (true);
+    }
+
+    return (false);
+}

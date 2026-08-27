@@ -1,0 +1,713 @@
+/* ----------------------------------------------------------------------------
+ * Copyright (c) 2015-2017 Semiconductor Components Industries, LLC (d/b/a
+ * ON Semiconductor), All Rights Reserved
+ *
+ * This code is the property of ON Semiconductor and may not be redistributed
+ * in any form without prior written permission from ON Semiconductor.
+ * The terms of use and warranty for this code are covered by contractual
+ * agreements between ON Semiconductor and the licensee.
+ *
+ * This is Reusable Code.
+ *
+ * ----------------------------------------------------------------------------
+ * ble_custom.c
+ * - Bluetooth custom service functions
+ * ----------------------------------------------------------------------------
+ * $Revision: 1.17 $
+ * $Date: 2018/10/18 18:24:05 $
+ * ------------------------------------------------------------------------- */
+
+#include "app.h"
+#include "ble_rempro.h"
+#include "ble_rempro_cmd.h"
+#ifdef CFG_FOTA
+#include "sys_fota.h"
+#endif
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* Global variable definition */
+struct cs_env_tag cs_env;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void CustomService_Env_Initialize(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Initialize custom service environment
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void CustomService_Env_Initialize(void)
+{
+    /* Reset the application manager environment */
+    memset(&cs_env, 0, sizeof(cs_env));
+
+    cs_env.tx_cccd_value = ATT_CCC_START_NTF;
+    cs_env.rx_cccd_value = 0;
+    cs_env.val_notif = 0;
+    cs_env.sentSuccess = 1;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void CustomService_ServiceAdd(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Send request to add custom profile into the attribute
+ *                 database.Defines the different access functions
+ *                 (setter/getter commands to access the different
+ *                 characteristic attributes).
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void CustomService_ServiceAdd(void)
+{
+    struct gattm_add_svc_req *req = KE_MSG_ALLOC_DYN(GATTM_ADD_SVC_REQ,
+                                                     TASK_GATTM, TASK_APP,
+                                                     gattm_add_svc_req,
+                                                     CS_IDX_NB * sizeof(struct
+                                                                        gattm_att_desc));
+
+    uint8_t i;
+    const uint8_t svc_uuid[ATT_UUID_128_LEN] = CS_SVC_UUID;
+
+    const struct gattm_att_desc att[CS_IDX_NB] =
+    {
+        /* Attribute Index  = Attribute properties: UUID,
+         *                                          Permissions,
+         *                                          Max size,
+         *                                          Extra permissions */
+
+        /* TX Characteristic */
+        [CS_IDX_TX_VALUE_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_TX_VALUE_VAL]      = ATT_DECL_CHAR_UUID_128(CS_CHARACTERISTIC_TX_UUID,
+                                                            PERM(RD, ENABLE) | PERM(NTF, ENABLE),
+                                                            CS_TX_VALUE_MAX_LENGTH),
+        [CS_IDX_TX_VALUE_CCC]      = ATT_DECL_CHAR_CCC(),
+        [CS_IDX_TX_VALUE_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+        /* RX Characteristic */
+        [CS_IDX_RX_VALUE_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RX_VALUE_VAL]      = ATT_DECL_CHAR_UUID_128(CS_CHARACTERISTIC_RX_UUID,
+                                                            PERM(RD, ENABLE)
+                                                            | PERM(WRITE_REQ, ENABLE) | PERM(WRITE_COMMAND, ENABLE),
+                                                            CS_RX_VALUE_MAX_LENGTH),
+        [CS_IDX_RX_VALUE_CCC]      = ATT_DECL_CHAR_CCC(),
+        [CS_IDX_RX_VALUE_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+
+        /* RM ON_OFF Characteristic */
+        [CS_IDX_RM_ONOFF_CHAR]     = ATT_DECL_CHAR(),
+        [CS_IDX_RM_ONOFF_VAL]      = ATT_DECL_CHAR_UUID_128(CS_CHARACTERISTIC_RM_ONOFF_UUID,
+                                                            PERM(RD, ENABLE)
+                                                            | PERM(WRITE_REQ, ENABLE) | PERM(WRITE_COMMAND, ENABLE),
+                                                            CS_RM_ONOFF_VALUE_MAX_LENGTH),
+        [CS_IDX_RM_ONOFF_USR_DSCP] = ATT_DECL_CHAR_USER_DESC(CS_USER_DESCRIPTION_MAX_LENGTH),
+    };
+
+    /* Fill the add custom service message */
+    req->svc_desc.start_hdl = 0;
+    req->svc_desc.task_id = TASK_APP;
+    req->svc_desc.perm = PERM(SVC_UUID_LEN, UUID_128);
+    req->svc_desc.nb_att = CS_IDX_NB;
+
+    memcpy(&req->svc_desc.uuid[0], &svc_uuid[0], ATT_UUID_128_LEN);
+
+    for (i = 0; i < CS_IDX_NB; i++)
+    {
+        memcpy(&req->svc_desc.atts[i], &att[i], sizeof(struct gattm_att_desc));
+    }
+
+    /* Send the message */
+    ke_msg_send(req);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GATTM_AddSvcRsp(ke_msg_id_t const msg_id,
+ *                                     struct gattm_add_svc_rsp
+ *                                     const *param,
+ *                                     ke_task_id_t const dest_id,
+ *                                     ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle the response from adding a service in the attribute
+ *                 database from the GATT manager
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gattm_add_svc_rsp
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GATTM_AddSvcRsp(ke_msg_id_t const msg_id,
+                    struct gattm_add_svc_rsp const *param,
+                    ke_task_id_t const dest_id,
+                    ke_task_id_t const src_id)
+{
+    if (cs_env.start_hdl == 0)
+    {
+        cs_env.start_hdl = param->start_hdl;
+    }
+    else if (rempro_env.start_hdl == 0)
+    {
+        rempro_env.start_hdl = param->start_hdl;
+    }
+    /* Add the next requested service  */
+    if (!Service_Add())
+    {
+        /* Save the existing state */
+        ble_env.prev_state = ble_env.state;
+        /* All services have been added, go to the ready state
+         * and start advertising */
+        ble_env.state = APPM_READY;
+        Advertising_Start();
+    }
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
+ *                                      struct gattc_read_req_ind
+ *                                      const *param,
+ *                                      ke_task_id_t const dest_id,
+ *                                      ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle received read request indication
+ *                 from a GATT Controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gattc_read_req_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
+                     struct gattc_read_req_ind const *param,
+                     ke_task_id_t const dest_id,
+                     ke_task_id_t const src_id)
+{
+    uint8_t length = 0;
+    uint8_t status = GAP_ERR_NO_ERROR;
+    uint16_t attnum;
+    uint8_t *valptr = NULL;
+
+    struct gattc_read_cfm *cfm;
+
+    /* Route handle to the correct service */
+    if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+    }
+    else if (param->handle > cs_env.start_hdl)
+    {
+        attnum = (param->handle - cs_env.start_hdl - 1);
+    }
+    else
+    {
+        status = ATT_ERR_INVALID_HANDLE;
+    }
+
+    /* If there is no error, send back the requested attribute value */
+    if (status == GAP_ERR_NO_ERROR)
+    {
+        if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+        {
+            switch (attnum)
+            {
+                case REMPRO_IDX_ROLE_VALUE_VAL:
+                    length = REMPRO_ROLE_VALUE_MAX_LENGTH;
+                    valptr = (uint8_t *)&rempro_env.role_value;
+                    break;
+                case REMPRO_IDX_ROLE_VALU_CCC:
+                    length = 2;
+                    valptr = (uint8_t *)&rempro_env.role_cccd_value;
+                    break;
+                case REMPRO_IDX_ROLE_VALUE_USR_DSCP:
+                    length = strlen("ROLE_VALUE");
+                    valptr = (uint8_t *)"ROLE_VALUE";
+                    break;
+                case REMPRO_IDX_ONOFF_VALUE_VAL:
+                    length = REMPRO_ONOFF_VALUE_MAX_LENGTH;
+                    valptr = (uint8_t *)&rempro_env.onoff_value;
+                    break;
+                case REMPRO_IDX_ONOFF_VALU_CCC:
+                    length = 2;
+                    valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+                    break;
+                default:
+                    status = ATT_ERR_READ_NOT_PERMITTED;
+                    break;
+            }
+        }
+        else
+        {
+            switch (attnum)
+        {
+            case CS_IDX_RX_VALUE_VAL:
+            {
+                length = CS_RX_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&cs_env.rx_value;
+            }
+            break;
+
+            case CS_IDX_RX_VALUE_CCC:
+            {
+                length = 2;
+                valptr = (uint8_t *)&cs_env.rx_cccd_value;
+            }
+            break;
+
+            case CS_IDX_RX_VALUE_USR_DSCP:
+            {
+                length = strlen(CS_RX_CHARACTERISTIC_NAME);
+                valptr = (uint8_t *)CS_RX_CHARACTERISTIC_NAME;
+            }
+            break;
+
+            case CS_IDX_TX_VALUE_VAL:
+            {
+                length = CS_TX_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&cs_env.tx_value;
+            }
+            break;
+
+            case CS_IDX_TX_VALUE_CCC:
+            {
+                length = 2;
+                valptr = (uint8_t *)&cs_env.tx_cccd_value;
+            }
+            break;
+
+            case CS_IDX_TX_VALUE_USR_DSCP:
+            {
+                length = strlen(CS_TX_CHARACTERISTIC_NAME);
+                valptr = (uint8_t *)CS_TX_CHARACTERISTIC_NAME;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                length = CS_RM_ONOFF_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&cs_env.rm_onoff_value;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_USR_DSCP:
+            {
+                length = strlen(CS_RM_ONOFF_CHARACTERISTIC_NAME);
+                valptr = (uint8_t *)CS_RM_ONOFF_CHARACTERISTIC_NAME;
+            }
+            break;
+
+            default:
+            {
+                status = ATT_ERR_READ_NOT_PERMITTED;
+            }
+            break;
+        }
+        }
+    }
+
+    /* Allocate and build message — response goes to the connection
+     * that sent the request */
+    cfm = KE_MSG_ALLOC_DYN(GATTC_READ_CFM,
+                           src_id,
+                           TASK_APP,
+                           gattc_read_cfm,
+                           length);
+
+    if (valptr != NULL)
+    {
+        memcpy(cfm->value, valptr, length);
+    }
+
+    cfm->handle = param->handle;
+    cfm->length = length;
+    cfm->status = status;
+
+    /* Send the message */
+    ke_msg_send(cfm);
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
+ *                                       struct gattc_write_req_ind
+ *                                       const *param,
+ *                                       ke_task_id_t const dest_id,
+ *                                       ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle received write request indication
+ *                 from a GATT Controller
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gattc_write_req_ind
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
+                      struct gattc_write_req_ind const *param,
+                      ke_task_id_t const dest_id,
+                      ke_task_id_t const src_id)
+{
+    struct gattc_write_cfm *cfm = KE_MSG_ALLOC(GATTC_WRITE_CFM,
+                                               src_id,
+                                               TASK_APP,
+                                               gattc_write_cfm);
+
+    uint8_t status = GAP_ERR_NO_ERROR;
+    uint16_t attnum;
+    uint8_t *valptr = NULL;
+
+    /* Check that offset is not zero */
+    if (param->offset)
+    {
+        status = ATT_ERR_INVALID_OFFSET;
+    }
+
+    /* Route handle to the correct service */
+    if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+    }
+    else if (param->handle > cs_env.start_hdl)
+    {
+        attnum = (param->handle - cs_env.start_hdl - 1);
+    }
+    else
+    {
+        status = ATT_ERR_INVALID_HANDLE;
+    }
+
+    /* If there is no error, save the requested attribute value */
+    if (status == GAP_ERR_NO_ERROR)
+    {
+        if (rempro_env.start_hdl != 0 && param->handle > rempro_env.start_hdl)
+        {
+            switch (attnum)
+            {
+                case REMPRO_IDX_ROLE_VALUE_VAL:
+                    valptr = NULL;  /* bypass memcpy below — data goes straight to reasm_buf */
+                    PRINTF("[REMPRO GATT] len=%u:", param->length);
+                    for (uint8_t _i = 0; _i < param->length; _i++)
+                        PRINTF(" %02X", param->value[_i]);
+                    PRINTF("\r\n");
+                    rempro_reasm_append(param->value, param->length);
+                    break;
+                case REMPRO_IDX_ROLE_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.role_cccd_value;
+                    break;
+                case REMPRO_IDX_ONOFF_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+                    break;
+                default:
+                    status = ATT_ERR_WRITE_NOT_PERMITTED;
+                    break;
+            }
+        }
+        else
+        {
+            switch (attnum)
+        {
+            case CS_IDX_RX_VALUE_VAL:
+            {
+                valptr = (uint8_t *)&cs_env.rx_value;
+                cs_env.rx_value_changed = 1;
+#ifdef PEER_EAR_SYNC_ENABLE
+                /* If write came from peer ear (not phone), prevent echo-back */
+                if (ble_env.peer_ear_connected
+                    && KE_IDX_GET(src_id) == ble_env.peer_ear_conidx)
+                {
+                    app_env.sync_from_remote++;
+                }
+#endif /* PEER_EAR_SYNC_ENABLE */
+                PRINTF("[BS300] BLE RX: len=%u data=[%02X %02X]\r\n",
+                       param->length,
+                       param->length > 0 ? param->value[0] : 0,
+                       param->length > 1 ? param->value[1] : 0);
+#ifdef CFG_FOTA
+                if (param->length >= 1 && param->value[0] == 0xFD) {
+                    PRINTF("[FOTA] Triggered via Custom RX, entering DFU...\r\n");
+                    Sys_Fota_StartDfu(1);
+                }
+#endif
+            }
+            break;
+
+            case CS_IDX_RX_VALUE_CCC:
+            {
+                valptr = (uint8_t *)&cs_env.rx_cccd_value;
+            }
+            break;
+
+            case CS_IDX_TX_VALUE_CCC:
+            {
+                valptr = (uint8_t *)&cs_env.tx_cccd_value;
+            }
+            break;
+
+            case CS_IDX_RM_ONOFF_VAL:
+            {
+                valptr = (uint8_t *)&cs_env.rm_onoff_value;
+                if (param->length >= 1)
+                {
+                    if (param->value[0] == 0x01)
+                    {
+                        app_env.rm_start_requested = 1;
+                    }
+                    else if (param->value[0] == 0x00)
+                    {
+                        app_env.rm_stop_requested = 1;
+                    }
+                }
+            }
+            break;
+
+            default:
+            {
+                status = ATT_ERR_WRITE_NOT_PERMITTED;
+            }
+            break;
+        }
+        }
+    }
+
+    if (valptr != NULL)
+    {
+        memcpy(valptr, param->value, param->length);
+    }
+
+    cfm->handle = param->handle;
+    cfm->status = status;
+
+    /* Send the message */
+    ke_msg_send(cfm);
+
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void CustomService_SendNotification(uint8_t conidx,
+ *                               uint8_t attidx, uint8_t *value, uint8_t length)
+ * ----------------------------------------------------------------------------
+ * Description   : Send a notification to the client device
+ * Inputs        : - conidx       - connection index
+ *                 - attidx       - index to attributes in the service
+ *                 - value        - pointer to value
+ *                 - length       - length of value
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void CustomService_SendNotification(uint8_t conidx, uint8_t attidx,
+                                    uint8_t *value, uint8_t length)
+{
+    struct gattc_send_evt_cmd *cmd;
+    uint16_t handle = (attidx + cs_env.start_hdl + 1);
+
+    /* Prepare a notification message for the specified attribute */
+    cmd = KE_MSG_ALLOC_DYN(GATTC_SEND_EVT_CMD,
+                           KE_BUILD_ID(TASK_GATTC, conidx),
+                           TASK_APP,
+                           gattc_send_evt_cmd,
+                           length * sizeof(uint8_t));
+    cmd->handle = handle;
+    cmd->length = length;
+    cmd->operation = GATTC_NOTIFY;
+    cmd->seq_num = 0;
+    memcpy(cmd->value, value, length);
+
+    /* Send the message */
+    ke_msg_send(cmd);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GATTC_CmpEvt(ke_msg_id_t const msg_id,
+ *                                  struct gattc_cmp_evt
+ *                                  const *param,
+ *                                  ke_task_id_t const dest_id,
+ *                                  ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle received GATT controller complete event
+ * Inputs        : - msg_id     - Kernel message ID number
+ *                 - param      - Message parameters in format of
+ *                                struct gattc_cmp_evt
+ *                 - dest_id    - Destination task ID number
+ *                 - src_id     - Source task ID number
+ * Outputs       : return value - Indicate if the message was consumed;
+ *                                compare with KE_MSG_CONSUMED
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+int GATTC_CmpEvt(ke_msg_id_t const msg_id,
+                 struct gattc_cmp_evt const *param,
+                 ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    if (param->operation == GATTC_NOTIFY)
+    {
+        if (param->status == GAP_ERR_NO_ERROR || param->status == GAP_ERR_DISCONNECTED)
+        {
+            cs_env.sentSuccess = 1;
+            rempro_env.sentSuccess = 1;
+        }
+    }
+    return (KE_MSG_CONSUMED);
+}
+
+/* =====================================================================
+ * Peer Ear GATT Client — discover service, subscribe, write for sync
+ * ===================================================================== */
+
+#ifdef PEER_EAR_SYNC_ENABLE
+struct cs_peer_env_tag cs_peer_env;
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+void CS_Peer_Enable(uint8_t conidx)
+{
+#ifdef PEER_EAR_SYNC_ENABLE
+    const uint8_t svc_uuid[ATT_UUID_128_LEN] = CS_SVC_UUID;
+
+    memset(&cs_peer_env, 0, sizeof(cs_peer_env));
+    ble_env.peer_ear_gatt_ready = false;
+
+    struct gattc_disc_cmd *cmd = KE_MSG_ALLOC_DYN(GATTC_DISC_CMD,
+        KE_BUILD_ID(TASK_GATTC, conidx), TASK_APP, gattc_disc_cmd,
+        ATT_UUID_128_LEN);
+    cmd->operation = GATTC_DISC_BY_UUID_SVC;
+    cmd->start_hdl = 0x0001;
+    cmd->end_hdl   = 0xFFFF;
+    cmd->uuid_len  = ATT_UUID_128_LEN;
+    memcpy(cmd->uuid, svc_uuid, ATT_UUID_128_LEN);
+    ke_msg_send(cmd);
+    PRINTF("[PEER_EAR] GATT: discovering service\r\n");
+#endif /* PEER_EAR_SYNC_ENABLE */
+}
+
+int GATTC_DiscSvcInd(ke_msg_id_t const msg_id,
+                     struct gattc_disc_svc_ind const *param,
+                     ke_task_id_t const dest_id,
+                     ke_task_id_t const src_id)
+{
+#ifdef PEER_EAR_SYNC_ENABLE
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    cs_peer_env.svc_start_hdl = param->start_hdl;
+    cs_peer_env.svc_end_hdl   = param->end_hdl;
+    PRINTF("[PEER_EAR] GATT: service found %04X-%04X\r\n",
+           param->start_hdl, param->end_hdl);
+
+    /* Both ears run same firmware — characteristic handles are at fixed
+     * offsets within the service. No need for DISC_ALL_CHAR discovery.
+     *   svc + CS_IDX_TX_VALUE_VAL + 1  = TX value handle
+     *   svc + CS_IDX_TX_VALUE_CCC + 1  = TX CCCD handle
+     *   svc + CS_IDX_RX_VALUE_VAL + 1  = RX value handle
+     */
+    cs_peer_env.tx_hdl      = param->start_hdl + CS_IDX_TX_VALUE_VAL + 1;
+    cs_peer_env.tx_cccd_hdl = param->start_hdl + CS_IDX_TX_VALUE_CCC + 1;
+    cs_peer_env.rx_hdl      = param->start_hdl + CS_IDX_RX_VALUE_VAL + 1;
+    PRINTF("[PEER_EAR] GATT: TX=%04X TX_CCCD=%04X RX=%04X\r\n",
+           cs_peer_env.tx_hdl, cs_peer_env.tx_cccd_hdl, cs_peer_env.rx_hdl);
+
+    /* Subscribe to TX notifications immediately */
+    struct gattc_write_cmd *wcmd;
+    uint16_t cccd_val = ATT_CCC_START_NTF;
+    wcmd = KE_MSG_ALLOC_DYN(GATTC_WRITE_CMD,
+                            KE_BUILD_ID(TASK_GATTC, conidx),
+                            TASK_APP, gattc_write_cmd, 2);
+    wcmd->operation     = GATTC_WRITE;
+    wcmd->auto_execute  = 1;
+    wcmd->handle        = cs_peer_env.tx_cccd_hdl;
+    wcmd->offset        = 0;
+    wcmd->length        = 2;
+    wcmd->value[0]      = (uint8_t)cccd_val;
+    wcmd->value[1]      = (uint8_t)(cccd_val >> 8);
+    ke_msg_send(wcmd);
+    cs_peer_env.tx_cccd_enabled = true;
+    ble_env.peer_ear_gatt_ready = true;
+    PRINTF("[PEER_EAR] GATT: subscribed to TX notifications\r\n");
+#endif /* PEER_EAR_SYNC_ENABLE */
+    return (KE_MSG_CONSUMED);
+}
+
+int GATTC_DiscCharInd(ke_msg_id_t const msg_id,
+                      struct gattc_disc_char_ind const *param,
+                      ke_task_id_t const dest_id,
+                      ke_task_id_t const src_id)
+{
+#ifdef PEER_EAR_SYNC_ENABLE
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    const uint8_t tx_uuid[ATT_UUID_128_LEN] = CS_CHARACTERISTIC_TX_UUID;
+    const uint8_t rx_uuid[ATT_UUID_128_LEN] = CS_CHARACTERISTIC_RX_UUID;
+
+    if (memcmp(param->uuid, tx_uuid, ATT_UUID_128_LEN) == 0)
+    {
+        cs_peer_env.tx_hdl = param->attr_hdl;
+        cs_peer_env.tx_cccd_hdl = param->attr_hdl + 1;
+        PRINTF("[PEER_EAR] GATT: TX found handle=%04X\r\n", param->attr_hdl);
+    }
+    else if (memcmp(param->uuid, rx_uuid, ATT_UUID_128_LEN) == 0)
+    {
+        cs_peer_env.rx_hdl = param->attr_hdl;
+        PRINTF("[PEER_EAR] GATT: RX found handle=%04X\r\n", param->attr_hdl);
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+    return (KE_MSG_CONSUMED);
+}
+
+int GATTC_EvtInd(ke_msg_id_t const msg_id,
+                 struct gattc_event_ind const *param,
+                 ke_task_id_t const dest_id,
+                 ke_task_id_t const src_id)
+{
+#ifdef PEER_EAR_SYNC_ENABLE
+    uint8_t conidx = KE_IDX_GET(src_id);
+    if (conidx != ble_env.peer_ear_conidx) return (KE_MSG_CONSUMED);
+
+    if (param->handle == cs_peer_env.tx_hdl && param->length >= 3)
+    {
+        uint8_t prog = param->value[1];
+        uint8_t cur  = bs300_get_active_prog();
+
+        PRINTF("[PEER_EAR] sync rx: prog=%d (local prog=%d)\r\n", prog, cur);
+
+        /* Program sync only — volume is per-ear, not synced */
+        if (prog != cur && prog < 4)
+        {
+            app_env.sync_from_remote++;
+            cs_env.rx_value[0] = 0x01;
+            cs_env.rx_value[1] = prog;
+            cs_env.rx_value_changed = 1;
+        }
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+    return (KE_MSG_CONSUMED);
+}
+
+void CS_Peer_WriteRX(uint8_t conidx, uint8_t cmd, uint8_t arg)
+{
+#ifdef PEER_EAR_SYNC_ENABLE
+    if (cs_peer_env.rx_hdl == 0) return;
+
+    PRINTF("[PEER_EAR] sync tx: cmd=%02X arg=%02X\r\n", cmd, arg);
+    uint8_t data[2] = { cmd, arg };
+    struct gattc_write_cmd *wcmd = KE_MSG_ALLOC_DYN(GATTC_WRITE_CMD,
+        KE_BUILD_ID(TASK_GATTC, conidx), TASK_APP, gattc_write_cmd, 2);
+    wcmd->operation = GATTC_WRITE;
+    wcmd->auto_execute = 1;
+    wcmd->handle = cs_peer_env.rx_hdl;
+    wcmd->offset = 0;
+    wcmd->length = 2;
+    wcmd->value[0] = data[0];
+    wcmd->value[1] = data[1];
+    ke_msg_send(wcmd);
+#endif /* PEER_EAR_SYNC_ENABLE */
+}

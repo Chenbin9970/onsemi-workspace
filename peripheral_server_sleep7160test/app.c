@@ -1,0 +1,622 @@
+/* ----------------------------------------------------------------------------
+ * Copyright (c) 2016 Semiconductor Components Industries, LLC (d/b/a
+ * ON Semiconductor), All Rights Reserved
+ *
+ * This code is the property of ON Semiconductor and may not be redistributed
+ * in any form without prior written permission from ON Semiconductor.
+ * The terms of use and warranty for this code are covered by contractual
+ * agreements between ON Semiconductor and the licensee.
+ * ----------------------------------------------------------------------------
+ * app.c
+ * - Main application file
+ * ----------------------------------------------------------------------------
+ * $Revision: 1.74 $
+ * $Date: 2019/09/04 13:40:50 $
+ * ------------------------------------------------------------------------- */
+
+#include "app.h"
+#include "bs300_ram_sync.h"
+#include "bs300_storage.h"
+#include "ble_rempro_cmd.h"
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* Called when async BS300 program switch completes — re-activate DSP + notify */
+static void on_bs300_switch_done(void)
+{
+    uint8_t prog = bs300_get_active_prog();
+    cs_env.tx_value[1] = prog;
+    cs_env.tx_value[2] = bs300_get_module_volume(prog);
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    if (app_env.sync_from_remote > 0) {
+        app_env.sync_from_remote--;
+    }
+#ifdef PEER_EAR_SYNC_ENABLE
+    else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+}
+
+static void on_bs300_volume_done(void)
+{
+    uint8_t prog = bs300_get_active_prog();
+    uint8_t vol  = bs300_get_module_volume(prog);
+    cs_env.tx_value[1] = prog;
+    cs_env.tx_value[2] = vol;
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    if (app_env.sync_from_remote > 0) {
+        app_env.sync_from_remote--;
+    }
+}
+
+/* Button-path done callbacks: also restore low-power (I2C complete → can sleep) */
+static void on_btn_switch_done(void)
+{
+    /* tx_value was already filled + sent at button press time;
+     * send again with updated values after I2C completes. */
+    uint8_t prog = bs300_get_active_prog();
+    cs_env.tx_value[1] = prog;
+    cs_env.tx_value[2] = bs300_get_module_volume(prog);
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    if (app_env.sync_from_remote > 0) {
+        app_env.sync_from_remote--;
+    }
+#ifdef PEER_EAR_SYNC_ENABLE
+    else if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, prog);
+    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+    low_power_clk_param.low_power_enable = true;
+}
+
+static void on_btn_volume_done(void)
+{
+    uint8_t prog = bs300_get_active_prog();
+    uint8_t vol  = bs300_get_module_volume(prog);
+    cs_env.tx_value[1] = prog;
+    cs_env.tx_value[2] = vol;
+    cs_env.tx_value_changed = 1;
+    bs300_async_done_callback();
+    if (app_env.sync_from_remote > 0) {
+        app_env.sync_from_remote--;
+    }
+    low_power_clk_param.low_power_enable = true;
+}
+
+int main()
+{
+    App_Initialize();
+
+#ifdef BS300_TEST_ENABLE
+    bs300_test_run();
+#endif
+
+    /* Wait for 3 seconds to allow re-flashing directly after pressing RESET */
+    Sys_Delay_ProgramROM(3 * SystemCoreClock);
+
+    /* Turn LED on */
+    Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
+
+    /* Button DIO12: must be re-init after each wakeup (see Continue_Application) */
+    Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+
+#ifndef DEBUG_UART_ENABLE
+    /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
+    Sys_DIO_Config(4, DIO_MODE_DISABLE | DIO_NO_PULL);
+    Sys_DIO_Config(5, DIO_MODE_DISABLE | DIO_NO_PULL);
+#endif
+
+    /* Main application loop */
+    Main_Loop();
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : Main_Loop(void)
+ * ----------------------------------------------------------------------------
+ * Description   : - Run the kernel scheduler
+ *                 - Update the battery voltage when applicable
+ *                 - Update custom service data when applicable
+ *                 - Attempt to go to sleep mode if possible
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Main_Loop(void)
+{
+    static uint32_t low_batt_elapsed_ms = 0;
+
+    Sys_Watchdog_Refresh();
+
+    if ((cs_env.sentSuccess == 1) &&
+        (app_env.sleep_cycles % APP_CS_TX_VALUE_NOTF_SLEEP_CYCLE == 0))
+    {
+        cs_env.sentSuccess = 0;
+        cs_env.tx_value[1] = bs300_get_active_prog();
+        cs_env.tx_value[2] = bs300_get_module_volume(cs_env.tx_value[1]);
+        cs_env.tx_value_changed = 1;
+    }
+    (app_env.sleep_cycles)++;
+
+#ifdef APP_RM_ENABLE
+    /* Cold-boot RM start */
+    {
+        static uint8_t rm_cold_boot_done = 0;
+        if (!rm_cold_boot_done) {
+            rm_cold_boot_done = 1;
+            app_env.saved_prog_before_rm = bs300_get_active_prog();
+            Audio_Init();
+            RF_SwitchToCPMode();
+            RM_Enable(500);
+            app_env.audio_streaming = 1;
+            app_env.rm_disc_state = RM_DISC_HEARING_AID;
+            app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+        }
+    }
+#endif
+
+    while (true)
+    {
+        Kernel_Schedule();
+
+        /* Send next rempro response chunk if the previous notification completed */
+        rempro_tx_poll();
+
+        /* Low battery check — accumulate elapsed time per state.
+         * RM mode: +200ms per 200ms timer tick (CP kernel timer).
+         * BLE mode: +current wake interval per iteration (advertising 100ms,
+         * connected = negotiated (latency+1) × conn_interval × 1.25ms). */
+#ifdef APP_RM_ENABLE
+        if (app_env.audio_streaming) {
+            if (app_env.timer_200ms)
+                low_batt_elapsed_ms += 200;
+        } else
+#endif
+        {
+            uint32_t wake_ms;
+            if (ble_env.state == APPM_ADVERTISING || ble_env.is_advertising) {
+                wake_ms = CFG_ADV_INTERVAL_MS;
+            } else if (ble_env.state == APPM_CONNECTED) {
+                wake_ms = ((uint32_t)ble_env.actual_con_latency + 1)
+                        * ble_env.actual_con_interval * 125 / 100;
+            } else {
+                wake_ms = CFG_ADV_INTERVAL_MS;
+            }
+            low_batt_elapsed_ms += wake_ms;
+        }
+
+        if (low_batt_elapsed_ms >= LOW_BATT_CHECK_MS) {
+            low_batt_elapsed_ms = 0;
+            if (read_battery_raw() <= BAT_ADC_MIN) {
+                bs300_play_low_batt_tone();
+            }
+        }
+
+#ifdef APP_RM_ENABLE
+        RM_StatusHandler();
+
+        if (app_env.tx_connect_detected)
+        {
+            app_env.tx_connect_detected = 0;
+
+            if (!app_env.audio_streaming)
+            {
+                app_env.rm_disc_state = RM_DISC_NONE;
+                app_env.rm_timeout_ticks = 0;
+                app_env.saved_prog_before_rm = bs300_get_active_prog();
+
+                APP_RM_Init(ear_side);
+                Audio_Init();
+                RF_SwitchToCPMode();
+                RM_Enable(500);
+                app_env.audio_streaming = 1;
+                app_env.rm_disc_state = RM_DISC_HEARING_AID;
+                app_env.rm_timeout_ticks = RM_TIMEOUT_TICKS;
+            }
+        }
+
+        if (app_env.rm_start_requested)
+        {
+            app_env.rm_start_requested = 0;
+
+            /* Only start if RM is completely off (audio_streaming=0).
+             * Skip when already connected, searching, or debouncing.
+             * Program switch is deferred to LINK_ESTABLISHED. */
+            if (!app_env.audio_streaming)
+            {
+                app_env.rm_disc_state = RM_DISC_NONE;
+                app_env.rm_timeout_ticks = 0;
+                app_env.saved_prog_before_rm = bs300_get_active_prog();
+
+                APP_RM_Init(ear_side);
+                Audio_Init();
+                RF_SwitchToCPMode();
+                RM_Enable(500);
+                app_env.audio_streaming = 1;
+            }
+        }
+
+        if (app_env.rm_stop_requested)
+        {
+            app_env.rm_stop_requested = 0;
+            app_env.rm_disc_state = RM_DISC_NONE;
+            app_env.rm_timeout_ticks = 0;
+
+            /* BS300 mute/active only needed if actually on program 3.
+             * During link-establish window, BS300 is still on hearing aid program. */
+            if (bs300_get_active_prog() == 3)
+            {
+                bs300_mute();
+            }
+
+            /* Stop audio pipeline before RF switch */
+            NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
+            NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
+            NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
+            NVIC_DisableIRQ(DSP1_IRQn);
+            NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
+            Sys_Timers_Stop(1 << TIMER_REGUL);
+            Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+            Sys_DMA_ChannelDisable(OD_DMA_NUM);
+            SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
+            BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP;
+            app_env.audio_streaming = 0;
+            RM_Disable();
+            Sys_Timers_Stop(SELECT_TIMER0);
+            Sys_Timers_Stop(SELECT_TIMER1);
+            NVIC_ClearPendingIRQ(TIMER0_IRQn);
+            NVIC_ClearPendingIRQ(TIMER1_IRQn);
+            RF_SwitchToBLEMode();
+#ifdef RM_TX_POWER_BOOST
+            Sys_RFFE_SetTXPower(0);
+#endif
+
+            /* Restore pre-RM program for normal hearing aid operation */
+            if (bs300_get_active_prog() == 3
+                && app_env.saved_prog_before_rm != 3)
+            {
+                bs300_switch_program(app_env.saved_prog_before_rm);
+                bs300_active();
+            }
+
+            /* Restart BLE advertising so phone can reconnect */
+            ble_env.is_advertising = false;
+            ble_env.state = APPM_READY;
+            Advertising_Start();
+
+            low_power_clk_param.low_power_enable = true;
+        }
+
+        /* RM disconnect → keep RM state, fall back to hearing aid.
+         * DEBOUNCE: wait for transient disconnects to resolve.
+         * On timeout: switch to hearing aid program + restart RM search. */
+        if (app_env.rm_disc_state == RM_DISC_DEBOUNCE) {
+            app_env.rm_disc_counter++;
+            if (app_env.rm_disc_counter >= RM_DISC_DEBOUNCE_THRESHOLD) {
+                app_env.rm_disc_state = RM_DISC_HEARING_AID;
+                if (app_env.saved_prog_before_rm != 3) {
+                    bs300_switch_program(app_env.saved_prog_before_rm);
+                }
+                bs300_active();
+                //RM_Enable(500);
+#ifdef PEER_EAR_SYNC_ENABLE
+                PRINTF("[RM] reconnect: peer_connected=%d peer_state=%d retry_ticks=%d\r\n",
+                       ble_env.peer_ear_connected, ble_env.peer_ear_state,
+                       ble_env.peer_ear_retry_ticks);
+#endif /* PEER_EAR_SYNC_ENABLE */
+            }
+        }
+
+#ifdef PEER_EAR_SYNC_ENABLE
+        /* Peer ear countdown — per Main_Loop iteration.
+         * Used during connection attempt (advertising at 100ms) and retry wait.
+         * When connected, retry_ticks is irrelevant; BLE stack handles heartbeat. */
+        if (ble_env.peer_ear_retry_ticks > 0) {
+            ble_env.peer_ear_retry_ticks--;
+        }
+
+        if (ble_env.peer_ear_retry_ticks == 0
+            && ble_env.peer_ear_state == PEER_EAR_CONNECTING)
+        {
+            PRINTF("[PEER_EAR] connect timeout, cancelling\r\n");
+            struct gapm_cancel_cmd *cancel;
+            cancel = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP,
+                                  gapm_cancel_cmd);
+            cancel->operation = GAPM_CANCEL;
+            ke_msg_send(cancel);
+        }
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+        /* 200ms tick: RM timeout only (CP mode, CPU always awake) */
+        if (app_env.timer_200ms) {
+            app_env.timer_200ms = 0;
+
+            if (app_env.audio_streaming
+                && app_env.rm_timeout_ticks > 0
+                && app_env.rm_disc_state != RM_DISC_NONE) {
+                app_env.rm_timeout_ticks--;
+                if (app_env.rm_timeout_ticks == 0) {
+                    app_env.rm_stop_requested = 1;
+                }
+            }
+
+            /* Re-arm while RM active (even timeout disabled / connected streaming),
+             * so RM-side periodic tasks (low-batt check) keep running. */
+            if (app_env.audio_streaming && !app_env.rm_stop_requested) {
+                ke_timer_set(APP_TEST_TIMER, TASK_APP,
+                             TIMER_200MS_SETTING);
+            }
+        }
+#endif
+
+        Sys_Watchdog_Refresh();
+
+#ifdef DEBUG_UART_ENABLE
+        {
+            static uint32_t tick_cnt = 0;
+            if (++tick_cnt >= 10000)
+            {
+                tick_cnt = 0;
+            }
+        }
+#endif
+
+        /* Process deferred BS300 ops (aborted switch etc.) */
+        bs300_process_deferred();
+
+#ifdef PEER_EAR_SYNC_ENABLE
+        /* Peer ear connection state machine (central role).
+         * Only the left ear (ear_side == RM_LEFT) acts as Central.
+         * Countdown driven by 200ms timer. */
+        if (ear_side == RM_LEFT
+            && ble_env.peer_ear_retry_ticks == 0 &&
+            (ble_env.peer_ear_state == PEER_EAR_IDLE ||
+             ble_env.peer_ear_state == PEER_EAR_RETRY_WAIT)
+            )
+        {
+            ble_env.peer_ear_retry_ticks = 1;
+            PeerEar_TryConnect();
+        }
+#endif /* PEER_EAR_SYNC_ENABLE */
+
+#if defined(PEER_EAR_SYNC_ENABLE)
+        if (ble_env.state == APPM_CONNECTED || ble_env.peer_ear_connected)
+#else
+        if (ble_env.state == APPM_CONNECTED)
+#endif
+        {
+#ifdef DEBUG_UART_ENABLE
+            {
+                static uint8_t ble_connected_printed = 0;
+                if (!ble_connected_printed)
+                {
+                    ble_connected_printed = 1;
+                    PRINTF("__BLE_CONNECTED\r\n");
+                }
+            }
+#endif
+
+            /* Handle BS300 commands from BLE RX characteristic */
+            if (cs_env.rx_value_changed)
+            {
+                cs_env.rx_value_changed = 0;
+                uint8_t cmd = cs_env.rx_value[0];
+                uint8_t arg = cs_env.rx_value[1];
+                PRINTF("[BS300] RX cmd=%02X arg=%02X\r\n", cmd, arg);
+                if (cmd == 0x01 && arg < 4)
+                {
+                    int ret = bs300_switch_program_async(arg,
+                                                    on_bs300_switch_done);
+                    PRINTF("[BS300] switch_async ret=%d\r\n", ret);
+                    if (ret < 0) {
+                        cs_env.rx_value_changed = 1; /* retry next tick */
+                    }
+                }
+                else if (cmd == 0x02)
+                {
+                    bs300_set_volume_notone_async(arg, on_bs300_volume_done);
+                    PRINTF("[BS300] volume=%d\r\n", arg);
+                }
+                else if (cmd == 0xFE)
+                {
+                    uint8_t i;
+                    for (i = 0; i < 4; i++) bs300_storage_invalidate(i);
+                    bs300_settings_invalidate();
+                    bs300_reset_to_defaults();
+                    PRINTF("[BS300] cache cleared, reset to reload\r\n");
+                }
+            }
+
+            /* Handle REMPRO (RT App) commands from ROLE characteristic */
+            rempro_cmd_process();
+
+            /* Update custom service characteristics, send notifications if
+             * notification is enabled */
+            if (cs_env.tx_value_changed
+#if defined(PEER_EAR_SYNC_ENABLE)
+                && ((cs_env.tx_cccd_value & 1) || ble_env.peer_ear_connected)
+#else
+                && (cs_env.tx_cccd_value & 1)
+#endif
+                )
+            {
+                cs_env.tx_value_changed = 0;
+
+                cs_env.val_notif = Emulate_CS_Val_Notif_Change(
+                    cs_env.val_notif);
+                cs_env.tx_value[0] = cs_env.val_notif;
+                /* Bytes 1-4 pre-filled by caller (button handler, etc.)
+                 * with the actual program/volume values. */
+
+                if (cs_env.tx_cccd_value & 1) {
+                    CustomService_SendNotification(ble_env.conidx,
+                                                   CS_IDX_TX_VALUE_VAL,
+                                                   &cs_env.tx_value[0],
+                                                   APP_CS_TX_VALUE_NOTF_LENGTH);
+                }
+#ifdef PEER_EAR_SYNC_ENABLE
+                if (ble_env.peer_ear_connected) {
+                    CustomService_SendNotification(ble_env.peer_ear_conidx,
+                                                   CS_IDX_TX_VALUE_VAL,
+                                                   &cs_env.tx_value[0],
+                                                   APP_CS_TX_VALUE_NOTF_LENGTH);
+                }
+#endif /* PEER_EAR_SYNC_ENABLE */
+            }
+        }
+
+        Sys_Watchdog_Refresh();
+
+
+        /* Button on DIO2 (active low, pull-up).
+         * Short press (< 1.5s):  volume +1, 0→1→...→9→0
+         * Long  press (>= 1.5s): switch program, 0→1→2→0, skip Program 3 */
+        {
+            enum { BTN_NONE, BTN_SHORT, BTN_LONG };
+            static uint8_t btn_prev;
+            static uint32_t hold_ticks;
+            static uint8_t long_fired;
+            static uint8_t pending_action;
+
+            uint8_t i, cnt_low = 0;
+            uint8_t btn_now;
+
+            /* Multi-sample filter: 5x read, majority vote */
+            for (i = 0; i < 5; i++)
+            {
+                if (DIO_DATA->ALIAS[12] == 0) cnt_low++;
+            }
+            btn_now = (cnt_low >= 3) ? 1 : 0;
+
+            if (btn_now && !btn_prev)
+            {
+                /* Press edge — start hold timer */
+                low_power_clk_param.low_power_enable = false;
+                hold_ticks = 0;
+                long_fired = 0;
+                pending_action = BTN_NONE;
+            }
+            else if (btn_now && btn_prev)
+            {
+                /* Held — block sleep, count ~1ms ticks */
+                low_power_clk_param.low_power_enable = false;
+                hold_ticks++;
+                if (!long_fired && hold_ticks >= 500)
+                {
+                    long_fired = 1;
+                    pending_action = BTN_LONG;
+                }
+                Sys_Delay_ProgramROM(SystemCoreClock / 1000);
+            }
+            else if (!btn_now && btn_prev)
+            {
+                /* Release edge */
+                if (!long_fired)
+                {
+                    pending_action = BTN_SHORT;
+                }
+                else if (!bs300_sync_is_busy())
+                {
+                    /* Long press I2C already done — safe to sleep now */
+                    low_power_clk_param.low_power_enable = true;
+                }
+            }
+            btn_prev = btn_now;
+
+            /* Process pending action when I2C is free.
+             * Block button actions in program 3 (RM audio mode). */
+            if (pending_action != BTN_NONE && !bs300_sync_is_busy()
+                && bs300_get_active_prog() != 3)
+            {
+                if (pending_action == BTN_LONG)
+                {
+                    uint8_t prog = bs300_get_active_prog();
+                    uint8_t next = (prog + 1) % 3;
+                    rempro_push_scene_change(next);
+                    /* Set TX notification with NEW values (I2C not done yet) */
+                    cs_env.tx_value[0] = cs_env.val_notif;
+                    cs_env.tx_value[1] = next;
+                    cs_env.tx_value[2] = bs300_get_module_volume(next);
+                    cs_env.tx_value[3] = 0;
+                    cs_env.tx_value[4] = 0;
+                    cs_env.tx_value_changed = 1;
+#ifdef PEER_EAR_SYNC_ENABLE
+                    if (ble_env.peer_ear_connected && ble_env.peer_ear_gatt_ready) {
+                        CS_Peer_WriteRX(ble_env.peer_ear_conidx, 0x01, next);
+                        app_env.sync_from_remote++;
+                    }
+#endif /* PEER_EAR_SYNC_ENABLE */
+                    bs300_switch_program_async(next, on_btn_switch_done);
+                    bs300_settings_persist();
+                }
+                else
+                {
+                    uint8_t prog = bs300_get_active_prog();
+                    uint8_t vol = (bs300_get_module_volume(prog) + 1) % 10;
+                    rempro_push_volume_change(prog, vol);
+                    /* Set TX notification with NEW values (I2C not done yet) */
+                    cs_env.tx_value[0] = cs_env.val_notif;
+                    cs_env.tx_value[1] = prog;
+                    cs_env.tx_value[2] = vol;
+                    cs_env.tx_value[3] = 0;
+                    cs_env.tx_value[4] = 0;
+                    cs_env.tx_value_changed = 1;
+                    bs300_set_volume_async(vol, on_btn_volume_done);
+                    bs300_settings_persist();
+                }
+                pending_action = BTN_NONE;
+            }
+        }
+
+        /* If not in the middle of a period measurement for RSOSC, allow the
+         * application to go to sleep power mode.
+         * Skip sleep when RM audio streaming is active. */
+#ifdef APP_RM_ENABLE
+        if (!app_env.audio_streaming)
+        {
+#endif
+
+#ifndef DEBUG_UART_ENABLE
+        /* Deep sleep breaks dual BLE connections. When peer ear is connected,
+         * use WFI instead so both phone and peer ear stay alive. */
+#if defined(PEER_EAR_SYNC_ENABLE)
+        if (!(ble_env.peer_ear_connected && ear_side == RM_LEFT) &&
+            (low_power_clk_param.low_power_enable ||
+            (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
+#else
+        if ((low_power_clk_param.low_power_enable ||
+            (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
+#endif
+        {
+            Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_0);
+
+            GLOBAL_INT_DISABLE();
+            BLE_Power_Mode_Enter(&sleep_mode_env, POWER_MODE_SLEEP);
+            GLOBAL_INT_RESTORE();
+        }
+#endif
+#ifdef APP_RM_ENABLE
+        }
+#endif
+
+#ifdef APP_RM_ENABLE
+        if (app_env.audio_streaming)
+        {
+            if (low_power_clk_param.low_power_enable)
+                SYS_WAIT_FOR_EVENT;
+        }
+        else
+#endif
+        {
+#ifndef DEBUG_UART_ENABLE
+            if (low_power_clk_param.low_power_enable)
+                SYS_WAIT_FOR_INTERRUPT;
+#endif
+        }
+    }
+}
