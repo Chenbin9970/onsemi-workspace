@@ -107,8 +107,36 @@
 | `//#define BAT_ADC_ENABLE` | 关 | 电池 ADC；开启需先给 PCM FS 换脚（DIO3 只支持 DIO0-3 ADC） |
 | `PCM_DOUBLE_BUFFER` | 1 | 双缓冲（1）/ 单缓冲（0） |
 | `ASRC_DITHER` | 未移植 | test1 的静音蚊蚊修复（±8 LSB dither）；7160test DSP 输出在 DSP RAM，移植方式不同，有蚊蚊再做 |
+| `//#define OD_DIO12_OUTPUT` | 关 | 备用 OD 输出模式（见 §6），与 PCM/UART 打印互斥 |
+
+## 6. 备用：OD 输出模式（`OD_DIO12_OUTPUT`）
+
+> 完整文档见 **[`7160test_od_output.md`](7160test_od_output.md)**（数据流、改动文件、踩坑、验证记录）。本节为速览。
+
+调试 OD（内部输出驱动）单端输出：**DIO12 做 OD_P**。与 PCM 输出、UART 打印（DIO12）互斥。
+
+**打开方式**：`app.h` 取消注释 `//#define OD_DIO12_OUTPUT`（同时 `DEBUG_UART_ENABLE` 关打印）。
+
+**互斥处理**：
+- `OUTPUT_INTERFACE = OUTPUT_DISABLED` → printf.h 里 `PRINTF`/`printf_init` 全部变空宏，DIO12 不配成 UART TX。
+- `Audio_Init`/`Audio_Resume` 走 OD 分支：`Sys_DIO_Config(12, ...|DIO_MODE_OD_P)` + OD DMA（`BufferOut→AUDIO->OD_DATA`，CIRC）+ ASRC OUT→BufferOut。
+- PCM 分支整体 `#else` 掉（不配 PCM、不使能 ch4/ch5 完成中断、不 `Sys_PCM_Enable`）。
+
+**数据流**：RM → G722(16k) → `Dsp2CmBuff0dec` → ch3 → ASRC(**DEC_MODE1**，内部 DMIC/OD 时钟锁速) → ch4 → BufferOut(CIRC) → ch5(OD DMA) → AUDIO->OD_DATA → **DIO12**。
+
+**与 PCM 模式差异**：
+| 项 | PCM | OD |
+|----|-----|-----|
+| 采样钟 `SAMPLING_CLK_SRC` | `SAMPL_CLK<<...` = DIO3 12k FS | `AUDIOSINK_CLK_SRC_DMIC_OD`（**内部时钟**，不依赖外部引脚） |
+| ASRC | `DEC_MODE2` + `<<28`（16k→12k） | `DEC_MODE1` + `<<29` |
+| ASRC OUT DMA | LIN + 完成中断 → pcm_tx_buf | CIRC 无中断 → BufferOut |
+| 输出 | ch5 → PCM->TX_DATA → DIO14 | ch5 → OD_DATA → DIO12 |
+| 打印（DIO12） | UART TX | 关闭（DIO12 让给 OD_P） |
+
+> **2026-08-28 踩坑**：OD 采样钟一开始照搬 sleep 用 DIO7 外部时钟，但 7160 测试时 DIO7 无有效时钟 → ASRC 锁不上速 → **一顿一顿**。改用内部时钟 `AUDIOSINK_CLK_SRC_DMIC_OD`（remote_mic_rx_raw 的 OD 做法）解决。DIO7 仍是恢复按钮（启动时），不再兼作采样钟。
 
 ## 参考
 
 - 验证基准工程：`remote_mic_rx_rawtest1`（`docs/rx_rawtest1_pcm_output.md`）
+- OD 完整实现参考：`peripheral_server_sleep`（`Audio_Init` 的 OD 段）
 - IO 分配 / 调试总览：`docs/7160调试过程.md`

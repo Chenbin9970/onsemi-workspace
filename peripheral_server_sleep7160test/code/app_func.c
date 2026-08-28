@@ -132,9 +132,15 @@ void Asrc_reconfig(void)
 
     if (Ck != 0)
     {
+#ifdef OD_DIO12_OUTPUT
+        asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);
+        asrc_inc_carrier &= 0xFFFFFFFF;
+        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+#else
         asrc_inc_carrier  = ((((Cr - Ck) << 28) / Ck) << 0);
         asrc_inc_carrier &= 0xFFFFFFFF;
         Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+#endif
     }
     asrc_cnt_prev = ASRC->PHASE_CNT;
 }
@@ -560,6 +566,7 @@ volatile uint8_t pcm_fill = 0;
 volatile uint8_t pcm_ready = 0xFF;   /* 0xFF = 无待流出的 buf */
 volatile uint8_t pcm_waiting = 0;
 
+#ifndef OD_DIO12_OUTPUT
 /* ----------------------------------------------------------------------------
  * Function      : void Pcm_asrc_out_dma_isr(void)
  * ----------------------------------------------------------------------------
@@ -617,6 +624,7 @@ DMA_IRQ_FUNC(ASRC_OUT_IDX)(void);
 
 void __attribute__ ((alias("Pcm_tx_dma_isr")))
 DMA_IRQ_FUNC(PCM_DMA_NUM)(void);
+#endif    /* ifndef OD_DIO12_OUTPUT */
 
 
 
@@ -722,9 +730,15 @@ void Asrc_reconfig(void)
     /* Configure ASRC base on new Ck */
     if (Ck != 0)
     {
+#ifdef OD_DIO12_OUTPUT
+        asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);
+        asrc_inc_carrier &= 0xFFFFFFFF;
+        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+#else
         asrc_inc_carrier  = ((((Cr - Ck) << 28) / Ck) << 0);
         asrc_inc_carrier &= 0xFFFFFFFF;
         Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+#endif
     }
     asrc_cnt_prev     = ASRC->PHASE_CNT;
 }

@@ -342,6 +342,7 @@ uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
  * Description   : Configure the PCM interface as slave for raw audio output.
  *                 7100 提供 BCLK/FS，RSL10 从机移位输出 SERO(DIO14)。
  * ------------------------------------------------------------------------- */
+#ifndef OD_DIO12_OUTPUT
 void Initialize_Raw_PCM_Output_Type(void)
 {
     /* Slave mode: external 7100 provides BCLK (DIO2) and FS (DIO3); RSL10
@@ -356,6 +357,7 @@ void Initialize_Raw_PCM_Output_Type(void)
     Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
                           (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
 }
+#endif    /* ifndef OD_DIO12_OUTPUT */
 
 /* Audio pipeline init — called before RM_Enable in BLE+switch flow */
 void Audio_Init(void)
@@ -381,7 +383,7 @@ void Audio_Init(void)
     SYSCTRL->DSS_CTRL = DSS_LPDSP32_RESUME;
 
     Sys_Audiosink_ResetCounters();
-    Sys_Audiosink_InputClock(0, ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
+    Sys_Audiosink_InputClock(0, SAMPLING_CLK_SRC);
     Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
     AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
     AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
@@ -418,11 +420,33 @@ void Audio_Init(void)
     Sys_Audio_Set_Config(AUDIO_CONFIG);
     AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
     AUDIO->SDM_CFG = 0x00002;
-    AUDIO->OD_GAIN = 0xfff;
-    /* 7100: OD 输出关闭，DIO0/DIO1 让给 I2C SCL/SDA（见 app.h OD_ENABLE） */
-    //Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
-    //               DIO_NO_PULL | DIO_MODE_OD_P);
+    AUDIO->OD_GAIN = 0x800;
 
+#ifdef OD_DIO12_OUTPUT
+    /* OD 单端输出：DIO12 做 OD_P（OD 模式已关打印） */
+    Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
+                   DIO_NO_PULL | DIO_MODE_OD_P);
+
+    Sys_DMA_ChannelDisable(OD_DMA_NUM);
+    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
+    {
+        uint32_t i;
+        for (i = 0; i < 10000; i++)
+        {
+            Sys_Watchdog_Refresh();
+            Sys_Delay_ProgramROM(1000);
+        }
+    }
+    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+
+    /* ASRC->OUT -> BufferOut（CIRC 连续，同 sleep OD 路径） */
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#else
     /* PCM 从机输出：7100 提供 BCLK/FS，RSL10 移位输出 SERO(DIO14) */
     Initialize_Raw_PCM_Output_Type();
 
@@ -447,6 +471,7 @@ void Audio_Init(void)
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
     Sys_PCM_Enable();
+#endif    /* ifdef OD_DIO12_OUTPUT */
 }
 
 /* Minimal audio pipeline resume after LINK_DISCONNECTED shutdown.
@@ -463,6 +488,18 @@ void Audio_Resume(void)
     Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
                           (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
 
+#ifdef OD_DIO12_OUTPUT
+    Sys_DMA_ChannelDisable(OD_DMA_NUM);
+    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
+    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#else
     Sys_DMA_ChannelDisable(PCM_DMA_NUM);
     Sys_PCM_Config(PCM_CFG_TX);
 
@@ -482,6 +519,7 @@ void Audio_Resume(void)
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
     Sys_PCM_Enable();
+#endif    /* ifdef OD_DIO12_OUTPUT */
 
     Sys_Timers_Start(1 << TIMER_REGUL);
 }

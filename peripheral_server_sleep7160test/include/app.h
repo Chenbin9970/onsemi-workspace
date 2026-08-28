@@ -30,13 +30,25 @@
 #define APP_RM_ENABLE
 #define APP_SLEEP_2MBPS_SUPPORT
 //#define CFG_FOTA
-#define DEBUG_UART_ENABLE
+/* 打印总开关。关闭后 PRINTF/printf_init 全部失效（printf.h OUTPUT_DISABLED 分支）。
+ * 7160test OD 模式：DIO12 让给 OD_P，打印必须关（见 OD_DIO12_OUTPUT）。 */
+//#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 //#define PEER_EAR_SYNC_ENABLE   /* 左右耳同步 + 左耳 BLE Central 总开关；取消注释开启 */
 
 /* BS300 DSP 功能总开关。7160test 改用 7100 通讯，BS300 暂时关闭；
  * 取消注释开启。关闭时所有 bs300 外部调用点被 #ifdef 剔除。 */
 //#define BS300_ENABLE
+
+/* 调试 OD 输出（DIO12 做 OD_P，单端）。打开时：DIO12 让给 OD → 关闭打印、
+ * 关闭 PCM 输出，音频走 ASRC DEC_MODE1 → BufferOut → OD DMA(CIRC)。
+ * 默认关（保持 PCM slave 输出）。 */
+#define OD_DIO12_OUTPUT
+
+/* 打印开关：OD 模式（DIO12 让给 OD_P）或 DEBUG_UART_ENABLE 关闭时，PRINTF 全部失效 */
+#if defined(OD_DIO12_OUTPUT) || !defined(DEBUG_UART_ENABLE)
+#define OUTPUT_INTERFACE                OUTPUT_DISABLED
+#endif
 
 /* TX device MAC for BLE→RM fast switch */
 //#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */
@@ -92,9 +104,9 @@ extern "C"
  * ------------------------------------------------------------------------- */
 
 
-#ifdef DEBUG_UART_ENABLE
+/* 无条件包含：PRINTF 恒有定义（行为由 OUTPUT_INTERFACE 控制），避免关闭
+ * DEBUG_UART_ENABLE 后未包宏的 PRINTF 调用编译失败 */
 #include "printf.h"
-#endif
 
 /* DIO number that is used for easy re-flashing (recovery mode).
  * 7160test: 原 DIO12 改作 UART 打印口，恢复按钮挪到 DIO7（空闲） */
@@ -185,7 +197,14 @@ extern "C"
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
 
+/* 采样钟参考：PCM 用 DIO3 的 12k FS；OD 用内部 DMIC/OD 时钟（不依赖外部引脚） */
 #define SAMPL_CLK                       PCM_FRAME_SYNC
+
+#ifdef OD_DIO12_OUTPUT
+#define SAMPLING_CLK_SRC                AUDIOSINK_CLK_SRC_DMIC_OD
+#else
+#define SAMPLING_CLK_SRC                ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos))
+#endif
 
 #define THREE_BLOCK_APPN(x, y, z)       x##y##z
 #define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)
@@ -195,6 +214,9 @@ extern "C"
 
 #define MEMCPY_DMA_NUM                  2
 #define PCM_DMA_NUM                     5
+#ifdef OD_DIO12_OUTPUT
+#define OD_DMA_NUM                      5    /* OD 模式：ch5 用于 OD DMA（BufferOut→OD_DATA） */
+#endif
 #define ASRC_IN_IDX                     3
 #define ASRC_OUT_IDX                    4
 #define RX_DMA_NUM                      5
@@ -208,16 +230,30 @@ extern "C"
 
 #define TIMER_REGUL                     2
 
-#define OD_P_DIO                        0
-#define OD_N_DIO                        1
+#ifdef OD_DIO12_OUTPUT
+#define OD_P_DIO                        12   /* 调试：OD_P 在 DIO12（关闭打印后） */
+#else
+#define OD_P_DIO                        0    /* 未用（PCM 模式） */
+#endif
+#define OD_N_DIO                        1    /* 单端调试，未用 */
 #define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
                                                     AUDIO_CFG_DEC_RATE_Pos))
-/* 7160test: OD_ENABLE 已去掉（OD 输出关闭），DIO0/DIO1 让给 7100 I2C */
+#ifdef OD_DIO12_OUTPUT
+/* OD 模式：使能 OD 输出 */
+#define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200                    | \
+                                         OD_ENABLE)
+#else
+/* PCM 模式：OD 关闭，DIO0/DIO1 让给 7100 I2C */
 #define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
                                          OD_UNDERRUN_PROTECT_ENABLE         | \
                                          OD_DMA_REQ_ENABLE                  | \
                                          OD_INT_GEN_DISABLE                 | \
                                          DECIMATE_BY_200)
+#endif
 
 #define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
                                          DMA_TRANSFER_M_TO_P |      \
@@ -231,6 +267,37 @@ extern "C"
                                          DMA_ADDR_LIN |             \
                                          DMA_DISABLE)
 
+#ifdef OD_DIO12_OUTPUT
+/* OD DMA：BufferOut -> AUDIO->OD_DATA，16-bit，CIRC（同 sleep） */
+#define RX_DMA_OD                      (DMA_LITTLE_ENDIAN |        \
+                                        DMA_ENABLE |               \
+                                        DMA_DISABLE_INT_DISABLE |  \
+                                        DMA_ERROR_INT_DISABLE |    \
+                                        DMA_COMPLETE_INT_DISABLE | \
+                                        DMA_COUNTER_INT_DISABLE |  \
+                                        DMA_START_INT_DISABLE |    \
+                                        DMA_DEST_WORD_SIZE_16 |    \
+                                        DMA_SRC_WORD_SIZE_32 |     \
+                                        DMA_SRC_ADDR_INC |         \
+                                        DMA_TRANSFER_M_TO_P |      \
+                                        DMA_DEST_ADDR_STATIC |     \
+                                        DMA_DEST_OD |              \
+                                        DMA_PRIORITY_0 |           \
+                                        DMA_ADDR_CIRC)
+
+/* ASRC->OUT -> BufferOut（DEST32/SRC16），CIRC 连续（同 sleep OD 路径） */
+#define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+#else
 /* ASRC->OUT -> pcm_tx_buf (P_TO_M). ASRC->OUT is a 16-bit mono sample;
    DEST16 writes the low 16 bits of each 32-bit word (high 16 zero-filled).
    One-shot linear; re-armed on complete. */
@@ -260,6 +327,7 @@ extern "C"
                                          DMA_DEST_ADDR_STATIC |     \
                                          DMA_ADDR_LIN |             \
                                          DMA_DISABLE)
+#endif    /* ifdef OD_DIO12_OUTPUT */
 
 /* LPDSP32 CODEC related defines */
 #define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
