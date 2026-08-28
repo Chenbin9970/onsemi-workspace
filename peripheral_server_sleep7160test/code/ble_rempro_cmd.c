@@ -441,10 +441,16 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
  * Same sampling logic as GetBatteryInfo. */
 uint32_t read_battery_raw(void)
 {
+#ifdef BAT_ADC_ENABLE
     Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
     Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
                               ADC_NEG_INPUT_GND);
     return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
+#else
+    /* 7160test: DIO3 让给 PCM FS（7100 时钟），电池采样关闭 → 固定返回满电。
+     * 避免 read_battery_raw 重配 DIO3 打断 PCM。 */
+    return BAT_ADC_MAX;
+#endif
 }
 
 #ifdef BS300_ENABLE

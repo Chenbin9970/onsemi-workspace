@@ -310,8 +310,6 @@ void Continue_Application(void)
     /* Lower drive strength (required when VDDO > 2.7)*/
     DIO->PAD_CFG = PAD_LOW_DRIVE;
 
-    /* Turn LED on */
-    Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
     /* 7160test: DIO12 改作 UART 打印口，按键禁用 */
     //Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
 #ifndef DEBUG_UART_ENABLE
@@ -323,6 +321,7 @@ void Continue_Application(void)
     /* Turn off pad retention */
     ACS_WAKEUP_CTRL->PADS_RETENTION_EN_BYTE = PADS_RETENTION_DISABLE_BYTE;
 
+#ifdef BAT_ADC_ENABLE
     Sys_DIO_Config(3, DIO_MODE_DISABLE | DIO_NO_PULL);
 
     /* Set the ADC configuration */
@@ -330,6 +329,7 @@ void Continue_Application(void)
 
     Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
                               ADC_NEG_INPUT_GND);
+#endif
 
     /* Configure clock dividers */
     CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
@@ -498,13 +498,6 @@ int APP_Timer(ke_msg_id_t const msg_id, void const *param,
 {
     /* Re-arm is done in Main_Loop — just set flag here */
     app_env.timer_200ms = 1;
-
-    if (ble_env.state == APPM_CONNECTED)
-        Sys_GPIO_Set_High(LED_DIO);
-    else if (ble_env.state == APPM_ADVERTISING)
-        Sys_GPIO_Toggle(LED_DIO);
-    else
-        Sys_GPIO_Set_Low(LED_DIO);
 
     return (KE_MSG_CONSUMED);
 }

@@ -104,9 +104,6 @@ int main()
     /* Wait for 3 seconds to allow re-flashing directly after pressing RESET */
     Sys_Delay_ProgramROM(3 * SystemCoreClock);
 
-    /* Turn LED on */
-    Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_1);
-
     /* 7160test: 上电对 7100 做分阶段初始化（对照 star.csv），收发经 UART 打印 */
     dsp_7100_boot_init();
 
@@ -206,6 +203,7 @@ void Main_Loop(void)
             low_batt_elapsed_ms += wake_ms;
         }
 
+#ifdef BAT_ADC_ENABLE
         if (low_batt_elapsed_ms >= LOW_BATT_CHECK_MS) {
             low_batt_elapsed_ms = 0;
             if (read_battery_raw() <= BAT_ADC_MIN) {
@@ -214,6 +212,7 @@ void Main_Loop(void)
 #endif
             }
         }
+#endif
 
 #ifdef APP_RM_ENABLE
         RM_StatusHandler();
@@ -290,7 +289,7 @@ void Main_Loop(void)
             NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
             Sys_Timers_Stop(1 << TIMER_REGUL);
             Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
-            Sys_DMA_ChannelDisable(OD_DMA_NUM);
+            Sys_DMA_ChannelDisable(PCM_DMA_NUM);
             SYSCTRL->DSS_CTRL = DSS_LPDSP32_PAUSE;
             BBIF->CTRL = BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP;
             app_env.audio_streaming = 0;
@@ -648,8 +647,6 @@ void Main_Loop(void)
             (RTC_CLK_SRC == RTC_CLK_SRC_XTAL32K)))
 #endif
         {
-            Sys_DIO_Config(LED_DIO, DIO_MODE_GPIO_OUT_0);
-
             GLOBAL_INT_DISABLE();
             BLE_Power_Mode_Enter(&sleep_mode_env, POWER_MODE_SLEEP);
             GLOBAL_INT_RESTORE();

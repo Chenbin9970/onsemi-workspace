@@ -100,14 +100,15 @@ extern "C"
  * 7160test: 原 DIO12 改作 UART 打印口，恢复按钮挪到 DIO7（空闲） */
 #define RECOVERY_DIO                    7
 
-/* DIO number that is connected to LED of EVB */
-#define LED_DIO                         6
-
 /* Enable/disable buck converter
  * Options: VCC_BUCK_BITBAND or VCC_LDO_BITBAND */
 #ifndef VCC_BUCK_LDO_CTRL
 #define VCC_BUCK_LDO_CTRL               VCC_LDO_BITBAND
 #endif
+
+/* 电池 ADC 采样总开关。7160test: DIO3 让给 PCM FS（7100 时钟），默认关闭；
+ * 取消注释开启（开启前需把 PCM FS 挪到别的引脚）。 */
+//#define BAT_ADC_ENABLE
 
 /* DIO3 ADC battery measurement: 4.4V battery, 1M+360k divider → DIO3
  * DIO3 voltage: 0.794V (3.0V bat) ~ 1.165V (4.4V bat)
@@ -163,7 +164,28 @@ extern "C"
 
 #define DIO_SYNC_PULSE                  8
 
-#define SAMPL_CLK                       7
+/* DIO pin configuration for PCM output. The external 7100 is the clock
+   master (generates BCLK and FS), so RSL10 runs as PCM slave and only
+   shifts data out on SERO (DIO14). */
+#define PCM_CLK_DO                      2
+#define PCM_FRAME_SYNC                  3
+#define PCM_SER_DI                      4    /* unused input; slave does not return data */
+#define PCM_SER_DO                      14
+
+/* PCM slave output: external 7100 provides BCLK (384 kHz) and FS
+   (12 kHz, 32 BCLK/frame). */
+#define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
+                                         PCM_TX_ALIGN_LSB |        \
+                                         PCM_WORD_SIZE_32 |        \
+                                         PCM_FRAME_ALIGN_FIRST |   \
+                                         PCM_FRAME_WIDTH_LONG |    \
+                                         PCM_MULTIWORD_2 |         \
+                                         PCM_SUBFRAME_ENABLE |     \
+                                         PCM_CONTROLLER_DMA |      \
+                                         PCM_DISABLE |             \
+                                         PCM_SELECT_SLAVE)
+
+#define SAMPL_CLK                       PCM_FRAME_SYNC
 
 #define THREE_BLOCK_APPN(x, y, z)       x##y##z
 #define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)
@@ -172,12 +194,17 @@ extern "C"
 #define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)
 
 #define MEMCPY_DMA_NUM                  2
-#define OD_DMA_NUM                      5
+#define PCM_DMA_NUM                     5
 #define ASRC_IN_IDX                     3
 #define ASRC_OUT_IDX                    4
 #define RX_DMA_NUM                      5
 #define TX_DMA_NUM                      6
 #define UART_TX_NUM                     7
+
+/* PCM output: mono 12 kHz. Each 32-bit PCM->TX_DATA write is one 2x16-bit
+   frame at 12k FS, so one 10 ms buffer = 120 writes (= 120 mono samples). */
+#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
+#define PCM_DOUBLE_BUFFER               1   /* 1=双缓冲, 0=单缓冲 */
 
 #define TIMER_REGUL                     2
 
@@ -192,22 +219,6 @@ extern "C"
                                          OD_INT_GEN_DISABLE                 | \
                                          DECIMATE_BY_200)
 
-#define RX_DMA_OD                      (DMA_LITTLE_ENDIAN |        \
-                                        DMA_ENABLE |               \
-                                        DMA_DISABLE_INT_DISABLE |  \
-                                        DMA_ERROR_INT_DISABLE |    \
-                                        DMA_COMPLETE_INT_DISABLE | \
-                                        DMA_COUNTER_INT_DISABLE |  \
-                                        DMA_START_INT_DISABLE |    \
-                                        DMA_DEST_WORD_SIZE_16 |    \
-                                        DMA_SRC_WORD_SIZE_32 |     \
-                                        DMA_SRC_ADDR_INC |         \
-                                        DMA_TRANSFER_M_TO_P |      \
-                                        DMA_DEST_ADDR_STATIC |     \
-                                        DMA_DEST_OD |              \
-                                        DMA_PRIORITY_0 |           \
-                                        DMA_ADDR_CIRC)
-
 #define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
                                          DMA_TRANSFER_M_TO_P |      \
                                          DMA_LITTLE_ENDIAN |        \
@@ -220,16 +231,34 @@ extern "C"
                                          DMA_ADDR_LIN |             \
                                          DMA_DISABLE)
 
+/* ASRC->OUT -> pcm_tx_buf (P_TO_M). ASRC->OUT is a 16-bit mono sample;
+   DEST16 writes the low 16 bits of each 32-bit word (high 16 zero-filled).
+   One-shot linear; re-armed on complete. */
 #define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
                                          DMA_TRANSFER_P_TO_M |      \
                                          DMA_LITTLE_ENDIAN |        \
-                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COMPLETE_INT_ENABLE |  \
                                          DMA_COUNTER_INT_DISABLE |  \
-                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_DEST_WORD_SIZE_16 |    \
                                          DMA_SRC_WORD_SIZE_16 |     \
                                          DMA_SRC_ADDR_STATIC |      \
                                          DMA_DEST_ADDR_INC |        \
-                                         DMA_ADDR_CIRC |            \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* pcm_tx_buf -> PCM->TX_DATA. One PCM_FRAME_WORDS transfer per arm; the
+   complete interrupt re-arms the buffer. LIN (not CIRC, which underruns
+   at the wrap boundary). Each 32-bit word is two 16-bit samples. */
+#define RX_DMA_PCM_STEREO               (DMA_DEST_PCM |             \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
                                          DMA_DISABLE)
 
 /* LPDSP32 CODEC related defines */
@@ -269,6 +298,12 @@ enum rm_disc_state {
 extern uint8_t ear_side;
 extern uint8_t *Dsp2CmBuff0dec;
 extern int16_t BufferOut[2 * FRAME_LENGTH];
+extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+/* PCM 双缓冲状态（定义在 app_func.c） */
+extern volatile uint8_t pcm_fill;
+extern volatile uint8_t pcm_ready;
+extern volatile uint8_t pcm_waiting;
 extern bool asrc_stable;
 extern uint32_t cntr_stability;
 extern bool flag_ascc_phase;

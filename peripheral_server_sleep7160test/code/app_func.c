@@ -132,9 +132,9 @@ void Asrc_reconfig(void)
 
     if (Ck != 0)
     {
-        asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);
+        asrc_inc_carrier  = ((((Cr - Ck) << 28) / Ck) << 0);
         asrc_inc_carrier &= 0xFFFFFFFF;
-        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
     }
     asrc_cnt_prev = ASRC->PHASE_CNT;
 }
@@ -555,6 +555,69 @@ int16_t sample_in[FRAME_LENGTH]    = {
 #endif    /* if 1 */
 };
 
+/* PCM 双缓冲状态（ch4 填 / ch5 流） */
+volatile uint8_t pcm_fill = 0;
+volatile uint8_t pcm_ready = 0xFF;   /* 0xFF = 无待流出的 buf */
+volatile uint8_t pcm_waiting = 0;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_asrc_out_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : ASRC 输出 DMA 完成。ch4 把 ASRC->OUT 采进 pcm_tx_buf[pcm_fill]；
+ *                 标记 ready、切换 buf 并重新武装；若 ch5 在等则启动 ch5。
+ * ------------------------------------------------------------------------- */
+void Pcm_asrc_out_dma_isr(void)
+{
+    pcm_ready = pcm_fill;
+    pcm_fill = 1 - pcm_fill;
+
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    if (pcm_waiting)
+    {
+        pcm_waiting = 0;
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_tx_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : PCM TX DMA 完成。ch5 流完当前 buf；若 ch4 有新 buf 则继续流，
+ *                 否则等 ch4 的完成中断启动。
+ * ------------------------------------------------------------------------- */
+void Pcm_tx_dma_isr(void)
+{
+    if (pcm_ready != 0xFF)
+    {
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+    else
+    {
+        pcm_waiting = 1;
+    }
+}
+
+/* PCM DMA ISR 别名：向量表 DMA4/DMA5 -> 上述处理函数 */
+void __attribute__ ((alias("Pcm_asrc_out_dma_isr")))
+DMA_IRQ_FUNC(ASRC_OUT_IDX)(void);
+
+void __attribute__ ((alias("Pcm_tx_dma_isr")))
+DMA_IRQ_FUNC(PCM_DMA_NUM)(void);
+
 
 
 #ifndef APP_ASHA_ENABLE
@@ -659,9 +722,9 @@ void Asrc_reconfig(void)
     /* Configure ASRC base on new Ck */
     if (Ck != 0)
     {
-        asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);
+        asrc_inc_carrier  = ((((Cr - Ck) << 28) / Ck) << 0);
         asrc_inc_carrier &= 0xFFFFFFFF;
-        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
     }
     asrc_cnt_prev     = ASRC->PHASE_CNT;
 }

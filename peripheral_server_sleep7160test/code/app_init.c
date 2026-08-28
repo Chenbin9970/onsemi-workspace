@@ -191,10 +191,12 @@ void App_sleep_Initialize(void)
     /* BLE not in sleep mode and ready for normal operations */
     BLE_Is_Awake_Flag_Set();
 
+#ifdef BAT_ADC_ENABLE
     /* Configure ADC channel 0 for DIO3 battery measurement */
     Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
     Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_200);
     Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL, (ADC_NEG_INPUT_GND | ADC_POS_INPUT_DIO3));
+#endif
 
     /* Initialize environment */
     App_Env_Initialize();
@@ -279,12 +281,14 @@ void App_RM_BLE_Initialize(void)
 
     BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
+#ifdef BAT_ADC_ENABLE
     /* Configure ADC channel 0 for DIO3 battery measurement */
     Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL | DIO_LPF_DISABLE);
     Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_6400);
     Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL,
                               (ADC_NEG_INPUT_GND |
                                ADC_POS_INPUT_DIO3));
+#endif
 
     Sys_Watchdog_Refresh();
 
@@ -327,6 +331,31 @@ void App_RM_BLE_Initialize(void)
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
 int16_t BufferOut[2 * FRAME_LENGTH];
+
+/* PCM output buffer (double). ch4 fills one buffer while ch5 streams the
+   other, swapping on complete. */
+uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Initialize_Raw_PCM_Output_Type(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Configure the PCM interface as slave for raw audio output.
+ *                 7100 提供 BCLK/FS，RSL10 从机移位输出 SERO(DIO14)。
+ * ------------------------------------------------------------------------- */
+void Initialize_Raw_PCM_Output_Type(void)
+{
+    /* Slave mode: external 7100 provides BCLK (DIO2) and FS (DIO3); RSL10
+       shifts data out on SERO (DIO14). PCM stays disabled here; it is
+       enabled last, after the LIN DMA is armed. */
+    Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
+                      PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
+    Sys_PCM_Config(PCM_CFG_TX);
+
+    /* LIN DMA: pcm_tx_buf -> PCM->TX_DATA, re-armed by the complete
+       interrupt (documented config; CIRC underruns at the wrap boundary). */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
+}
 
 /* Audio pipeline init — called before RM_Enable in BLE+switch flow */
 void Audio_Init(void)
@@ -390,28 +419,34 @@ void Audio_Init(void)
     AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
     AUDIO->SDM_CFG = 0x00002;
     AUDIO->OD_GAIN = 0xfff;
-    /* 7100: OD 输出关闭，DIO0 让给 I2C SCL（见 app.h OD_ENABLE） */
+    /* 7100: OD 输出关闭，DIO0/DIO1 让给 I2C SCL/SDA（见 app.h OD_ENABLE） */
     //Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
     //               DIO_NO_PULL | DIO_MODE_OD_P);
 
-    Sys_DMA_ChannelDisable(OD_DMA_NUM);
-    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
-                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
-    {
-        uint32_t i;
-        for (i = 0; i < 10000; i++)
-        {
-            Sys_Watchdog_Refresh();
-            Sys_Delay_ProgramROM(1000);
-        }
-    }
-    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+    /* PCM 从机输出：7100 提供 BCLK/FS，RSL10 移位输出 SERO(DIO14) */
+    Initialize_Raw_PCM_Output_Type();
 
+    /* ch4: ASRC->OUT -> pcm_tx_buf（16-bit 采样 → 32-bit 字低 16 位） */
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
-    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
-                          2 * FRAME_LENGTH, 0,
-                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+
+    /* 双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 流 pcm_tx_buf[pcm_ready]。
+       ch5 由 ch4 的完成中断启动（见 app_func.c）。 */
+    pcm_fill = 0;
+    pcm_ready = 0xFF;
+    pcm_waiting = 1;
+
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_PCM_Enable();
 }
 
 /* Minimal audio pipeline resume after LINK_DISCONNECTED shutdown.
@@ -428,16 +463,25 @@ void Audio_Resume(void)
     Sys_DMA_ChannelConfig(ASRC_IN_IDX, RX_DMA_ASRC_IN, SUBFRAME_LENGTH, 0,
                           (uint32_t)Dsp2CmBuff0dec, (uint32_t)&ASRC->IN);
 
-    Sys_DMA_ChannelDisable(OD_DMA_NUM);
-    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
-                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
-    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+    Sys_PCM_Config(PCM_CFG_TX);
 
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
-    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT,
-                          2 * FRAME_LENGTH, 0,
-                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+
+    pcm_fill = 0;
+    pcm_ready = 0xFF;
+    pcm_waiting = 1;
+
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_PCM_Enable();
 
     Sys_Timers_Start(1 << TIMER_REGUL);
 }
@@ -609,6 +653,7 @@ void App_Initialize(void)
 
     app_env.init_done = 1;
 
+#ifdef BAT_ADC_ENABLE
     Sys_DIO_Config(3, DIO_MODE_DISABLE | DIO_NO_PULL);
 
     /* Set the ADC configuration */
@@ -616,6 +661,7 @@ void App_Initialize(void)
 
     Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 |
                               ADC_NEG_INPUT_GND);
+#endif
 
     /* Stop masking interrupts */
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
