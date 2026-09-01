@@ -48,7 +48,7 @@ extern "C"
 #endif    /* if !defined (RSL10_DEBUG) */
 
 #define DMA_UART_TX         7
-#define UART_TX             5
+#define UART_TX             12   /* 打印口改到 DIO12（原 DIO5）；DIO12 上电时兼作恢复脚 */
 #define UART_RX             4
 #define UART_BAUD_RATE      115200
 #define MAX_SIZE_STR        100

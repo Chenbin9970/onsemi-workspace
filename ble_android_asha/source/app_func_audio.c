@@ -45,6 +45,14 @@ volatile uint32_t cap_in_idx;
 volatile uint32_t cap_out_idx;
 volatile uint8_t  cap_done;
 
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+/* PCM 双缓冲状态：pcm_fill 是 ch4 正在填的 buf，pcm_ready 是 ch5 正在流的 buf
+   （0xFF 表示无），pcm_waiting 表示 ch5 在等 ch4 换手。 */
+volatile uint8_t pcm_fill;
+volatile uint8_t pcm_ready;
+volatile uint8_t pcm_waiting;
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
 /* Enable / disable PLC feature */
 bool plc_enable = true;
 
@@ -208,6 +216,19 @@ void APP_Audio_Start(void)
     cap_out_idx = 0;
     cap_done = 0;
 
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    /* 武装 PCM 双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 由 ch4 完成中断按需启动 */
+    pcm_fill = 0;
+    pcm_ready = 0xFF;
+    pcm_waiting = 1;
+
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_PCM_Enable();
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
     env_audio.state = LINK_ESTABLISHED;
     /* 4.5 ms (connection interval is 10 ms) + channel delay */
     /* TODO: android_support_env.channel_delay */
@@ -250,6 +271,15 @@ void APP_Audio_Disconnect(void)
     NVIC_DisableIRQ(DSP0_IRQn);
 
     NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
+
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    /* 停止 PCM 输出并冻结双缓冲 */
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+    NVIC_DisableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_DisableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_PCM_Disable();
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
     /* Timer interrupts */
     NVIC_DisableIRQ(TIMER_IRQn(TIMER_RENDER));
@@ -339,13 +369,6 @@ void APP_ResetPrevSeqNumber(void)
  * ------------------------------------------------------------------------- */
 void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
 {
-    /* 抓 ASRC 输出：轮询读 OUT 寄存器（只读，不消耗，不动 ch4）。每输入
-     * 子帧采一次，~4k 采样/s（ASRC 12k 输出会被欠采样，但能看出有无信号）。 */
-    if (cap_out_idx < CAP_N)
-    {
-        cap_out[cap_out_idx++] = (int16_t)(ASRC->OUT & 0xFFFFu);
-    }
-
     env_audio.frame_idx += SUBFRAME_LENGTH;
     if (env_audio.frame_idx < FRAME_LENGTH)
     {
@@ -373,6 +396,83 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
     }
 }
 
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_asrc_out_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : ASRC 输出 DMA 完成。ch4 把 ASRC->OUT 采进 pcm_tx_buf[pcm_fill]；
+ *                 标记 ready、切换 buf 并重新武装；若 ch5 在等则启动 ch5。
+ * ------------------------------------------------------------------------- */
+void Pcm_asrc_out_dma_isr(void)
+{
+    pcm_ready = pcm_fill;
+    pcm_fill = 1 - pcm_fill;
+
+    /* 抓 12k PCM 输出（出 ASRC 后，7100 实际收到的音频，32-bit 字低 16 位） */
+    if (cap_out_idx < CAP_N)
+    {
+        uint32_t n = CAP_N - cap_out_idx;
+        uint32_t i;
+        if (n > PCM_FRAME_WORDS)
+        {
+            n = PCM_FRAME_WORDS;
+        }
+        for (i = 0; i < n; i++)
+        {
+            cap_out[cap_out_idx + i] =
+                (int16_t)(pcm_tx_buf[pcm_ready][i] & 0xFFFFu);
+        }
+        cap_out_idx += n;
+    }
+
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    if (pcm_waiting)
+    {
+        pcm_waiting = 0;
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_tx_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : PCM TX DMA 完成。ch5 流完当前 buf；若 ch4 有新 buf 则继续流，
+ *                 否则等 ch4 的完成中断启动。
+ * ------------------------------------------------------------------------- */
+void Pcm_tx_dma_isr(void)
+{
+    if (pcm_ready != 0xFF)
+    {
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+    else
+    {
+        pcm_waiting = 1;
+    }
+}
+
+/* PCM DMA ISR 别名：向量表 DMA4/DMA5 -> 上述处理函数 */
+void __attribute__ ((alias("Pcm_asrc_out_dma_isr")))
+DMA_IRQ_FUNC(ASRC_OUT_IDX)(void);
+
+void __attribute__ ((alias("Pcm_tx_dma_isr")))
+DMA_IRQ_FUNC(PCM_DMA_NUM)(void);
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void TIMER_IRQ_FUNC(TIMER_FRAME_TX_END)(void)
  * ----------------------------------------------------------------------------
@@ -384,13 +484,16 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
  * ------------------------------------------------------------------------- */
 void TIMER_IRQ_FUNC(TIMER_FRAME_TX_END)(void)
 {
+#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
     /* De-assert SPI_CS */
     SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_1_BITBAND;
 
     /* Check if the ASRC has finish on the frame */
     ASSERT(ASRC_CTRL->ASRC_PROC_STATUS_ALIAS == ASRC_IDLE_BITBAND);
     Sys_ASRC_StatusConfig(ASRC_DISABLE);
+#endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
+    /* PCM: ASRC 保持连续运行（ch4/ch5 持续排空），不逐帧关 ASRC */
     env_audio.proc = false;
 }
 
@@ -706,15 +809,16 @@ void AUDIOSINK_PERIOD_IRQHandler(void)
  * ------------------------------------------------------------------------- */
 void asrc_reconfig(sync_param_t *sync_param)
 {
-    int64_t asrc_inc_carrier;
+    int64_t asrc_inc_carrier = 0;
 
     sync_param->Cr = env_sync.samples_per_packet << SHIFT_BIT;
     sync_param->Ck = sync_param->audio_sink_cnt;
 
+    /* 范围检查只重置稳定计数，不钳位 Ck（7160test 同款）。钳位会把 12k 的
+     * Ck≈0.75×spp 压成错误值，导致 ASRC 输出 8k。 */
     if ((sync_param->Ck <= (env_sync.samples_per_packet - ASRC_CFG_THR) << SHIFT_BIT) ||
         (sync_param->Ck >= (env_sync.samples_per_packet + ASRC_CFG_THR) << SHIFT_BIT))
     {
-        sync_param->Ck = sync_param->Ck_prev;
         sync_param->avg_ck_outputcnt = 0;
     }
 
@@ -723,10 +827,30 @@ void asrc_reconfig(sync_param_t *sync_param)
      */
     sync_param->Ck_prev = sync_param->Ck;
 
-    /* Configure ASRC base on new Ck */
-    asrc_inc_carrier = (((sync_param->Cr - sync_param->Ck) << 29) / sync_param->Ck);
-    asrc_inc_carrier &= 0xFFFFFFFF;
-    Sys_ASRC_Config(asrc_inc_carrier, LOW_DELAY | ASRC_DEC_MODE1);
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    /* 16k→12k 固定 3:4 比例：输入(G722)=16k、7100 FS=12k 都是硬件固定时钟，
+       不依赖 audiosink 测量（Ck=238 vs 240 的 0.8% 偏差导致 PCM 周期性欠载爆音）。
+       inc = (1/0.75 - 1) << 28 = 0x5555555，DEC_MODE2 相位粒度 <<28。 */
+    asrc_inc_carrier = 0x05555555;
+    Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+#else    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+    if (sync_param->Ck != 0)
+    {
+        asrc_inc_carrier = (((sync_param->Cr - sync_param->Ck) << 29) / sync_param->Ck);
+        asrc_inc_carrier &= 0xFFFFFFFF;
+        Sys_ASRC_Config(asrc_inc_carrier, LOW_DELAY | ASRC_DEC_MODE1);
+    }
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
+    static uint16_t dbg_cnt = 0;
+    if ((++dbg_cnt & 0x1F) == 0)   /* 每 32 次打一条，避免刷屏 */
+    {
+        PRINTF("[ASRC] spp=%d Cr=%d Ck=%d inc=0x%08x\r\n",
+               env_sync.samples_per_packet,
+               (int)(sync_param->Cr >> SHIFT_BIT),
+               (int)(sync_param->Ck >> SHIFT_BIT),
+               (uint32_t)asrc_inc_carrier);
+    }
 }
 
 /* ----------------------------------------------------------------------------

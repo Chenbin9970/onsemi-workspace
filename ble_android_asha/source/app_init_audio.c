@@ -22,6 +22,11 @@
 LPDSP32Context lpdsp32;
 extern struct queue_t audio_queue;
 
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+/* PCM 输出双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 流 pcm_tx_buf[pcm_ready]。 */
+uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void App_CodecInitialize(void)
  * ----------------------------------------------------------------------------
@@ -84,6 +89,44 @@ static void App_CodecInitialize(void)
 }
 
 /* ----------------------------------------------------------------------------
+ * Function      : void Initialize_Raw_PCM_Output_Type(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Configure the PCM interface as slave for raw audio output.
+ *                 7100 提供 BCLK(DIO2)/FS(DIO3)，RSL10 从机移位输出 SERO(DIO14)。
+ *                 PCM 保持 disabled，最后在 APP_Audio_Start 使能。
+ * Inputs        : None
+ * Outputs       : None
+ * ------------------------------------------------------------------------- */
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+static void Initialize_Raw_PCM_Output_Type(void)
+{
+    /* 释放 DIO14（RSL10 JTAG 数据脚）给 PCM SERO：关 JTAG（参照 7160test）。
+       否则 JTAG 占用 DIO14，DIO->CFG[14]=PCM_SERO 不生效，输出卡高。 */
+    DIO_JTAG_SW_PAD_CFG->CM3_JTAG_DATA_EN_ALIAS = CM3_JTAG_DATA_DISABLED_BITBAND;
+    DIO_JTAG_SW_PAD_CFG->CM3_JTAG_TRST_EN_ALIAS = CM3_JTAG_TRST_DISABLED_BITBAND;
+
+    Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
+                      PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
+    Sys_PCM_Config(PCM_CFG_TX);
+
+    /* LIN DMA: pcm_tx_buf -> PCM->TX_DATA，由 ch5 完成中断换手重武装 */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
+
+#if defined(PCM_TEST_5555)
+    /* 诊断：开机即使能 PCM 并持续写 0x5555，观察 DIO14。
+       交替电平=外设能移位；卡高=PCM 外设配置/时钟问题。 */
+    Sys_PCM_Enable();
+    while (1)
+    {
+        PCM->TX_DATA = 0x00005555;
+        Sys_Watchdog_Refresh();
+    }
+#endif    /* ifdef PCM_TEST_5555 */
+}
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
+/* ----------------------------------------------------------------------------
  * Function      : void Audio_Initialize_System(void)
  * ----------------------------------------------------------------------------
  * Description   : Initialize audio functions (TX/RX)
@@ -94,6 +137,13 @@ static void App_CodecInitialize(void)
 void Audio_Initialize_System(void)
 {
     App_CodecInitialize();
+
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    /* AUDIOCLK → 3.2MHz + AUDIO 块配置（参照 remote_mic_rx_rawtest1/7160test）：
+       PCM 外设依赖 AUDIOCLK 才移位输出。只配音频时钟，不带 OD 输出寄存器。 */
+    Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
+    Sys_Audio_Set_Config(AUDIO_CONFIG_PCM);
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
 #if (OUTPUT_INTRF == SPI_TX_OUTPUT)
 
@@ -112,6 +162,10 @@ void Audio_Initialize_System(void)
     Sys_SPI_TransferConfig(0, SPI0_START | SPI0_WRITE_DATA | SPI0_CS_1 |
                            SPI0_WORD_SIZE_16);
 #endif
+#elif (OUTPUT_INTRF == PCM_TX_OUTPUT)
+
+    /* PCM slave output init（参照 7160test）：7100 做时钟主机，RSL10 移位输出 */
+    Initialize_Raw_PCM_Output_Type();
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
     /* Start period count */
@@ -143,6 +197,17 @@ void Audio_Initialize_System(void)
         (uint32_t)&SPI0->TX_DATA
         );
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#elif (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    /* ch4: ASRC->OUT -> pcm_tx_buf[0]（16-bit 采样 → 32-bit 字低 16 位）。
+       不在此使能，APP_Audio_Start 时武装，避免抓流前空数据。 */
+    Sys_DMA_ChannelConfig(
+        ASRC_OUT_IDX,
+        RX_DMA_ASRC_OUT,
+        PCM_FRAME_WORDS,
+        0,
+        (uint32_t)&ASRC->OUT,
+        (uint32_t)&pcm_tx_buf[0][0]
+        );
 #else    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
     Sys_DMA_ChannelConfig(
         CODE_IDX,
@@ -156,9 +221,15 @@ void Audio_Initialize_System(void)
 
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();
-    Sys_Audiosink_InputClock(0,
+    /* DIO_WEAK_PULL_UP：与 7160test 一致，避免覆盖 PCM 的 DIO3(FS) 弱上拉配置 */
+    Sys_Audiosink_InputClock(DIO_WEAK_PULL_UP,
                              ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
     Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
+
+    /* 启动 audiosink 相位/周期计数器（参照 7160test）：不启动则 CNT 不更新，
+     * asrc_reconfig 拿不到有效 Ck → ASRC inc=0 → 输出静音。 */
+    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
+    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
 
 #if SIMUL
     Sys_Timer_Set_Control(TIMER_SIMUL, TIMER_FREE_RUN | (SIMUL_TIME_US - 1) | TIMER_SLOWCLK_DIV2);
@@ -183,6 +254,11 @@ void Audio_Initialize_System(void)
     NVIC_SetPriority(AUDIOSINK_PHASE_IRQn, 0);
 
     NVIC_SetPriority(DMA_IRQn(ASRC_IN_IDX), 0);
+
+#if (OUTPUT_INTRF == PCM_TX_OUTPUT)
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+#endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
     NVIC_SetPriority(BLE_EVENT_IRQn, 0);
     NVIC_SetPriority(BLE_RX_IRQn, 0);
