@@ -863,6 +863,14 @@ void Pcm_asrc_out_dma_isr(void)
  * ------------------------------------------------------------------------- */
 void Pcm_tx_dma_isr(void)
 {
+#ifdef PCM_TONE_TEST
+    /* 固定模式：ch5 自续，双缓冲轮流（两缓冲内容相同，跨缓冲连续） */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[pcm_fill][0], (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    pcm_fill = 1 - pcm_fill;
+#else    /* ifdef PCM_TONE_TEST */
     if (pcm_ready != 0xFF)
     {
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
@@ -876,6 +884,7 @@ void Pcm_tx_dma_isr(void)
     {
         pcm_waiting = 1;
     }
+#endif    /* ifdef PCM_TONE_TEST */
 }
 
 /* PCM DMA ISR 别名：向量表 DMA4/DMA5 -> 上述处理函数 */

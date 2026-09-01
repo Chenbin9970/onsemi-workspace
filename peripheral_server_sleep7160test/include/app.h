@@ -237,7 +237,7 @@ extern "C"
    (12 kHz, 32 BCLK/frame). */
 #define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_32 |        \
+                                         PCM_WORD_SIZE_16 |        \
                                          PCM_FRAME_ALIGN_FIRST |   \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
@@ -276,6 +276,12 @@ extern "C"
    frame at 12k FS, so one 10 ms buffer = 120 writes (= 120 mono samples). */
 #define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
 #define PCM_DOUBLE_BUFFER               1   /* 1=双缓冲, 0=单缓冲 */
+
+/* 测试：PCM 初始化直接送 24k 采样 8kHz ±6000 16-bit 正弦（绕过 ASRC/ch4，ch5 直接流，
+   Pcm_tx_dma_isr 自续轮流）。每 32-bit 字低16(word1/右)=一个采样、高16=0。
+   发现（2026-09-01）：PCM WORD_SIZE_16 + MULTIWORD_2 → 每帧 2×16-bit = 有效 24k，
+   7100 按 24k 读，7k/8k 纯音能干净播出。注释掉回到正常 ASRC→PCM 链路。 */
+#define PCM_TONE_TEST
 
 #define TIMER_REGUL                     2
 

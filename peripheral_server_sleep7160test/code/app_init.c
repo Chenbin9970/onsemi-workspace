@@ -359,6 +359,30 @@ void Initialize_Raw_PCM_Output_Type(void)
 }
 #endif    /* ifndef OD_DIO12_OUTPUT */
 
+#ifdef PCM_TONE_TEST
+/* 24k 采样 8kHz ±6000 16-bit 正弦，周期 3 采样（24 项 = {0,5196,-5196} 重复 8 次）。
+   每 32-bit 字低16(word1/右)=一个采样（7100 读低 16），高16=0。
+   两缓冲共 240 字 = 240 采样，跨缓冲连续。
+   发现（2026-09-01）：PCM WORD_SIZE_16 + MULTIWORD_2 → 每帧 2×16-bit = 有效 24k，
+   7100 按 24k 读，8k 表直接播 8k（不是 4k）。 */
+static const int16_t pcm_sine24k_8k[24] = {
+      0,  5196, -5196,     0,  5196, -5196,
+      0,  5196, -5196,     0,  5196, -5196,
+      0,  5196, -5196,     0,  5196, -5196,
+      0,  5196, -5196,     0,  5196, -5196
+};
+static void Pcm_Sine24k_Fill(void)
+{
+    uint32_t k;
+    for (k = 0; k < 2 * PCM_FRAME_WORDS; k++)
+    {
+        int16_t s = pcm_sine24k_8k[k % 24];
+        pcm_tx_buf[k / PCM_FRAME_WORDS][k % PCM_FRAME_WORDS] =
+            (uint32_t)(uint16_t)s;
+    }
+}
+#endif    /* ifdef PCM_TONE_TEST */
+
 /* Audio pipeline init — called before RM_Enable in BLE+switch flow */
 void Audio_Init(void)
 {
@@ -450,6 +474,20 @@ void Audio_Init(void)
     /* PCM 从机输出：7100 提供 BCLK/FS，RSL10 移位输出 SERO(DIO14) */
     Initialize_Raw_PCM_Output_Type();
 
+#ifdef PCM_TONE_TEST
+    /* 24k 1kHz 正弦：填两缓冲 + ch5 直接流，绕过 ch4/ASRC（Pcm_tx_dma_isr 自续轮流） */
+    Pcm_Sine24k_Fill();
+    pcm_fill = 1;   /* ch5 首次已由 Initialize 武装 buffer0，ISR 从 buffer1 开始轮流 */
+    pcm_ready = 0xFF;
+    pcm_waiting = 0;
+
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    Sys_PCM_Enable();
+#else    /* ifdef PCM_TONE_TEST */
 #ifndef RESAMP_SW
     /* ch4: ASRC->OUT -> pcm_tx_buf（16-bit 采样 → 32-bit 字低 16 位） */
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
@@ -476,6 +514,7 @@ void Audio_Init(void)
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
     Sys_PCM_Enable();
+#endif    /* ifdef PCM_TONE_TEST */
 #endif    /* ifdef OD_DIO12_OUTPUT */
 }
 
