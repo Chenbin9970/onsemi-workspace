@@ -23,6 +23,7 @@
 
 #include <app.h>
 #include <app_audio.h>
+#include "i2c_7100_hal.h"
 
 /* Configuration pre-set in app_config.c */
 extern struct gapm_set_dev_config_cmd  devConfigCmd;
@@ -159,9 +160,11 @@ void APP_GAPM_GATTM_Handler(ke_msg_id_t const msg_id, void const *param,
             {
                 GAPM_StartAdvertiseCmd(&advertiseCmd); /* Start advertising */
 
-                /* Start the LED periodic timer. LED blinks according to the
-                 * number of connected peers. See APP_LED_Timeout_Handler. */
-                ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_MS(200));
+                /* Start the 200 ms timer that sends the 7100 I2C heartbeat
+                 * every 5 s. Started here (after the BLE stack is up) so the
+                 * kernel timer survives the GAPM reset / bring-up phase. */
+                PRINTF("[HB] timer armed\r\n");
+                ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_SETTING_MS(200));
             }
         }
         break;
@@ -387,69 +390,43 @@ void APP_GAPC_Handler(ke_msg_id_t const msg_id, void const *param,
 }
 
 /* ----------------------------------------------------------------------------
- * Function      : void APP_LED_Timeout_Handler(ke_msg_idd_t const msg_id,
- *                                              void const *param,
- *                                              ke_task_id_t const dest_id,
- *                                              ke_task_id_t const src_id)
+ * Function      : void APP_7100_HB_Handler(ke_msg_id_t const msg_id,
+ *                                          void const *param,
+ *                                          ke_task_id_t const dest_id,
+ *                                          ke_task_id_t const src_id)
  * ----------------------------------------------------------------------------
- * Description   : Control GPIO "LED_DIO_NUM" behavior using a timer.
- *                 Possible LED behaviors:
- *                     - If the device is advertising but it has not connected
- *                       to any peer: the LED blinks every 200 ms.
- *                     - If the device is advertising and it is connecting to
- *                       fewer than BLE_CONNECTION_MAX peers: the LED blinks
- *                       every 2 seconds according to the number of connected
- *                       peers (i.e., blinks once if one peer is connected,
- *                       twice if two peers are connected, etc.).
- *                     - If the device is connected to BLE_CONNECTION_MAX peers
- *                       the LED is steady on.
+ * Description   : 200 ms periodic timer. Every 5 s (25 ticks) sends the 7100
+ *                 I2C heartbeat {0x88, 0x01} to I2C_7100_ADDR. Runs from boot
+ *                 regardless of BLE connection state.
  * Inputs        : - msg_id     - Kernel message ID number
  *                 - param      - Message parameter (unused)
  *                 - dest_id    - Destination task ID number
  *                 - src_id     - Source task ID number
  * Outputs       : None
- * Assumptions   : None
  * ------------------------------------------------------------------------- */
-void APP_LED_Timeout_Handler(ke_msg_id_t const msg_id, void const *param,
-                             ke_task_id_t const dest_id, ke_task_id_t const src_id)
+void APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                         ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    static uint8_t toggle_cnt = 0;
-    uint8_t connectionCount = GAPC_GetConnectionCount();
+    static uint8_t s_7100_hb_cnt = 0;
+    static bool s_first = true;
 
-    /* Blink LED according to the number of connections */
-    switch (connectionCount)
+    if (s_first)
     {
-        case 0:
-        {
-            ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_MS(200));
-            Sys_GPIO_Toggle(LED_DIO_NUM); /* Toggle LED_DIO_NUM every 200ms */
-            toggle_cnt = 0;
-        }
-        break;
+        s_first = false;
+        PRINTF("[HB] timer first tick\r\n");
+    }
 
-        case APP_NB_PEERS:
-        {
-            ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_MS(200));
-            Sys_GPIO_Set_High(LED_DIO_NUM); /* LED_DIO_NUM steady high */
-            toggle_cnt = 0;
-        }
-        break;
+    /* Re-arm: 200 ms periodic tick */
+    ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_SETTING_MS(200));
 
-        default: /* connectionCount is between 1 and APP_NB_PEERS (exclusive) */
-        {
-            if (toggle_cnt >= connectionCount * 2)
-            {
-                toggle_cnt = 0;
-                ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_S(2)); /* Schedule timer for a long 2s break */
-                Sys_GPIO_Set_High(LED_DIO_NUM); /* LED_DIO_NUM steady high until next 2s blinking period */
-            }
-            else
-            {
-                toggle_cnt++;
-                Sys_GPIO_Toggle(LED_DIO_NUM);
-                ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_MS(200));
-            }
-        }
+    /* 每 5s (25×200ms) 向 7100 发送 0x88 0x01 心跳 */
+    if (++s_7100_hb_cnt >= 25)
+    {
+        s_7100_hb_cnt = 0;
+        uint8_t pkt[2] = {0x88, 0x01};
+        PRINTF("[HB] send\r\n");
+        bool ok = i2c_7100_write(I2C_7100_ADDR, pkt, sizeof(pkt));
+        PRINTF("[HB] send done ok=%d\r\n", ok);
     }
 }
 

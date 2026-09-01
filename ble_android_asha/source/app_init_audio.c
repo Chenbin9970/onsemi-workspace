@@ -97,6 +97,9 @@ void Audio_Initialize_System(void)
 
 #if (OUTPUT_INTRF == SPI_TX_OUTPUT)
 
+    /* SPI disabled: DIO0/DIO1 are repurposed for the 7100 I2C bus
+     * (SCL=DIO0, SDA=DIO1). See i2c_7100_hal.c. */
+#if 0
     /* Initialize SPI interface */
     Sys_SPI_DIOConfig(0, SPI0_SELECT_MASTER,
                       DIO_LPF_DISABLE | DIO_WEAK_PULL_UP, CLK_DO, CS_DO, SER_DI,
@@ -108,6 +111,7 @@ void Audio_Initialize_System(void)
                    SPI0_MODE_SELECT_AUTO | SPI0_PRESCALE_32);
     Sys_SPI_TransferConfig(0, SPI0_START | SPI0_WRITE_DATA | SPI0_CS_1 |
                            SPI0_WORD_SIZE_16);
+#endif
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
     /* Start period count */
@@ -167,12 +171,6 @@ void Audio_Initialize_System(void)
 #endif    /* if SIMUL */
 
     Reset_Audio_Sync_Param(&env_sync, &env_audio);
-    Sys_DIO_Config(8, DIO_MODE_GPIO_OUT_1);
-
-    /* Send a reset command to E7100 */
-    Sys_DIO_Config(RF_INT, DIO_MODE_GPIO_OUT_1);
-    Sys_GPIO_Set_High(RF_INT);
-    Sys_GPIO_Set_Low(RF_INT);
 
     Sys_DIO_Config(ASCC_PHASE_ISR_DIO, DIO_MODE_GPIO_OUT_0);
 

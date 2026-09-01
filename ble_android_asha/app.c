@@ -96,8 +96,8 @@ int main(void)
     MsgHandler_Add(TASK_ID_GAPM, APP_GAPM_GATTM_Handler);
     MsgHandler_Add(GATTM_ADD_SVC_RSP, APP_GAPM_GATTM_Handler);
     MsgHandler_Add(TASK_ID_GAPC, APP_GAPC_Handler);
-    MsgHandler_Add(APP_LED_TIMEOUT, APP_LED_Timeout_Handler);
     MsgHandler_Add(APP_BATT_LEVEL_LOW, APP_BASS_BattLevelLow_Handler);
+    MsgHandler_Add(APP_7100_HB_TIMER, APP_7100_HB_Handler);
 
     /* Reset the GAP manager. Trigger GAPM_CMP_EVT / GAPM_RESET when finished. See APP_GAPM_GATTM_Handler */
     GAPM_ResetCmd();

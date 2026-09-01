@@ -201,9 +201,6 @@ void Device_Initialize(void)
 
     BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_16 | BB_WAKEUP);
 
-    /* Configure DIOs */
-    Sys_DIO_Config(LED_DIO_NUM, DIO_MODE_GPIO_OUT_0);
-
     /* Seed the random number generator */
     srand(1);
 

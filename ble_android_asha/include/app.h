@@ -56,8 +56,8 @@ extern "C"
 enum appm_msg
 {
     APPM_DUMMY_MSG = TASK_FIRST_MSG(TASK_ID_APP),
-    APP_LED_TIMEOUT,
-    APP_BATT_LEVEL_LOW
+    APP_BATT_LEVEL_LOW,
+    APP_7100_HB_TIMER
 };
 
 #define APP_IDX_MAX                     BLE_CONNECTION_MAX /* Number of APP Task Instances */
@@ -74,7 +74,6 @@ enum appm_msg
 #define APP_NUM_STD_PRF                 2
 #define APP_NUM_CUSTOM_SVC              1
 
-#define LED_DIO_NUM                     6  /* DIO number that is connected to LED of EVB */
 #define OUTPUT_POWER_DBM                0  /* RF output power in dBm */
 #define RADIO_CLOCK_ACCURACY            20 /* RF Oscillator accuracy in ppm */
 
@@ -202,8 +201,8 @@ void APP_SetAdvScanData(void);
 
 void APP_SetConnectionCfmParams(uint8_t conidx, struct gapc_connection_cfm* cfm);
 
-void APP_LED_Timeout_Handler(ke_msg_id_t const msg_id, void const *param,
-                       ke_task_id_t const dest_id, ke_task_id_t const src_id);
+void APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                         ke_task_id_t const dest_id, ke_task_id_t const src_id);
 
 void APP_ASHA_CallbackHandler(enum ASHA_Operation_t op, void *param);
 

@@ -35,6 +35,16 @@ sync_param_t env_sync;
 audio_frame_param_t env_audio;
 struct queue_t audio_queue;
 
+/* 数据抓数（非破坏，不动 ch4）：cap_in(16k DSP 输出) + cap_out(ASRC->OUT
+ * 轮询采样，在 ASRC 输入 DMA 中断里读寄存器)。各满 CAP_N 后 cap_done=1 冻结。
+ * J-Link 读满快照；复位 cap_done=0 且两索引=0 重抓。 */
+#define CAP_N   512
+int16_t cap_in[CAP_N];
+int16_t cap_out[CAP_N];
+volatile uint32_t cap_in_idx;
+volatile uint32_t cap_out_idx;
+volatile uint8_t  cap_done;
+
 /* Enable / disable PLC feature */
 bool plc_enable = true;
 
@@ -193,6 +203,11 @@ void APP_Audio_Start(void)
     /* DMA interrupts */
     NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
 
+    /* Reset the capture for this streaming session */
+    cap_in_idx = 0;
+    cap_out_idx = 0;
+    cap_done = 0;
+
     env_audio.state = LINK_ESTABLISHED;
     /* 4.5 ms (connection interval is 10 ms) + channel delay */
     /* TODO: android_support_env.channel_delay */
@@ -324,6 +339,13 @@ void APP_ResetPrevSeqNumber(void)
  * ------------------------------------------------------------------------- */
 void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
 {
+    /* 抓 ASRC 输出：轮询读 OUT 寄存器（只读，不消耗，不动 ch4）。每输入
+     * 子帧采一次，~4k 采样/s（ASRC 12k 输出会被欠采样，但能看出有无信号）。 */
+    if (cap_out_idx < CAP_N)
+    {
+        cap_out[cap_out_idx++] = (int16_t)(ASRC->OUT & 0xFFFFu);
+    }
+
     env_audio.frame_idx += SUBFRAME_LENGTH;
     if (env_audio.frame_idx < FRAME_LENGTH)
     {
@@ -488,6 +510,22 @@ void DSP0_IRQHandler(void)
 
     /* Apply the volume shift to the current subframe */
     Volume_Shift_Subframe(env_audio.frame_dec);
+
+    /* 抓 16k DSP 解码输出（喂给 ASRC 的信号，被动拷贝不动 DMA） */
+    if (cap_in_idx < CAP_N)
+    {
+        uint32_t n = CAP_N - cap_in_idx;
+        if (n > FRAME_LENGTH)
+        {
+            n = FRAME_LENGTH;
+        }
+        memcpy(&cap_in[cap_in_idx], env_audio.frame_dec, n * sizeof(int16_t));
+        cap_in_idx += n;
+    }
+    if (cap_in_idx >= CAP_N && cap_out_idx >= CAP_N)
+    {
+        cap_done = 1;
+    }
 
     /* Assert SPI_CS */
     SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_0_BITBAND;

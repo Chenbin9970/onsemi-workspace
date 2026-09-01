@@ -110,10 +110,6 @@ void APP_BASS_BattLevelLow_Handler(ke_msg_id_t const msg_id,
     /* Disable periodic notifications to save energy */
     BASS_NotifyOnTimeout(0);
 
-    /* Turn off LED activity */
-    ke_timer_clear(APP_LED_TIMEOUT, TASK_APP);
-    Sys_GPIO_Set_Low(LED_DIO_NUM);
-
     /* Trap application here until battery is recharged.
      * BLE communication continues normally. */
     while(APP_BASS_ReadBatteryLevel(0) <= BATT_LEVEL_LOW_THRESHOLD_PERCENT)
@@ -121,9 +117,6 @@ void APP_BASS_BattLevelLow_Handler(ke_msg_id_t const msg_id,
         Sys_Watchdog_Refresh();
         Kernel_Schedule();
     }
-
-    /* Restart LED timer */
-    ke_timer_set(APP_LED_TIMEOUT, TASK_APP, TIMER_SETTING_MS(200));
 
     /* Re-enable periodic notifications */
     BASS_NotifyOnTimeout(TIMER_SETTING_S(10));

@@ -108,7 +108,7 @@
 									<listOptionValue builtIn="false" value="CFG_PRF_DISS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1834615724" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1834615724" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -120,10 +120,10 @@
 								<inputType id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input.1330407264" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input"/>
 							</tool>
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.858353138" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.930243387" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" valueType="definedSymbols">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.930243387" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.1863263200" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.1863263200" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -132,7 +132,7 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE/Device/RSL10&quot;"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.1751216036" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.1751216036" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -351,7 +351,7 @@
 									<listOptionValue builtIn="false" value="CFG_PRF_DISS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.2054810553" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.2054810553" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -363,10 +363,10 @@
 								<inputType id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input.1113800863" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input"/>
 							</tool>
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.669952015" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.649034729" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" valueType="definedSymbols">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.649034729" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.827674001" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.827674001" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -375,7 +375,7 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE/Device/RSL10&quot;"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.343108145" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.343108145" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -594,7 +594,7 @@
 									<listOptionValue builtIn="false" value="CFG_PRF_DISS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1591087962" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1591087962" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -606,10 +606,10 @@
 								<inputType id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input.1204884492" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input"/>
 							</tool>
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.1048774264" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.932842418" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" valueType="definedSymbols">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.932842418" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.852079902" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.852079902" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -618,7 +618,7 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE/Device/RSL10&quot;"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.77325261" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.77325261" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -837,7 +837,7 @@
 									<listOptionValue builtIn="false" value="CFG_PRF_DISS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1549308128" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths.1549308128" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -849,10 +849,10 @@
 								<inputType id="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input.1243487662" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.c.compiler.input"/>
 							</tool>
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.1531791504" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.610939772" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" valueType="definedSymbols">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.610939772" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.262538654" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.262538654" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>
@@ -861,7 +861,7 @@
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}}/RTE/Device/RSL10&quot;"/>
 								</option>
-								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.1748881773" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" valueType="includePath">
+								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths.1748881773" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.systempaths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/bb&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include/ble&quot;"/>

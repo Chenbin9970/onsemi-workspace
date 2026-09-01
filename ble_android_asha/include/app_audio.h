@@ -77,14 +77,13 @@ extern "C"
 	#define SER_DO                      1
 	#define CLK_DO                      3
 	#define CS_DO                       0
-	#define SAMPL_CLK                   13
-	#define RF_INT                      14
+	#define SAMPL_CLK                   8
 
     /* DIO that is used to check ASCC phase ISR */
-    #define ASCC_PHASE_ISR_DIO          10
+    #define ASCC_PHASE_ISR_DIO          6
 
     /* Audio event DIO */
-    #define ASHA_EVENT_DIO              11
+    #define ASHA_EVENT_DIO              7
 
 #elif EZAIRO_71XX_DIO_CFG == 7160
 	#define SER_DI                      14
