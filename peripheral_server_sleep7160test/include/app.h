@@ -32,7 +32,7 @@
 //#define CFG_FOTA
 /* 打印总开关。关闭后 PRINTF/printf_init 全部失效（printf.h OUTPUT_DISABLED 分支）。
  * 7160test OD 模式：DIO12 让给 OD_P，打印必须关（见 OD_DIO12_OUTPUT）。 */
-//#define DEBUG_UART_ENABLE
+#define DEBUG_UART_ENABLE
 //#define RM_TX_POWER_BOOST
 //#define PEER_EAR_SYNC_ENABLE   /* 左右耳同步 + 左耳 BLE Central 总开关；取消注释开启 */
 
@@ -42,13 +42,62 @@
 
 /* 调试 OD 输出（DIO12 做 OD_P，单端）。打开时：DIO12 让给 OD → 关闭打印、
  * 关闭 PCM 输出，音频走 ASRC DEC_MODE1 → BufferOut → OD DMA(CIRC)。
- * 默认关（保持 PCM slave 输出）。 */
-#define OD_DIO12_OUTPUT
+ * 默认关（保持 PCM slave 输出）。
+ * 2026-08-31 临时切 OD 测金属尾音（OD 16k→16k 无重采样→无金属尾音），已切回 PCM。 */
+//#define OD_DIO12_OUTPUT
 
 /* 打印开关：OD 模式（DIO12 让给 OD_P）或 DEBUG_UART_ENABLE 关闭时，PRINTF 全部失效 */
 #if defined(OD_DIO12_OUTPUT) || !defined(DEBUG_UART_ENABLE)
 #define OUTPUT_INTERFACE                OUTPUT_DISABLED
 #endif
+
+/* 测试：DSP 解码后、进 ASRC 前加低通滤波（级联一阶 IIR，每级截止 ~4k@16k），
+ * 滤掉截止以上的杂音（重采样镜像）。TEST_LPF_ORDER=1..4 选阶数。注释掉则不过滤。 */
+//#define TEST_LPF
+//#define TEST_LPF_ORDER  2
+
+/* 测试：DSP 解码后、进 ASRC 前加高通滤波（级联一阶 IIR，每级低切 ~100Hz@16k），
+ * 滤掉解码音频里的 ~47Hz 底噪（静音时的嗡嗡）。TEST_HPF_ORDER=1..4 选阶数。
+ * 注释掉则不过滤。4 阶实测 47Hz -13.4dB、100Hz -4dB、300Hz+ 无损。
+ * 注：2026-08-31 确认 Dsp2CmBuff0dec 是 DSP/CM 共享内存，原位滤波被 DSP 覆盖
+ * 无效（-25 DC 滤不掉），改用 TEST_HPF_12K（ch4 中断滤 12k pcm_tx_buf）。 */
+//#define TEST_HPF
+//#define TEST_HPF_ORDER  4
+
+/* 测试：ch4 完成中断里滤 12k pcm_tx_buf（CM 独占、DMA 填好，不会被 DSP 覆盖），
+ * 低切 ~100Hz@12k，滤掉 ~47Hz 底噪和 DC。TEST_HPF_12K_ORDER=1..4 选阶数。
+ * 2026-08-31 临时全关（低通/高通/dither）排查，嗡嗡修复暂卸。 */
+//#define TEST_HPF_12K
+//#define TEST_HPF_12K_ORDER  4
+
+/* 测试：ch4 中断里 12k 低通，截止 ~3k@12k，狠压高频金属尾音（音乐高频成分）。
+ * 级联 TEST_LPF_12K_ORDER 个一阶 IIR。注释掉则不过滤。
+ * 4 阶：2k -5dB / 3k -8.8dB / 4.5k -13dB / 5.8k -14.6dB（会牺牲音乐高频清晰度）。
+ * 2026-08-31 实测 3-6k 压 9-15dB 听不出金属尾音变化 → 金属尾音不在 RSL10 输出高频里，关。 */
+//#define TEST_LPF_12K
+//#define TEST_LPF_12K_ORDER  4
+
+/* 测试：给 ASRC 输入加 dither（±8 LSB，xorshift32），打破 ASRC 极限环
+ * （静音蚊蚊 / 固定单频音，参照 remote_mic_rx_rawtest1）。注释掉则不加。
+ * 注：Dsp2CmBuff0dec 是共享内存，dither 可能被 DSP 覆盖无效，暂关。 */
+//#define ASRC_DITHER
+
+/* 测试：16k anti-alias 低通（防混叠）。16k→12k 下采样前滤掉 >6k，否则折回 4-6k。
+ * 用 CM 拷贝缓冲 filt_buf（绕过 DSP 共享内存），DMA ch3 从 filt_buf 喂 ASRC。
+ * fc≈5k@16k，级联 TEST_AAF_16K_ORDER 个一阶 IIR。
+ * 注：实测对金属尾音无效（6-8k 滤了但金属感不变），关。 */
+//#define TEST_AAF_16K
+//#define TEST_AAF_16K_ORDER  4
+
+/* 测试：12k 输出 dither（±8 LSB，xorshift32）。给 ASRC 输出（pcm_tx_buf）加 dither，
+ * 打破重采样输出端量化/极限环（金属尾音候选）。注释掉则不加。
+ * 2026-08-31 临时全关排查。 */
+//#define ASRC_OUT_DITHER
+
+/* 测试：软件 16k→12k 多相 FIR 重采样（替换硬件 ASRC，测金属尾音是否 ASRC 插值伪影）。
+ * 固定 3:4 比例（阶段1，不跟踪时钟）。打开时跳过 ASRC/ch4。
+ * 2026-08-31 实测：音频断续（重采样在 DspDec_isr 里拖慢解码），回退硬件 ASRC。 */
+//#define RESAMP_SW
 
 /* TX device MAC for BLE→RM fast switch */
 //#define TX_BD_ADDRESS { 0x14, 0x6A, 0x84, 0xBF, 0xC0, 0x60 }  /* 60:C0:BF:84:6A:14 */

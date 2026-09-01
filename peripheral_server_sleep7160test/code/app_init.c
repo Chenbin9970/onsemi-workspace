@@ -450,22 +450,27 @@ void Audio_Init(void)
     /* PCM 从机输出：7100 提供 BCLK/FS，RSL10 移位输出 SERO(DIO14) */
     Initialize_Raw_PCM_Output_Type();
 
+#ifndef RESAMP_SW
     /* ch4: ASRC->OUT -> pcm_tx_buf（16-bit 采样 → 32-bit 字低 16 位） */
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
     Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
                           (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+#endif    /* ifndef RESAMP_SW */
 
     /* 双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 流 pcm_tx_buf[pcm_ready]。
-       ch5 由 ch4 的完成中断启动（见 app_func.c）。 */
+       ch5 由 ch4 的完成中断启动（见 app_func.c）。
+       RESAMP_SW：pcm_tx_buf 由软件重采样器填（Resamp_Process），ch5 由它武装。 */
     pcm_fill = 0;
     pcm_ready = 0xFF;
     pcm_waiting = 1;
 
+#ifndef RESAMP_SW
     NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
     NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
     NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#endif    /* ifndef RESAMP_SW */
 
     NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
@@ -503,18 +508,22 @@ void Audio_Resume(void)
     Sys_DMA_ChannelDisable(PCM_DMA_NUM);
     Sys_PCM_Config(PCM_CFG_TX);
 
+#ifndef RESAMP_SW
     Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
     Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
                           (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+#endif
 
     pcm_fill = 0;
     pcm_ready = 0xFF;
     pcm_waiting = 1;
 
+#ifndef RESAMP_SW
     NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
     NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#endif
 
     NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
