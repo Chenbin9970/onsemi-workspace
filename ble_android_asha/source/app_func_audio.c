@@ -40,16 +40,6 @@ bool plc_enable = true;
 
 bool sequence_started = false;
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* PCM output double-buffer state. pcm_fill is the buffer DMA4 packs;
-   pcm_active is the buffer PCM_DMA_NUM streams. pcm_raw_active is the raw
-   ASRC sink buffer DMA4 is currently filling. */
-static uint8_t  pcm_active     = 0;
-static uint8_t  pcm_fill       = 1;
-static uint16_t pcm_fill_pos   = 0;
-static uint8_t  pcm_raw_active = 0;
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
 /* ----------------------------------------------------------------------------
  * Function      : void DIO0_IRQHandler(void)
  * ----------------------------------------------------------------------------
@@ -203,23 +193,6 @@ void APP_Audio_Start(void)
     /* DMA interrupts */
     NVIC_EnableIRQ(DMA_IRQn(ASRC_IN_IDX));
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* Enable the PCM output DMA interrupts and start the double-buffer
-       pipeline: ch4 (ASRC->pcm_raw_buf) and ch5 (pcm_tx_buf->PCM). */
-    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
-    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
-    pcm_active     = 0;
-    pcm_fill       = 1;
-    pcm_fill_pos   = 0;
-    pcm_raw_active = 0;
-
-    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
-    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-    Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM, (uint32_t)&pcm_tx_buf[0][0]);
-    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
-    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
     env_audio.state = LINK_ESTABLISHED;
     /* 4.5 ms (connection interval is 10 ms) + channel delay */
     /* TODO: android_support_env.channel_delay */
@@ -262,15 +235,6 @@ void APP_Audio_Disconnect(void)
     NVIC_DisableIRQ(DSP0_IRQn);
 
     NVIC_DisableIRQ(DMA_IRQn(ASRC_IN_IDX));
-
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* Freeze the PCM output pipeline and silence the double buffer. */
-    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
-    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
-    NVIC_DisableIRQ(DMA_IRQn(ASRC_OUT_IDX));
-    NVIC_DisableIRQ(DMA_IRQn(PCM_DMA_NUM));
-    memset(pcm_tx_buf, 0, sizeof(pcm_tx_buf));
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
     /* Timer interrupts */
     NVIC_DisableIRQ(TIMER_IRQn(TIMER_RENDER));
@@ -387,60 +351,6 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
     }
 }
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* ----------------------------------------------------------------------------
- * Function      : void DMA_IRQ_FUNC(ASRC_OUT_IDX)(void)
- * ----------------------------------------------------------------------------
- * Description   : ASRC output DMA complete. One 10 ms frame of 12 kHz mono
- *                 has landed in pcm_raw_buf. Re-arm ch4 to the other raw
- *                 buffer first (no ASRC sample-loss window), then pack each
- *                 16-bit sample into a 32-bit PCM frame [word0=s, word1=s] in
- *                 the idle buffer.
- * ------------------------------------------------------------------------- */
-void DMA_IRQ_FUNC(ASRC_OUT_IDX)(void)
-{
-    Sys_GPIO_Toggle(13);  /* debug: ch4 ASRC->raw complete */
-
-    pcm_raw_active ^= 1;
-    Sys_DMA_Set_ChannelDestAddress(ASRC_OUT_IDX,
-                                   (uint32_t)&pcm_raw_buf[pcm_raw_active][0]);
-    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
-    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-
-    uint8_t done = pcm_raw_active ^ 1;
-    for (uint16_t i = 0; i < PCM_FRAME_WORDS; i++)
-    {
-        uint32_t s = (uint16_t)pcm_raw_buf[done][i];
-        pcm_tx_buf[pcm_fill][i] = (s << 16) | s;
-    }
-    pcm_fill_pos = PCM_FRAME_WORDS;
-}
-
-/* ----------------------------------------------------------------------------
- * Function      : void DMA_IRQ_FUNC(PCM_DMA_NUM)(void)
- * ----------------------------------------------------------------------------
- * Description   : PCM TX DMA complete. If the software has filled the other
- *                 buffer, swap to it and re-arm; otherwise re-play the current
- *                 buffer once.
- * ------------------------------------------------------------------------- */
-void DMA_IRQ_FUNC(PCM_DMA_NUM)(void)
-{
-    Sys_GPIO_Toggle(9);   /* debug: ch5 pcm_tx_buf->PCM complete */
-
-    if (pcm_fill_pos >= PCM_FRAME_WORDS)
-    {
-        pcm_active = pcm_fill;
-        pcm_fill  = !pcm_fill;
-        pcm_fill_pos = 0;
-    }
-
-    Sys_DMA_Set_ChannelSourceAddress(PCM_DMA_NUM,
-                                     (uint32_t)&pcm_tx_buf[pcm_active][0]);
-    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
-    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
-}
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
 /* ----------------------------------------------------------------------------
  * Function      : void TIMER_IRQ_FUNC(TIMER_FRAME_TX_END)(void)
  * ----------------------------------------------------------------------------
@@ -452,10 +362,8 @@ void DMA_IRQ_FUNC(PCM_DMA_NUM)(void)
  * ------------------------------------------------------------------------- */
 void TIMER_IRQ_FUNC(TIMER_FRAME_TX_END)(void)
 {
-#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
     /* De-assert SPI_CS */
     SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_1_BITBAND;
-#endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
     /* Check if the ASRC has finish on the frame */
     ASSERT(ASRC_CTRL->ASRC_PROC_STATUS_ALIAS == ASRC_IDLE_BITBAND);
@@ -581,10 +489,8 @@ void DSP0_IRQHandler(void)
     /* Apply the volume shift to the current subframe */
     Volume_Shift_Subframe(env_audio.frame_dec);
 
-#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
     /* Assert SPI_CS */
     SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_0_BITBAND;
-#endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
     Sys_DMA_ClearChannelStatus(ASRC_IN_IDX);
     Sys_DMA_Set_ChannelSourceAddress(ASRC_IN_IDX, (uint32_t)env_audio.frame_dec);
 
@@ -767,17 +673,8 @@ void asrc_reconfig(sync_param_t *sync_param)
     sync_param->Cr = env_sync.samples_per_packet << SHIFT_BIT;
     sync_param->Ck = sync_param->audio_sink_cnt;
 
-    /* The valid Ck window is around the sink rate over the SAME packet
-       window as samples_per_packet: 1:1 for SPI (16k Ezairo), x3/4 for PCM
-       (12k FS). samples_per_packet scales with the connection interval, so
-       ck_ref must scale with it too. */
-    int64_t ck_ref = env_sync.samples_per_packet;
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    ck_ref = env_sync.samples_per_packet * PCM_FRAME_WORDS / FRAME_LENGTH;
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
-    if ((sync_param->Ck <= (ck_ref - ASRC_CFG_THR) << SHIFT_BIT) ||
-        (sync_param->Ck >= (ck_ref + ASRC_CFG_THR) << SHIFT_BIT))
+    if ((sync_param->Ck <= (env_sync.samples_per_packet - ASRC_CFG_THR) << SHIFT_BIT) ||
+        (sync_param->Ck >= (env_sync.samples_per_packet + ASRC_CFG_THR) << SHIFT_BIT))
     {
         sync_param->Ck = sync_param->Ck_prev;
         sync_param->avg_ck_outputcnt = 0;
@@ -788,17 +685,10 @@ void asrc_reconfig(sync_param_t *sync_param)
      */
     sync_param->Ck_prev = sync_param->Ck;
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* PCM path: down-sample 16k mono to 12k (DEC_MODE2, ratio 0.75). */
-    asrc_inc_carrier = (((sync_param->Cr - sync_param->Ck) << 28) / sync_param->Ck);
-    asrc_inc_carrier &= 0xFFFFFFFF;
-    Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
-#else    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
     /* Configure ASRC base on new Ck */
     asrc_inc_carrier = (((sync_param->Cr - sync_param->Ck) << 29) / sync_param->Ck);
     asrc_inc_carrier &= 0xFFFFFFFF;
     Sys_ASRC_Config(asrc_inc_carrier, LOW_DELAY | ASRC_DEC_MODE1);
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 }
 
 /* ----------------------------------------------------------------------------

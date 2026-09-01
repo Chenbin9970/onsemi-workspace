@@ -22,15 +22,6 @@
 LPDSP32Context lpdsp32;
 extern struct queue_t audio_queue;
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* Raw 12 kHz mono sink from the ASRC (16-bit samples), double buffered so
-   DMA4 can re-arm to one buffer while its complete handler packs the other. */
-int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
-
-/* Double-buffered PCM output, one 32-bit [word0=s, word1=s] frame per write. */
-uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
 /* ----------------------------------------------------------------------------
  * Function      : void App_CodecInitialize(void)
  * ----------------------------------------------------------------------------
@@ -117,19 +108,6 @@ void Audio_Initialize_System(void)
                    SPI0_MODE_SELECT_AUTO | SPI0_PRESCALE_32);
     Sys_SPI_TransferConfig(0, SPI0_START | SPI0_WRITE_DATA | SPI0_CS_1 |
                            SPI0_WORD_SIZE_16);
-#elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-
-    /* PCM slave output: external device is the clock master (BCLK/FS inputs),
-       RSL10 shifts audio out on SERO. */
-    Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
-                      PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
-    Sys_PCM_Config(PCM_CFG_TX);
-    Sys_PCM_Enable();
-
-    /* Configure the PCM output DMA (pcm_tx_buf -> PCM->TX_DATA). Armed at
-       APP_Audio_Start. */
-    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
-                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
     /* Start period count */
@@ -161,17 +139,6 @@ void Audio_Initialize_System(void)
         (uint32_t)&SPI0->TX_DATA
         );
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-#elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* ASRC 12k mono output into pcm_raw_buf (P_TO_M, 120 samples/10ms).
-       Configured here, armed at APP_Audio_Start. */
-    Sys_DMA_ChannelConfig(
-        ASRC_OUT_IDX,
-        RX_DMA_ASRC_OUT,
-        PCM_FRAME_WORDS,
-        0,
-        (uint32_t)&ASRC->OUT,
-        (uint32_t)pcm_raw_buf
-        );
 #else    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
     Sys_DMA_ChannelConfig(
         CODE_IDX,
@@ -202,21 +169,10 @@ void Audio_Initialize_System(void)
     Reset_Audio_Sync_Param(&env_sync, &env_audio);
     Sys_DIO_Config(8, DIO_MODE_GPIO_OUT_1);
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    /* Debug DIOs: DIO13 toggles on ch4 (ASRC->raw) complete, DIO9 on ch5
-       (pcm_tx_buf->PCM) complete. Scope these to see where the pipeline
-       stops when there is no sound. DIO13 was the Ezairo SAMPL_CLK, free in
-       the PCM config. */
-    Sys_DIO_Config(13, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(9, DIO_MODE_GPIO_OUT_0);
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
-
-#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
-    /* Send a reset command to E7100 (DIO14 is PCM_SER_DO in the PCM config) */
+    /* Send a reset command to E7100 */
     Sys_DIO_Config(RF_INT, DIO_MODE_GPIO_OUT_1);
     Sys_GPIO_Set_High(RF_INT);
     Sys_GPIO_Set_Low(RF_INT);
-#endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
     Sys_DIO_Config(ASCC_PHASE_ISR_DIO, DIO_MODE_GPIO_OUT_0);
 
@@ -229,11 +185,6 @@ void Audio_Initialize_System(void)
     NVIC_SetPriority(AUDIOSINK_PHASE_IRQn, 0);
 
     NVIC_SetPriority(DMA_IRQn(ASRC_IN_IDX), 0);
-
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 2);
-    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
     NVIC_SetPriority(BLE_EVENT_IRQn, 0);
     NVIC_SetPriority(BLE_RX_IRQn, 0);

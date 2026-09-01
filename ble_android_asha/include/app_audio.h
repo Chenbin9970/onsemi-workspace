@@ -60,12 +60,10 @@ extern "C"
 
 #define NO_TX_OUTPUT                    0
 #define SPI_TX_OUTPUT                   1
-#define PCM_TX_RAW_OUTPUT               5
 
-#define OUTPUT_INTRF                    PCM_TX_RAW_OUTPUT
+#define OUTPUT_INTRF                    SPI_TX_OUTPUT
 
 #if (OUTPUT_INTRF == SPI_TX_OUTPUT)
-#elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
 #else
 #error "Not Implemented"
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
@@ -110,35 +108,6 @@ extern "C"
 #error "EZAIRO_71XX_DIO_CFG not defined."
 #endif /* EZAIRO_71XX_DIO_CFG */
 
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* PCM slave output: external master provides BCLK (384 kHz) and FS (12 kHz,
-   32 BCLK/frame). 16-bit x 2 words per frame. */
-#define PCM_CLK_DO                      2
-#define PCM_FRAME_SYNC                  3
-#define PCM_SER_DI                      4
-#define PCM_SER_DO                      14
-
-#define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
-                                         PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_16 |        \
-                                         PCM_FRAME_ALIGN_LAST |    \
-                                         PCM_FRAME_WIDTH_LONG |    \
-                                         PCM_MULTIWORD_2 |         \
-                                         PCM_SUBFRAME_DISABLE |    \
-                                         PCM_CONTROLLER_DMA |      \
-                                         PCM_DISABLE |             \
-                                         PCM_SELECT_SLAVE)
-
-/* One 10 ms frame = 120 mono samples = 120 32-bit [word0=s, word1=s] frames */
-#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
-
-#define PCM_DMA_NUM                     5
-
-/* ASCC measures the 12 kHz PCM frame sync on DIO3 instead of the Ezairo
-   sample clock. */
-#undef SAMPL_CLK
-#define SAMPL_CLK                       PCM_FRAME_SYNC
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* Connection interval times used to change the state of the audio path
  * Disconnect -> Transient -> Established */
@@ -151,7 +120,9 @@ extern "C"
 
 /* DMA channels */
 #define ASRC_IN_IDX                     3
+#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
 #define ASRC_OUT_IDX                    4
+#endif
 
 typedef enum
 {
@@ -265,7 +236,6 @@ extern LPDSP32Context lpdsp32;
                                  DMA_DISABLE)
 
 /* DMA for ASRC output on RX side */
-#if (OUTPUT_INTRF == SPI_TX_OUTPUT)
 #define RX_DMA_ASRC_OUT         (DMA_SRC_ASRC                   | \
                                  DMA_DEST_SPI0                  | \
                                  DMA_TRANSFER_P_TO_P            | \
@@ -278,22 +248,6 @@ extern LPDSP32Context lpdsp32;
                                  DMA_DEST_ADDR_STATIC           | \
                                  DMA_ADDR_CIRC                  | \
                                  DMA_DISABLE)
-#elif (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* ASRC->OUT -> pcm_raw_buf (P_TO_M). One-shot linear transfer; the DMA4
-   complete handler packs the 16-bit mono samples into 32-bit frames and
-   re-arms this channel. */
-#define RX_DMA_ASRC_OUT         (DMA_SRC_ASRC                   | \
-                                 DMA_TRANSFER_P_TO_M            | \
-                                 DMA_LITTLE_ENDIAN              | \
-                                 DMA_COMPLETE_INT_ENABLE        | \
-                                 DMA_COUNTER_INT_DISABLE        | \
-                                 DMA_DEST_WORD_SIZE_16          | \
-                                 DMA_SRC_WORD_SIZE_16           | \
-                                 DMA_SRC_ADDR_STATIC            | \
-                                 DMA_DEST_ADDR_INC              | \
-                                 DMA_ADDR_LIN                   | \
-                                 DMA_DISABLE)
-#endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
 
 /* DMA for ASRC input on RX side */
 #define TX_DMA_SPI              (DMA_DEST_SPI0                  | \
@@ -307,25 +261,6 @@ extern LPDSP32Context lpdsp32;
                                  DMA_DEST_ADDR_STATIC           | \
                                  DMA_ADDR_LIN                   | \
                                  DMA_DISABLE)
-
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-/* pcm_tx_buf -> PCM->TX_DATA. One PCM_FRAME_WORDS (32-bit frame) transfer per
-   arm; the complete interrupt swaps the double buffer. */
-#define RX_DMA_PCM_STEREO       (DMA_DEST_PCM                   | \
-                                 DMA_TRANSFER_M_TO_P            | \
-                                 DMA_LITTLE_ENDIAN              | \
-                                 DMA_COMPLETE_INT_ENABLE        | \
-                                 DMA_COUNTER_INT_DISABLE        | \
-                                 DMA_DEST_WORD_SIZE_32          | \
-                                 DMA_SRC_WORD_SIZE_32           | \
-                                 DMA_SRC_ADDR_INC               | \
-                                 DMA_DEST_ADDR_STATIC           | \
-                                 DMA_ADDR_LIN                   | \
-                                 DMA_DISABLE)
-
-extern int16_t pcm_raw_buf[2][PCM_FRAME_WORDS];
-extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 /* the number of shifts of ASRC registers for using fix point variables */
 #define SHIFT_BIT                20
@@ -343,12 +278,6 @@ void LEA_Event_Handler(uint8_t *rxBuf, uint8_t *txBuf, bool invalid_rx,
 void Audio_Initialize_System(void);
 
 void DMA_IRQ_FUNC(ASRC_IN_IDX)(void);
-
-#if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT)
-void DMA_IRQ_FUNC(ASRC_OUT_IDX)(void);
-
-void DMA_IRQ_FUNC(PCM_DMA_NUM)(void);
-#endif    /* if (OUTPUT_INTRF == PCM_TX_RAW_OUTPUT) */
 
 void TIMER_IRQ_FUNC(TIMER_RENDER)(void);
 
