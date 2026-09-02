@@ -85,5 +85,5 @@
 
 - OD 完整实现基准：`peripheral_server_sleep`（`Audio_Init` 的 OD 段）
 - 内部时钟做法：`remote_mic_rx_raw`（`AUDIOSINK_CLK_SRC_DMIC_OD`）
-- PCM 输出文档：`docs/7160test_pcm_output.md`
+- PCM 输出文档：`docs/pcm/7160test_pcm_output.md`
 - IO 分配 / 调试总览：`docs/7160调试过程.md`

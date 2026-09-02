@@ -179,4 +179,4 @@ void Initialize_Raw_PCM_Output_Type(void)
 ## 参考
 
 - 验证基准工程：`remote_mic_rx_rawtest`
-- 旧配置文档：`docs/pcm_config_final.md`（WORD_SIZE_16）、`docs/pcm_asrc_current_config.md`（WORD_SIZE_32 现状）、`docs/rm_rx_pcm_dataflow.md`（数据流）
+- 旧配置文档：`docs/pcm/pcm_config_final.md`（WORD_SIZE_16）、`docs/pcm/pcm_asrc_current_config.md`（WORD_SIZE_32 现状）、`docs/pcm/rm_rx_pcm_dataflow.md`（数据流）

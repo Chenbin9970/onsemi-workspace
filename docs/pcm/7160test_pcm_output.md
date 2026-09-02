@@ -3,6 +3,7 @@
 > 工程：`peripheral_server_sleep7160test`
 > 目标：把解码音频经 **PCM 从机接口** 输出给 7100 DSP（参照 `remote_mic_rx_rawtest1` 已验证实现移植）
 > 状态：**2026-08-28 完成，数据流打通**（7100 做时钟主机，RSL10 从机移位输出）
+> **2026-09-01 更新：PCM 已改 24k 有效采样率**（`WORD_SIZE_32→16`，ASRC 16k→12k→**16k→24k**）。本文档 §0/§1 的 12k 描述为旧状态，**当前以 `docs/pcm/7160test_pcm_24k.md` 为准**。
 > 前提：7100 I2C 控制已通（`docs/7100协议.md`），只补音频传输通道。
 
 ## 0. 主机接口规格（唯一不变锚点）
@@ -137,6 +138,6 @@
 
 ## 参考
 
-- 验证基准工程：`remote_mic_rx_rawtest1`（`docs/rx_rawtest1_pcm_output.md`）
+- 验证基准工程：`remote_mic_rx_rawtest1`（`docs/pcm/rx_rawtest1_pcm_output.md`）
 - OD 完整实现参考：`peripheral_server_sleep`（`Audio_Init` 的 OD 段）
 - IO 分配 / 调试总览：`docs/7160调试过程.md`

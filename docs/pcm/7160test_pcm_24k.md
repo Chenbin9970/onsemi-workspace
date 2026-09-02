@@ -2,7 +2,7 @@
 
 > 工程：`peripheral_server_sleep7160test`
 > 日期：2026-09-01
-> 结论：**PCM `WORD_SIZE_16 + MULTIWORD_2` 使每 FS 周期装 2×16-bit = 有效采样率 24k，7k/8k 纯音能干净播出。** 推翻了"12k 是带宽硬限制"的旧假设（见 `docs/7160test_音频杂音调试.md` 的带宽结论，部分前提已不成立）。
+> 结论：**PCM `WORD_SIZE_16 + MULTIWORD_2` 使每 FS 周期装 2×16-bit = 有效采样率 24k，7k/8k 纯音能干净播出。** 推翻了"12k 是带宽硬限制"的旧假设（见 `docs/pcm/7160test_音频杂音调试.md` 的带宽结论，部分前提已不成立）。
 
 ## 一、发现经过
 
@@ -39,7 +39,7 @@
 
 ## 二、测试基建（`PCM_TONE_TEST` 宏，已保留）
 
-> 宏定义在 `include/app.h`，当前**激活**。注释掉回到正常 ASRC→PCM 链路。
+> 宏定义在 `include/app.h`，当前**关闭**（`//#define PCM_TONE_TEST`），真实路径已跑 16k→24k。取消注释回到纯音注入测试。
 
 | 文件 | 改动 |
 |------|------|
@@ -51,23 +51,25 @@
 
 **其他频率表**（`pcm_sine24k_1k`/`pcm_sine24k_7k` 曾在调试中用过，当前文件是 8k 版）。
 
-## 三、对真实音频路径的影响（待办）
-
-真实路径仍是 12k 假设，需要用满 24k 带宽：
+## 三、真实音频路径已实现 16k→24k（2026-09-01 验证）
 
 ```
-RM → G722 解码(16k, 160/10ms) → ASRC(16k→12k) → ch4 → pcm_tx_buf → ch5 → PCM → 7100
-                                    ↑ 要改成 16k→24k（2:3 上采样）
+RM → G722 解码(16k, 160/10ms) → ASRC(16k→24k, INT_MODE) → ch4 → pcm_tx_buf → ch5 → PCM(24k) → 7100
 ```
 
-改动点（未做）：
-1. **ASRC 16k→24k**：当前 `Asrc_reconfig` 用 `((Cr-Ck)<<28)/Ck` + `DEC_MODE2`（16k→12k，下采样）。上采样（24k 输出）需用 **`ASRC_INT_MODE`（插值模式）**，参考 `Sys_ASRC_ConfigRunTime` 的自动模式选择。
-2. **audiosink 锁速问题**：`Ck = audio_sink_cnt` 跟 12k FS 走（≈120/包），但 24k 输出每包要 240。需固定 2:3 比例（参照 ble_android_asha 的"固定比例不依赖测量"做法），或把采样钟源改到 24k 节奏。
-3. **`PCM_FRAME_WORDS` 语义**：120 字 × 2 采样/字 = 240 采样 = 10ms @ 24k。真实路径 ch4 要喂 240 采样/包。
-4. **AXNC/DMA 长度**：ch4 采集长度、`RX_DMA_ASRC_OUT` 打包方式按 24k 调整。
+实现：
+1. **ASRC 16k→24k**：`Asrc_reconfig` PCM 分支改用 **`ASRC_INT_MODE`（插值模式，f_sink>f_src）**，`inc = (Cr - 2Ck)<<29 / 2Ck`。
+2. **必须闭环跟踪**：`2Ck = 2×audio_sink_cnt`（每 FS 周期 2 采样 = 24k 输出）。**硬编码名义 2:3（0xF5555556）会因 7100 时钟偏差导致"规律爆音"（周期欠载/溢出），闭环后解决。**
+3. **`PCM_FRAME_WORDS` 保持 120**：24k 下 120 采样 = 5ms/缓冲，双缓冲连续重武装，不用改 240。
+4. ch4/ch5 DMA 长度、`RX_DMA_ASRC_OUT` 打包方式均不变。
+
+验证结果（2026-09-01）：
+- **金属尾音消失**——16k→12k 非整数下采样伪影的根源被移除。
+- **规律爆音 → 闭环跟踪解决**。
+- 真实音频正常播放、高频保留（7k/8k 能出）。
 
 ## 四、参考
 
-- PCM slave 输出基线：`docs/7160test_pcm_output.md`
-- 音频杂音/带宽旧结论：`docs/7160test_音频杂音调试.md`
+- PCM slave 输出基线：`docs/pcm/7160test_pcm_output.md`
+- 音频杂音/带宽旧结论：`docs/pcm/7160test_音频杂音调试.md`
 - ASRC 模式（SVD）：`ASRC_INT_MODE`（插值，f_sink>f_src）、`ASRC_DEC_MODE1/2/3`（下采样），比例范围见 `rsl10_sys_asrc.c` 的 `Sys_ASRC_ConfigRunTime`

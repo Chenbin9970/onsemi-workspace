@@ -113,7 +113,7 @@
 | ASRC 16k→12k | ✅ 正常 | 固定 3:4 比例 |
 | PCM 输出 | ✅ 打通 | 音乐正常播放，DIO14 移位正常 |
 | **音乐鞭炮声** | ❌ 遗留 | 1k 干净、音乐爆；OVERRUN 丢采样；见 §4.5 |
-| **7160test 金属尾音** | ❌ 遗留 | 7100 侧问题（本工程同款），见 `docs/7160test_音频杂音调试.md` |
+| **7160test 金属尾音** | ❌ 遗留 | 7100 侧问题（本工程同款），见 `docs/pcm/7160test_音频杂音调试.md` |
 | 7100 I2C 心跳 | ✅ 已加 | 只保留 5s 发送，完整协议未搬 |
 | SPI 输出 | 已禁用 | DIO0/1 让给 I2C |
 
@@ -137,7 +137,7 @@ savebin C:/tmp/cap_out.bin <cap_out_addr> 1024
 
 ## 参考
 
-- PCM 移植基准：`peripheral_server_sleep7160test`（`docs/7160test_pcm_output.md`）
-- 杂音调试：`docs/7160test_音频杂音调试.md`
+- PCM 移植基准：`peripheral_server_sleep7160test`（`docs/pcm/7160test_pcm_output.md`）
+- 杂音调试：`docs/pcm/7160test_音频杂音调试.md`
 - IO / 调试总览：`docs/7160调试过程.md`
 - 抓数分析：`scripts/analyze_cap.py`

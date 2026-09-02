@@ -153,6 +153,6 @@
 
 ## 参考文件
 
-- 方案文档：`docs/开发/RM_RX音频PCM输出方案.md`
+- 方案文档：`docs/pcm/RM_RX音频PCM输出方案.md`
 - RSL10 ASRC 驱动：`C:/Users/ViewSSS/AppData/Local/Arm/Packs/ONSemiconductor/RSL10/3.9.1182/include/rsl10_sys_asrc.h`
 - RSL10 DMA 手册：Hardware Reference Manual §12.2.3.3（词长/传输长度/打包）

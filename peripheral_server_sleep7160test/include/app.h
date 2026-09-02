@@ -64,9 +64,9 @@
 //#define TEST_HPF
 //#define TEST_HPF_ORDER  4
 
-/* 测试：ch4 完成中断里滤 12k pcm_tx_buf（CM 独占、DMA 填好，不会被 DSP 覆盖），
- * 低切 ~100Hz@12k，滤掉 ~47Hz 底噪和 DC。TEST_HPF_12K_ORDER=1..4 选阶数。
- * 2026-08-31 临时全关（低通/高通/dither）排查，嗡嗡修复暂卸。 */
+/* 测试：ch4 完成中断里滤 pcm_tx_buf（CM 独占、DMA 填好，不会被 DSP 覆盖）。
+ * 2026-09-01 输出已改 24k：原 12k 系数 α=31932（fc≈100Hz@12k）在 24k 下 fc≈200Hz，
+ * 仍能滤 47Hz 底噪和 DC。TEST_HPF_12K_ORDER=1..4 选阶数。 */
 //#define TEST_HPF_12K
 //#define TEST_HPF_12K_ORDER  4
 
@@ -280,8 +280,9 @@ extern "C"
 /* 测试：PCM 初始化直接送 24k 采样 8kHz ±6000 16-bit 正弦（绕过 ASRC/ch4，ch5 直接流，
    Pcm_tx_dma_isr 自续轮流）。每 32-bit 字低16(word1/右)=一个采样、高16=0。
    发现（2026-09-01）：PCM WORD_SIZE_16 + MULTIWORD_2 → 每帧 2×16-bit = 有效 24k，
-   7100 按 24k 读，7k/8k 纯音能干净播出。注释掉回到正常 ASRC→PCM 链路。 */
-#define PCM_TONE_TEST
+   7100 按 24k 读，7k/8k 纯音能干净播出。
+   2026-09-01 改真实路径 ASRC 16k→24k 时关闭；取消注释回到纯音注入测试。 */
+//#define PCM_TONE_TEST
 
 #define TIMER_REGUL                     2
 

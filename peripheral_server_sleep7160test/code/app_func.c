@@ -1004,9 +1004,23 @@ void Asrc_reconfig(void)
         asrc_inc_carrier &= 0xFFFFFFFF;
         Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
 #else
-        asrc_inc_carrier  = ((((Cr - Ck) << 28) / Ck) << 0);
-        asrc_inc_carrier &= 0xFFFFFFFF;
-        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+        /* 16k→24k（INT_MODE 上采样）：输出速率 = 2×FS（每 FS 周期 2 采样）。
+           闭环跟踪 7100 实际时钟漂移：inc = (Cr - 2Ck)<<29 / 2Ck。
+           Ck=audio_sink_cnt 测 12k FS（≈120/包），2Ck≈240/包 = 24k 输出。
+           硬编码名义 2:3 会因 7100 时钟偏差导致周期欠载/溢出爆音，闭环适配之。 */
+        {
+            int64_t ck_out = Ck * 2;
+            if (ck_out > (FRAME_LENGTH >> 1) << SHIFT_BIT &&
+                ck_out < (FRAME_LENGTH * 2) << SHIFT_BIT)
+            {
+                asrc_inc_carrier = (((Cr - ck_out) << 29) / ck_out) & 0xFFFFFFFF;
+            }
+            else
+            {
+                asrc_inc_carrier = 0xF5555556;   /* Ck 异常时回退名义 2:3 */
+            }
+            Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_INT_MODE);
+        }
 #endif
     }
     asrc_cnt_prev     = ASRC->PHASE_CNT;

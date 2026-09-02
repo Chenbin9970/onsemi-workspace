@@ -90,4 +90,4 @@ Sys_DMA_ChannelEnable(PCM_DMA_NUM);
 
 - `ble_android_asha/`：asha 工程（已暂存未提交，含 SPI→PCM 改造）。
 - 波形文件：`wave*.csv`、`wavetone*.csv`（逻辑分析仪抓包）。
-- 文档：`docs/pcm_output_config.md`（本清单 + 验证结论）。
+- 文档：`docs/pcm/pcm_output_config.md`（本清单 + 验证结论）。
