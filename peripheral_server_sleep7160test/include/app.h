@@ -40,6 +40,12 @@
  * 取消注释开启。关闭时所有 bs300 外部调用点被 #ifdef 剔除。 */
 //#define BS300_ENABLE
 
+/* 7100 开机读回（降噪档位 / DFBC 开关 / WDRC 各通道 LowLevel+HighLevelGain）。
+ * 打开：main() 在 dsp_7100_boot_init() 后一次性发 A7 读命令（0xAE/0x32/0x177，
+ * 4 程序）并解析，结果存 g_dsp7100_read[4]（见 dsp_7100_cmd.h）并经 UART 打印。
+ * 注释掉则开机不读回（不影响 7100 初始化/心跳）。 */
+#define DSP7100_READBACK_ENABLE
+
 /* 调试 OD 输出（DIO12 做 OD_P，单端）。打开时：DIO12 让给 OD → 关闭打印、
  * 关闭 PCM 输出，音频走 ASRC DEC_MODE1 → BufferOut → OD DMA(CIRC)。
  * 默认关（保持 PCM slave 输出）。

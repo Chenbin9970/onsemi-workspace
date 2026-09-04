@@ -34,10 +34,11 @@ extern "C" {
 bool i2c_7100_hal_init(void);
 
 /* Write len bytes to I2C slave. Returns true on success. */
-bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint8_t len);
+bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint16_t len);
 
-/* Read len bytes from I2C slave. Returns true on success. */
-bool i2c_7100_read(uint8_t addr, uint8_t *data, uint8_t len);
+/* Read len bytes from I2C slave. Returns true on success.
+ * len 支持 >255（7100 A7 大块读如 0x32=309B / 0x177=378B，须单事务一次读完）。 */
+bool i2c_7100_read(uint8_t addr, uint8_t *data, uint16_t len);
 
 /* Set I2C bus speed by bit-delay loop count.
  * Use I2C_7100_DELAY_FAST (25) when DSP is stopped.

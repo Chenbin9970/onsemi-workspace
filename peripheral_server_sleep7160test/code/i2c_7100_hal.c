@@ -12,16 +12,16 @@
 
 /* 传输状态（I2C_IRQHandler 使用） */
 static const uint8_t *s_tx_buf;
-static uint8_t        s_tx_len;
-static uint8_t        s_tx_idx;
+static uint16_t       s_tx_len;
+static uint16_t       s_tx_idx;
 static volatile bool  s_tx_done;
 static volatile bool  s_tx_ok;
 static volatile bool  s_tx_active;
 
 /* 读状态（I2C_IRQHandler 使用，master read） */
 static uint8_t       *s_rx_buf;
-static uint8_t        s_rx_len;
-static uint8_t        s_rx_idx;
+static uint16_t       s_rx_len;
+static uint16_t       s_rx_idx;
 static volatile bool  s_rx_done;
 static volatile bool  s_rx_ok;
 static volatile bool  s_rx_active;
@@ -113,7 +113,7 @@ bool i2c_7100_hal_init(void)
     return true;
 }
 
-bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint8_t len)
+bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint16_t len)
 {
     uint32_t t;
     if (!data || !len) return false;
@@ -140,11 +140,16 @@ bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint8_t len)
         t++;
         Sys_Watchdog_Refresh();
     }
+    if (!s_tx_done) {
+        /* 超时（从机时钟拉伸/无响应）→ 显式标失败，不吞错 */
+        s_tx_ok = false;
+        Sys_I2C_Reset();
+    }
     s_tx_active = false;
     return s_tx_ok;
 }
 
-bool i2c_7100_read(uint8_t addr, uint8_t *data, uint8_t len)
+bool i2c_7100_read(uint8_t addr, uint8_t *data, uint16_t len)
 {
     uint32_t t;
     if (!data || !len) return false;
@@ -170,6 +175,11 @@ bool i2c_7100_read(uint8_t addr, uint8_t *data, uint8_t len)
     while (!s_rx_done && t < I2C_7100_TIMEOUT_MAX) {
         t++;
         Sys_Watchdog_Refresh();
+    }
+    if (!s_rx_done) {
+        /* 超时（从机时钟拉伸/无响应）→ 显式标失败，不吞错 */
+        s_rx_ok = false;
+        Sys_I2C_Reset();
     }
     s_rx_active = false;
     return s_rx_ok;

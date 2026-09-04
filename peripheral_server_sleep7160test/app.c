@@ -20,6 +20,7 @@
 #include "ble_rempro_cmd.h"
 #include "i2c_7100_hal.h"
 #include "dsp_7100_init.h"
+#include "dsp_7100_cmd.h"
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -106,6 +107,11 @@ int main()
 
     /* 7160test: 上电对 7100 做分阶段初始化（对照 star.csv），收发经 UART 打印 */
     dsp_7100_boot_init();
+
+#ifdef DSP7100_READBACK_ENABLE
+    /* 7160test: 开机读回 7100 降噪/DFBC/WDRC gains（A7 读 0xAE/0x32/0x177）并打印 */
+    dsp_7100_readback_all();
+#endif
 
     /* 7160test: DIO12 改作 UART 打印口（printf.c UART_TX=12），按键禁用 */
     //Sys_DIO_Config(12, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
