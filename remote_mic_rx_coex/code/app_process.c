@@ -25,6 +25,8 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "i2c_7100_hal.h"
+#include <printf.h>
 
 const struct ke_task_desc TASK_DESC_APP = {
     NULL,       &appm_default_handler,
@@ -71,8 +73,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
-    uint16_t level;
-
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
@@ -91,30 +91,34 @@ int APP_Timer(ke_msg_id_t const msg_id,
         Sys_GPIO_Set_Low(LED_DIO_NUM);
     }
 
-    /* Calculate the battery level as a percentage, scaling the battery
-     * voltage between 1.4V (max) and 1.1V (min) */
-    level = ((ADC->DATA_TRIM_CH[0] - VBAT_1p1V_MEASURED) * 100
-             / (VBAT_1p4V_MEASURED - VBAT_1p1V_MEASURED));
-    level = ((level >= 100) ? 100 : level);
+    return (KE_MSG_CONSUMED);
+}
 
-    /* Add to the current sum and increment the number of reads,
-     * calculating the average over 16 voltage reads */
-    app_env.sum_batt_lvl += level;
-    app_env.num_batt_read++;
-    if (app_env.num_batt_read == 16)
+/* ----------------------------------------------------------------------------
+ * Function      : int APP_7100_HB_Handler(ke_msg_id_t const msg_id,
+ *                                        void const *param,
+ *                                        ke_task_id_t const dest_id,
+ *                                        ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : 200ms periodic timer. Every 5 s (25 ticks) sends the 7100
+ *                 I2C heartbeat {0x88, 0x01} to I2C_7100_ADDR. Runs from boot
+ *                 regardless of BLE connection state.
+ * ------------------------------------------------------------------------- */
+int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                        ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    static uint8_t s_7100_hb_cnt = 0;
+
+    /* Re-arm: 200ms periodic tick */
+    ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+    /* 每 5s (25×200ms) 向 7100 发送 0x88 0x01 心跳 */
+    if (++s_7100_hb_cnt >= 25)
     {
-        if ((app_env.sum_batt_lvl >> 4) != app_env.batt_lvl)
-        {
-            app_env.send_batt_ntf = 1;
-        }
-
-        if (ble_env.state == APPM_CONNECTED && bass_support_env.enable)
-        {
-            app_env.batt_lvl = (app_env.sum_batt_lvl >> 4);
-        }
-
-        app_env.num_batt_read = 0;
-        app_env.sum_batt_lvl  = 0;
+        s_7100_hb_cnt = 0;
+        uint8_t pkt[2] = {0x88, 0x01};
+        bool ok = i2c_7100_write(I2C_7100_ADDR, pkt, sizeof(pkt));
+        PRINTF("[HB] 5s ok=%d\r\n", ok);
     }
 
     return (KE_MSG_CONSUMED);

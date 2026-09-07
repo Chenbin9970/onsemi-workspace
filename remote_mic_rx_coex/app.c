@@ -20,29 +20,32 @@
  * $Date: 2019/12/27 18:50:37 $
  * ------------------------------------------------------------------------- */
 #include "app.h"
+#include "dsp_7100_init.h"
+#include <rsl10.h>
 #include <printf.h>
 
 int main()
 {
-    App_Initialize();
+	App_Initialize();
     /* Debug/trace initialization. In order to enable UART or RTT trace,
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
-    printf_init();
+
     PRINTF("__remote_mic_rx_coex has started!\r\n");
+    /* Wait for 3 seconds to allow re-flashing directly after pressing RESET */
+    Sys_Delay_ProgramROM(3 * SystemCoreClock);
+
+    /* 7160test: 上电对 7100 做分阶段初始化（对照 star.csv），收发经 UART 打印 */
+    dsp_7100_boot_init();
+
+#ifndef DEBUG_UART_ENABLE
+    /* Disable DIO4 and DIO5 to avoid current consumption on VDDO */
+    Sys_DIO_Config(4, DIO_MODE_DISABLE | DIO_NO_PULL);
+    Sys_DIO_Config(5, DIO_MODE_DISABLE | DIO_NO_PULL);
+#endif
 
     while (1)
     {
         Kernel_Schedule();
-
-        if (ble_env.state == APPM_CONNECTED)
-        {
-            if (app_env.send_batt_ntf && bass_support_env.enable)
-            {
-            	PRINTF("__SEND BATTERY LEVEL\n %d\n",app_env.batt_lvl);
-                app_env.send_batt_ntf = 0;
-                Batt_LevelUpdateSend(0, app_env.batt_lvl, 0);
-            }
-        }
 
         RM_StatusHandler();
 

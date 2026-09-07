@@ -364,6 +364,11 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
                 /* Start a timer to be used as a periodic tick timer for
                  * application */
                 ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+                /* Start the 7100 I2C heartbeat timer (200ms tick, 5s cadence).
+                 * Started after the BLE stack is up so the kernel timer
+                 * survives the GAPM reset / bring-up phase. */
+                ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
             }
         }
         break;

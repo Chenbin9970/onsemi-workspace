@@ -71,6 +71,9 @@ void App_Initialize(void)
     ACS_VDDPA_CTRL->ENABLE_ALIAS = VDDPA_DISABLE_BITBAND;
     ACS_VDDPA_CTRL->VDDPA_SW_CTRL_ALIAS    = VDDPA_SW_VDDRF_BITBAND;
 
+    /* 7160test: 强制 LDO（关 buck），电源更稳 */
+    ACS_VCC_CTRL->BUCK_ENABLE_ALIAS = VCC_LDO_BITBAND;
+
     /* Enable RF power switches */
     SYSCTRL_RF_POWER_CFG->RF_POWER_ALIAS   = RF_POWER_ENABLE_BITBAND;
 
@@ -97,15 +100,7 @@ void App_Initialize(void)
     CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
                      USRCLK_PRESCALE_1);
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_12 | DCCLK_PRESCALE_4);
-
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
-
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_6400);
-    Sys_ADC_InputSelectConfig(0,
-                              (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_VBAT_DIV2));
 
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();
@@ -257,7 +252,6 @@ void App_Initialize(void)
 #endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
 
     /* Delay added to handle reset sequencing */
-    Sys_GPIO_Set_High(DIO_SYNC_PULSE);
     Sys_Watchdog_Refresh();
 
     for (i = 0; i < 10000; i++)
@@ -271,17 +265,12 @@ void App_Initialize(void)
 
     /* Initialize environment */
     App_Env_Initialize();
-
+    printf_init();
 #if (SIMUL != 1)
     APP_RM_Init(ear_side);
 #endif    /* if (SIMUL != 1) */
 
     RF_SwitchToBLEMode();
-
-    Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
-    Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
     /* Enable 6dBM or 0dBM mode*/
 #if (OUTPUT_POWER_6DBM)
@@ -290,34 +279,12 @@ void App_Initialize(void)
     Sys_RFFE_SetTXPower(0);
 #endif    /* CFG_6DBM */
 
-    /* Enable Flash overlay */
-    memcpy((uint8_t *)PRAM0_BASE, (uint8_t *)FLASH_MAIN_BASE, PRAM0_SIZE);
-    memcpy((uint8_t *)PRAM1_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE),
-           PRAM1_SIZE);
-    memcpy((uint8_t *)PRAM2_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE +
-                                              PRAM1_SIZE), PRAM2_SIZE);
-    memcpy((uint8_t *)PRAM3_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE +
-                                              PRAM1_SIZE + PRAM2_SIZE),
-           PRAM3_SIZE);
-
-    SYSCTRL->FLASH_OVERLAY_CFG  = 0xf;
-
-    /* Enable CM3 loop cache */
-    SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
-
-    Sys_DIO_Config(LED_DIO_NUM, DIO_MODE_GPIO_OUT_0);
-
-    Sys_DIO_Config(BUTTON_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
-                   DIO_LPF_DISABLE);
-    Sys_DIO_IntConfig(0, DIO_EVENT_TRANSITION | DIO_SRC(BUTTON_DIO) |
-                      DIO_DEBOUNCE_ENABLE,
-                      DIO_DEBOUNCE_SLOWCLK_DIV1024, 49);
+    /* 注：flash overlay + loop cache 已移除 —— 会导致 7100 I2C 读全 0。
+     * 本工程非 FOTA，无需 overlay；7160test 也不开。 */
 
 #if (DEBUG_UART_LOG)
     UartLogInit();
 #endif    /* if (DEBUG_UART_LOG) */
-
-    NVIC_EnableIRQ(DIO0_IRQn);
 
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);

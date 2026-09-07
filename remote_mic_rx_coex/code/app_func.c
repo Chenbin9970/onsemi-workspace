@@ -565,30 +565,4 @@ void Simulation_timer_isr(void)
 
 #endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
 
-/* ----------------------------------------------------------------------------
- * Function      : void DIO0_IRQHandler(void)
- * ----------------------------------------------------------------------------
- * Description   : Toggle selection for left or right channel
- * Inputs        : None
- * Outputs       : None
- * Assumptions   : None
- * ------------------------------------------------------------------------- */
-void DIO0_IRQHandler(void)
-{
-    static uint8_t ignore_next_dio_int = 0;
-    if (ignore_next_dio_int)
-    {
-        ignore_next_dio_int = 0;
-    }
-    else if (DIO_DATA->ALIAS[BUTTON_DIO] == 0)
-    {
-        /* Button is pressed: Ignore next interrupt.
-         * This is required to deal with the debounce circuit limitations. */
-        ignore_next_dio_int = 1;
 
-        ear_side = !ear_side;
-#if (SIMUL != 1)
-        APP_RM_Init(ear_side);
-#endif    /* if (SIMUL != 1) */
-    }
-}

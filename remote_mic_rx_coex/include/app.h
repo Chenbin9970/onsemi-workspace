@@ -67,7 +67,7 @@ extern "C"
 #define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
 
-#define OUTPUT_INTRF                    SPI_TX_CODED_OUTPUT    /*SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
+#define OUTPUT_INTRF                    NO_TX_OUTPUT    /*SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 #define SIMUL                           0    /*For test */
 
@@ -244,20 +244,19 @@ extern "C"
 #define SPI_CS_DO                       0
 
 /* DIO pin configuration for PCM interface */
-#define PCM_SER_DI                      2
-#define PCM_SER_DO                      1
-#define PCM_CLK_DO                      3
-#define PCM_FRAME_SYNC                  0
+#define PCM_CLK_DO                      2
+#define PCM_FRAME_SYNC                  3
+#define PCM_SER_DI                      4
+#define PCM_SER_DO                      14
 
-#define BUTTON_DIO                      5
 #define DIO_SYNC_PULSE                  8
-#define SAMPL_CLK                       7
+#define SAMPL_CLK                       PCM_FRAME_SYNC
 
 /* DIO number that is used for easy re-flashing (recovery mode) */
-#define RECOVERY_DIO                    13
+#define RECOVERY_DIO                    7
 
 #define DEBUG_DIO_FIRST                 15
-#define DEBUG_DIO_SECOND                11
+#define DEBUG_DIO_SECOND                5
 
 /* LPDSP32 CODEC related defines */
 #define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
@@ -316,6 +315,7 @@ extern "C"
 
 /* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
 #define TIMER_200MS_SETTING             20
+
 typedef void (*appm_add_svc_func_t)(void);
 #define DEFINE_SERVICE_ADD_FUNCTION(func) (appm_add_svc_func_t)func
 #define DEFINE_MESSAGE_HANDLER(message, handler) { message, \
@@ -323,7 +323,8 @@ typedef void (*appm_add_svc_func_t)(void);
 
 /* List of message handlers that are used by the different profiles/services */
 #define APP_MESSAGE_HANDLER_LIST \
-    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer)
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
+    DEFINE_MESSAGE_HANDLER(APP_7100_HB_TIMER, APP_7100_HB_Handler)
 
 /* List of functions used to create the database */
 #define SERVICE_ADD_FUNCTION_LIST                        \
@@ -369,6 +370,9 @@ enum appm_msg
 
     /* Timer used to have a tick periodically for application */
     APP_TEST_TIMER,
+
+    /* 200ms tick；每 5s (25×200ms) 向 7100 发一次 I2C 心跳 */
+    APP_7100_HB_TIMER,
 };
 
 /* ----------------------------------------------------------------------------
@@ -433,6 +437,10 @@ extern void App_Env_Initialize(void);
 extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
                      ke_task_id_t const dest_id,
                      ke_task_id_t const src_id);
+
+extern int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                               ke_task_id_t const dest_id,
+                               ke_task_id_t const src_id);
 
 extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const dest_id,
