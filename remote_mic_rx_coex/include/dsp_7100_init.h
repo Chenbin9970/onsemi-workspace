@@ -33,6 +33,18 @@ extern const uint16_t        dsp_init_step_cnt;
 
 void dsp_7100_boot_init(void);
 
+/* 生成的 A7 命令表（parm1604.txt 三元组，A7 写载荷） */
+typedef struct
+{
+    const uint8_t *wr;
+    uint16_t       wl;
+} dsp_a7_cmd_t;
+extern const dsp_a7_cmd_t dsp_parm_cmds[];
+extern const uint16_t     dsp_parm_cmd_cnt;
+
+/* parm1604 推进（200ms tick 调）：每组 A7 两段读校验通过才进下一条，循环 */
+void dsp_7100_parm_seq_tick(void);
+
 /* 7 组 A7 推进（200ms tick 调）：每组重发到读回逐字节全等，进下一条，循环 */
 void dsp_7100_a7_seq_tick(void);
 

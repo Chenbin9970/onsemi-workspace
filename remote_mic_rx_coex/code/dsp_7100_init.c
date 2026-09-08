@@ -179,3 +179,53 @@ void dsp_7100_boot_init(void)
     }
     PRINTF("[7100-init] sync pre-A7 done\r\n");
 }
+
+/* ---- parm1604 推进：单次连续读（3 头 + 数据，一次总线读不 STOP），命令来自 dsp_parm_cmds ---- */
+enum { PARM_SEND, PARM_READ };
+static uint8_t  s_parm_st  = PARM_SEND;
+static uint16_t s_parm_idx = 0;
+
+void dsp_7100_parm_seq_tick(void)
+{
+    const dsp_a7_cmd_t *g;
+    uint8_t hdr[3];
+    uint8_t rx[DSP_INIT_RX_BUF];
+    uint16_t dlen, hlen, rd;
+    bool okh, okp = true;
+    bool pass = false;
+
+    if (dsp_parm_cmd_cnt == 0) return;
+    g = &dsp_parm_cmds[s_parm_idx];
+    dlen = (uint16_t)g->wr[3] + ((uint16_t)g->wr[4] << 8);
+
+    if (s_parm_st == PARM_SEND) {
+        bool okw = i2c_7100_write(I2C_7100_ADDR, g->wr, g->wl);
+        (void)okw;
+        PRINTF("[PARM] %u/%u TX ok=%u (dlen=%u)\r\n", s_parm_idx + 1,
+               dsp_parm_cmd_cnt, okw, dlen);
+        s_parm_st = PARM_READ;
+        return;
+    }
+
+    /* 段① 读 3B 头 */
+    okh = i2c_7100_read(I2C_7100_ADDR, hdr, sizeof(hdr));
+    hlen = (uint16_t)hdr[1] + ((uint16_t)hdr[2] << 8);
+
+    /* 段② 按头长读数据（防残留也读掉） */
+    rd = 0;
+    if (hlen > 0) {
+        rd = (hlen > DSP_INIT_RX_BUF) ? DSP_INIT_RX_BUF : hlen;
+        okp = i2c_7100_read(I2C_7100_ADDR, rx, rd);
+    }
+    i2c_7100_write(I2C_7100_ADDR, s_end82, sizeof(s_end82));   /* 04 82 */
+
+    if (okh && okp && hdr[0] == 0x46 && hlen == dlen) pass = true;
+    PRINTF("[PARM] %u/%u HDR %02X %02X %02X dlen=%u DATA%uB ok=%u %s\r\n",
+           s_parm_idx + 1, dsp_parm_cmd_cnt, hdr[0], hdr[1], hdr[2], dlen,
+           rd, okp, pass ? "PASS->next" : "retry");
+
+    if (pass) {
+        s_parm_idx = (uint16_t)((s_parm_idx + 1) % dsp_parm_cmd_cnt);
+        s_parm_st = PARM_SEND;
+    }
+}
