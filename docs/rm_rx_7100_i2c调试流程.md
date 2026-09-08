@@ -11,7 +11,8 @@
 > 3. **A7 两段读规则已定并跑通**：A7 写端字节 3/4 = 数据长度(len16)，应答 = 3B 头 `46 <len_lo> <len_hi>` + len16 数据。读取=先读 3B 头，头长度 == 写端长度且状态 46，再读该长度数据，最后 `04 82`。
 > 4. **7 组 A7 可正确读取并推进循环**：`dsp_7100_a7_seq_tick()`（200ms tick）按 7 组（A7 01 00 06/02/03/26/0A/0C…）逐组两段读校验，通过才 `04 82` 进下一组，7 组循环。
 > 5. 心跳 `{0x88,0x01}` 每 5s；I2C ISR 在读 ACK 前加了 ~3µs 人为延时，便于对齐参考时序。
-> 6. **parm1604 参数读回**：`scripts/gen_dsp_7100_parm.py` 解析 `parm1604.txt` 抽出 105 组 A7 三元组 → `code/dsp_7100_parm_tables.c`；`dsp_7100_parm_seq_tick()`(200ms) 与 7 组同逻辑两段读推进（读 3B 头→按头长读数据→04 82，头长==写端 dlen 即过，105 组循环）。**已能跑通，尚未校验读回数据内容**。
+> 6. **parm1604 参数读回**：`scripts/gen_dsp_7100_parm.py` 解析 `parm1604.txt` 抽出 105 组 A7 三元组 → `code/dsp_7100_parm_tables.c`；`dsp_7100_parm_seq_tick()`(200ms) 与 7 组同逻辑两段读推进（读 3B 头→按头长读数据→04 82，头长==写端 dlen 即过，105 组循环）。已能跑通。
+> 7. **4 程序×(降噪/DFBC/WDRC) 最小读回（可正确读取）**：`scripts/gen_dsp_7100_rb.py` 从 parm1604.txt 按「选程序 A7 02 …12 P → 选模块 A7 03 …37 sub P → 读块 A7 01 00 blo bhi 38」过滤出 WDRC(77 01)/DFBC(32 01)/降噪(AE 00)×P1..4 共 28 条 → `code/dsp_7100_rb_tables.c`；`dsp_7100_rb_seq_tick()`(200ms) **跑一轮即停**，存 0x77/0x32/0xAE 块 payload，解析打印每程序：降噪 en/lvl（data0 bit7 + (data0>>3&0xF)/3−1）、DFBC on/off（data0&0x80）、WDRC 16 通道 Low/High LevelGain（rb_field 位解析，7bit 有符号，ch 起点 bit=267+ch×147，High +15）。已正确读取，与设置值一致。
 
 ## 1. 背景与目标
 

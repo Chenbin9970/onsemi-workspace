@@ -9,6 +9,7 @@
 #include "app.h"
 #include "i2c_7100_hal.h"
 #include <printf.h>
+#include <string.h>
 
 #ifndef PRINTF
 #define PRINTF(...) ((void)0)
@@ -227,5 +228,118 @@ void dsp_7100_parm_seq_tick(void)
     if (pass) {
         s_parm_idx = (uint16_t)((s_parm_idx + 1) % dsp_parm_cmd_cnt);
         s_parm_st = PARM_SEND;
+    }
+}
+
+/* ---- 4 程序×(降噪/DFBC/WDRC) 读回：跑一轮即停，存各块 payload 后解析打印 ---- */
+#define RB_PROGS      4
+#define RB_CH         16
+#define RB_LL_BASE    414        /* WDRC payload 内 ch0 LowLevelGain bit 起点 */
+#define RB_CH_STEP    147        /* 每通道 bit 间隔 */
+#define RB_WDRC_DLEN  375        /* 0x77 01 数据长 */
+#define RB_DFBC_DLEN  306        /* 0x32 01 数据长 */
+#define RB_NOISE_DLEN 174        /* 0xAE 00 数据长 */
+
+static uint8_t s_wdrc[RB_PROGS][RB_WDRC_DLEN];
+static uint8_t s_dfbc[RB_PROGS][RB_DFBC_DLEN];
+static uint8_t s_noise[RB_PROGS][RB_NOISE_DLEN];
+static uint8_t s_rb_prog_valid[RB_PROGS];
+
+enum { RB_SEND, RB_READ };
+static uint8_t  s_rb_st  = RB_SEND;
+static uint16_t s_rb_idx = 0;
+static uint8_t  s_rb_done = 0;
+
+/* payload 内取 bit（MSB-first）；nbits==7 按有符号补码 */
+static int8_t rb_field(const uint8_t *p, int32_t bit, uint8_t nbits)
+{
+    int32_t v = 0;
+    uint8_t k;
+    for (k = 0; k < nbits; k++) {
+        int32_t b = bit + k;
+        v = (v << 1) | ((p[b >> 3] >> (7 - (b & 7))) & 1u);
+    }
+    if (nbits == 7 && v >= 64) v -= 128;
+    return (int8_t)v;
+}
+
+static void rb_parse_print(void)
+{
+    uint8_t prog;
+    for (prog = 0; prog < RB_PROGS; prog++) {
+        const uint8_t *np = s_noise[prog];
+        const uint8_t *dp = s_dfbc[prog];
+        const uint8_t *wp = s_wdrc[prog];
+        uint8_t v = (np[0] >> 3) & 0x0Fu;
+        PRINTF("[RB] P%u 降噪 en=%u lvl=%u | DFBC=%s | WDRC Low/High:",
+               prog + 1,
+               (unsigned)((np[0] & 0x80u) ? 1u : 0u),
+               (unsigned)((v >= 3u) ? (uint8_t)(v / 3u - 1u) : 0u),
+               (dp[0] & 0x80u) ? "on" : "off");
+        for (uint8_t ch = 0; ch < RB_CH; ch++) {
+            int32_t base = RB_LL_BASE + (int32_t)ch * RB_CH_STEP - RB_CH_STEP;
+            int8_t lo = rb_field(wp, base, 7);
+            int8_t hi = rb_field(wp, base + 15, 7);
+            PRINTF(" %d/%d", lo, hi);
+        }
+        PRINTF("\r\n");
+    }
+}
+
+void dsp_7100_rb_seq_tick(void)
+{
+    const dsp_a7_cmd_t *g;
+    uint8_t hdr[3];
+    uint8_t rx[DSP_INIT_RX_BUF];
+    uint16_t dlen, hlen, rd;
+    bool okh, okp = true;
+    bool pass = false;
+
+    if (s_rb_done) return;
+    if (dsp_rb_cmd_cnt == 0) return;
+    g = &dsp_rb_cmds[s_rb_idx];
+    dlen = (uint16_t)g->wr[3] + ((uint16_t)g->wr[4] << 8);
+
+    if (s_rb_st == RB_SEND) {
+        bool okw = i2c_7100_write(I2C_7100_ADDR, g->wr, g->wl);
+        (void)okw;
+        PRINTF("[RB] %u/%u TX ok=%u (dlen=%u)\r\n", s_rb_idx + 1,
+               dsp_rb_cmd_cnt, okw, dlen);
+        s_rb_st = RB_READ;
+        return;
+    }
+
+    okh = i2c_7100_read(I2C_7100_ADDR, hdr, sizeof(hdr));
+    hlen = (uint16_t)hdr[1] + ((uint16_t)hdr[2] << 8);
+    rd = 0;
+    if (hlen > 0) {
+        rd = (hlen > DSP_INIT_RX_BUF) ? DSP_INIT_RX_BUF : hlen;
+        okp = i2c_7100_read(I2C_7100_ADDR, rx, rd);
+    }
+    i2c_7100_write(I2C_7100_ADDR, s_end82, sizeof(s_end82));
+
+    if (okh && okp && hdr[0] == 0x46 && hlen == dlen) pass = true;
+
+    if (pass && rd >= dlen) {
+        uint8_t prog = (uint8_t)(s_rb_idx / 7u);
+        uint8_t off  = (uint8_t)(s_rb_idx % 7u);
+        if (off == 2) memcpy(s_wdrc[prog], rx, dlen);      /* read 77 01 */
+        else if (off == 4) memcpy(s_dfbc[prog], rx, dlen);  /* read 32 01 */
+        else if (off == 6) { memcpy(s_noise[prog], rx, dlen); s_rb_prog_valid[prog] = 1; }
+    }
+
+    PRINTF("[RB] %u/%u HDR %02X %02X %02X dlen=%u DATA%uB ok=%u %s\r\n",
+           s_rb_idx + 1, dsp_rb_cmd_cnt, hdr[0], hdr[1], hdr[2], dlen,
+           rd, okp, pass ? "PASS->next" : "retry");
+
+    if (pass) {
+        s_rb_idx++;
+        if (s_rb_idx >= dsp_rb_cmd_cnt) {   /* 一轮完成，停止并解析 */
+            s_rb_done = 1;
+            PRINTF("[RB] round done, parse:\r\n");
+            rb_parse_print();
+            return;
+        }
+        s_rb_st = RB_SEND;
     }
 }
