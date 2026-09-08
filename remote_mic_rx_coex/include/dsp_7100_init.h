@@ -1,17 +1,49 @@
 #ifndef DSP_7100_INIT_H
 #define DSP_7100_INIT_H
 
-/* 7100 上电初始化（对照 star.csv 参考序列，分阶段复刻）。
- *
- * DSP7100_INIT_MAX_STAGE 控制跑到哪个阶段（逐阶段调试用）：
- *   0 = 跳过全部
- *   1 = 握手写（A6/A8）
- *   2 = 读配置（04 82 + 读块）
- *   3 = 参数写（A1 块）
- *   4 = 收尾读
- * 每次收发都会经 UART 打印 [7100] TX/RX。 */
-#define DSP7100_INIT_MAX_STAGE  3
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* 7100 上电初始化：按 start-connect-parm.txt（Packet 13..118）复刻。
+ * 步骤表由 scripts/gen_dsp_7100_init.py 生成到 code/dsp_7100_init_tables.c，
+ * 顺序/字节与抓包一致；执行引擎在 code/dsp_7100_init.c。
+ * RX 缓冲按表内最大读长取 700。 */
+#define DSP_INIT_RX_BUF  700
+
+typedef enum { DSP_INIT_TX, DSP_INIT_RX } dsp_init_op_t;
+
+typedef struct
+{
+    uint32_t        delay_us;   /* 本步执行前延时（µs，保留亚 ms，抓包逐包复刻） */
+    dsp_init_op_t   op;
+    uint16_t        len;        /* TX 数据字节数 / RX 读取字节数 */
+    const uint8_t  *data;       /* TX 数据（RX 为 NULL） */
+} dsp_init_step_t;
+
+/* 生成的序列表（dsp_7100_init_tables.c） */
+extern const dsp_init_step_t dsp_init_steps[];
+extern const uint16_t        dsp_init_step_cnt;
+
+/* 只跑到前 N 步用于调试；0 = 全部。 */
+#define DSP7100_INIT_MAX_STEPS  0
 
 void dsp_7100_boot_init(void);
+
+/* 7 组 A7 推进（200ms tick 调）：每组重发到读回逐字节全等，进下一条，循环 */
+void dsp_7100_a7_seq_tick(void);
+
+/* 使能 DIO13 上升沿中断(7100 允许读) + 清标志 */
+void dsp_7100_a7_arm(void);
+
+/* 主循环每圈调用：检测 DIO13 上升沿标志 */
+bool dsp_7100_a7_poll(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* DSP_7100_INIT_H */

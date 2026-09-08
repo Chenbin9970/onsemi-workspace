@@ -79,6 +79,8 @@ void I2C_IRQHandler(void)
         /* ---- master read：每字节 ACK，最后一字节 NACKAndStop ---- */
         if (!s_rx_active) return;
         if (st & I2C_BUFFER_FULL) {
+            /* 人为拉长"8 时钟→ACK"间隔（~3µs），便于对齐参考机时序 */
+            Sys_Delay_ProgramROM(3 * (SystemCoreClock / 1000000UL));
             if (s_rx_idx < s_rx_len - 1) {
                 Sys_I2C_ACK();
             } else {
@@ -86,6 +88,7 @@ void I2C_IRQHandler(void)
             }
             s_rx_buf[s_rx_idx++] = (uint8_t)I2C->DATA;
         } else if (st & I2C_DATA_EVENT) {
+            Sys_Delay_ProgramROM(3 * (SystemCoreClock / 1000000UL)); /* ~3µs */
             Sys_I2C_ACK();   /* 数据事件 → 允许开始接收 */
         }
         return;

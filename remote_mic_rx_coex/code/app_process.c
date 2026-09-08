@@ -26,6 +26,7 @@
 
 #include "app.h"
 #include "i2c_7100_hal.h"
+#include "dsp_7100_init.h"
 #include <printf.h>
 
 const struct ke_task_desc TASK_DESC_APP = {
@@ -107,18 +108,21 @@ int APP_Timer(ke_msg_id_t const msg_id,
 int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
                         ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
-    static uint8_t s_7100_hb_cnt = 0;
+    static uint16_t s_7100_cnt = 0;
 
     /* Re-arm: 200ms periodic tick */
     ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
-    /* 每 5s (25×200ms) 向 7100 发送 0x88 0x01 心跳 */
-    if (++s_7100_hb_cnt >= 25)
-    {
-        s_7100_hb_cnt = 0;
-        uint8_t pkt[2] = {0x88, 0x01};
-        bool ok = i2c_7100_write(I2C_7100_ADDR, pkt, sizeof(pkt));
-        PRINTF("[HB] 5s ok=%d\r\n", ok);
+    s_7100_cnt++;
+
+    /* 每 tick(200ms)：推进 7 组 A7（读到逐字节全等才进下一条，循环） */
+    dsp_7100_a7_seq_tick();
+
+    /* 每 25 tick(5s)：发心跳 {0x88,0x01} */
+    if ((s_7100_cnt % 25) == 0) {
+        uint8_t hb[2] = {0x88, 0x01};
+        bool ok = i2c_7100_write(I2C_7100_ADDR, hb, sizeof(hb));
+        (void)ok;
     }
 
     return (KE_MSG_CONSUMED);

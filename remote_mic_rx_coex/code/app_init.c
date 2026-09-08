@@ -101,7 +101,26 @@ void App_Initialize(void)
                      USRCLK_PRESCALE_1);
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_12 | DCCLK_PRESCALE_4);
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
-
+#if 0
+    /* 等 DIO9 拉低(7100 就绪)后再发 7100 初始化 */
+    {
+        uint8_t k;
+        for (k = 9; k <= 13; k++) {
+            if (k == 12) continue;
+            Sys_DIO_Config(k, DIO_MODE_INPUT | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+        }
+        while (DIO_DATA->ALIAS[13] == 1) {
+            Sys_Watchdog_Refresh();
+            Sys_Delay_ProgramROM(SystemCoreClock / 1000);   /* 1ms */
+        }
+        /* DIO9 检测到低 → DIO9 与 DIO13 输出高（应答握手），再跑 init */
+       // Sys_DIO_Config(9, DIO_MODE_GPIO_OUT_1);
+        //Sys_DIO_Config(10, DIO_MODE_GPIO_OUT_0);
+       // Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_0);
+       // Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_1);
+        //Sys_DIO_Config(13, DIO_MODE_GPIO_OUT_1);
+    }
+#endif
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();
     Sys_Audiosink_InputClock(0,
