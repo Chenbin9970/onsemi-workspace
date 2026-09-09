@@ -21,14 +21,29 @@
  * ------------------------------------------------------------------------- */
 #include "app.h"
 #include <printf.h>
+#ifdef BS300_ENABLE
+#include "bs300_driver.h"
+#include "bs300_ram_sync.h"
+#endif    /* ifdef BS300_ENABLE */
 
 int main()
 {
     App_Initialize();
     /* Debug/trace initialization. In order to enable UART or RTT trace,
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
-    printf_init();
     PRINTF("__remote_mic_rx_coex has started!\r\n");
+
+#ifdef BS300_ENABLE
+    /* BS300 driver init：I2C init + 解锁/启动序列，首启约 2-3s 阻塞（已喂狗） */
+    if (!bs300_driver_init())
+    {
+        PRINTF("__BS300_INIT_FAIL\r\n");
+    }
+    else
+    {
+        PRINTF("__BS300_INIT_OK\r\n");
+    }
+#endif    /* ifdef BS300_ENABLE */
 
     while (1)
     {
@@ -45,6 +60,11 @@ int main()
         }
 
         RM_StatusHandler();
+
+#ifdef BS300_ENABLE
+        /* BS300 延迟动作在主循环处理（勿在定时器上下文做 flash 擦写等） */
+        bs300_process_deferred();
+#endif    /* ifdef BS300_ENABLE */
 
         /* Refresh the watchdog timer */
         Sys_Watchdog_Refresh();

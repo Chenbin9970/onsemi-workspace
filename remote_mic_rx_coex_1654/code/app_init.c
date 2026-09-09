@@ -19,9 +19,12 @@
 
 #include "app.h"
 
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
 #include "dsp_pm_dm.h"
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
+
+/* OD 直驱输出缓存（ASRC OUT DMA → BufferOut → OD DMA → OD_DATA） */
+int16_t BufferOut[2 * FRAME_LENGTH];
 
 uint8_t buff_test[100] = {
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x11, 0x12, 0x13, 0x14,
@@ -118,7 +121,7 @@ void App_Initialize(void)
     AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
 
     uint32_t i = 0;
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
 
     /* ASCC interrupts */
     NVIC_ClearPendingIRQ(AUDIOSINK_PHASE_IRQn);
@@ -172,7 +175,7 @@ void App_Initialize(void)
 
     /* Codec Mode */
     *(message + 4) = CODEC_MODE;
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
 
 #if (OUTPUT_INTRF == SPI_TX_CODED_OUTPUT)
 
@@ -193,7 +196,7 @@ void App_Initialize(void)
     NVIC_EnableIRQ(DMA_IRQn(TX_DMA_NUM));
 #endif    /* if (OUTPUT_INTRF == SPI_TX_CODED_OUTPUT) */
 
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
     NVIC_SetPriority(DSP1_IRQn, 4);
     NVIC_EnableIRQ(DSP1_IRQn);
 
@@ -211,6 +214,7 @@ void App_Initialize(void)
         (uint32_t)&ASRC->IN
         );
 
+#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
     /* Initialize SPI interface */
     Sys_SPI_DIOConfig(0, SPI0_SELECT_MASTER,
                       DIO_LPF_DISABLE | DIO_WEAK_PULL_UP, SPI_CLK_DO, SPI_CS_DO,
@@ -232,6 +236,29 @@ void App_Initialize(void)
         (uint32_t)&SPI0->TX_DATA
         );
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#elif (OUTPUT_INTRF == OD_OUTPUT)
+    /* OD 直驱受话器 sink（照抄 peripheral_server_sleep Audio_Init 末尾） */
+    Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
+    Sys_Audio_Set_Config(AUDIO_CONFIG);
+    AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
+    AUDIO->SDM_CFG = 0x00002;
+    AUDIO->OD_GAIN = 0xfff;
+    Sys_DIO_Config(OD_P_DIO, DIO_6X_DRIVE | DIO_LPF_DISABLE |
+                   DIO_NO_PULL | DIO_MODE_OD_P);
+
+    /* DMA ch5: BufferOut → OD_DATA */
+    Sys_DMA_ChannelDisable(OD_DMA_NUM);
+    Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                          (uint32_t)BufferOut, (uint32_t)&(AUDIO->OD_DATA));
+    DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+
+    /* DMA ch4: ASRC OUT → BufferOut */
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, OD_RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+#endif    /* sink: SPI_TX_RAW_OUTPUT(SPI0) vs OD_OUTPUT(OD) */
 
 #if (SIMUL == 1)
     Sys_Timer_Set_Control(TIMER_SIMUL, TIMER_FREE_RUN | (10000 - 1) |
@@ -254,7 +281,7 @@ void App_Initialize(void)
     /* Timer interrupts */
     NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
 #endif    /* if (SIMUL == 1) */
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
 
     /* Delay added to handle reset sequencing */
     Sys_GPIO_Set_High(DIO_SYNC_PULSE);
@@ -271,12 +298,13 @@ void App_Initialize(void)
 
     /* Initialize environment */
     App_Env_Initialize();
-
+    printf_init();
 #if (SIMUL != 1)
     APP_RM_Init(ear_side);
 #endif    /* if (SIMUL != 1) */
 
-    RF_SwitchToBLEMode();
+    RF_SwitchToCPMode();
+    RM_Enable(1000);
 
     Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
     Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
@@ -305,19 +333,9 @@ void App_Initialize(void)
     /* Enable CM3 loop cache */
     SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 
-    Sys_DIO_Config(LED_DIO_NUM, DIO_MODE_GPIO_OUT_0);
-
-    Sys_DIO_Config(BUTTON_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
-                   DIO_LPF_DISABLE);
-    Sys_DIO_IntConfig(0, DIO_EVENT_TRANSITION | DIO_SRC(BUTTON_DIO) |
-                      DIO_DEBOUNCE_ENABLE,
-                      DIO_DEBOUNCE_SLOWCLK_DIV1024, 49);
-
 #if (DEBUG_UART_LOG)
     UartLogInit();
 #endif    /* if (DEBUG_UART_LOG) */
-
-    NVIC_EnableIRQ(DIO0_IRQn);
 
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);

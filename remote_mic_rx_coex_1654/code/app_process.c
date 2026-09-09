@@ -25,6 +25,19 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "bs300_ram_sync.h"
+
+/* BS300 内核同步定时消息处理（见 bs300_ram_sync.h） */
+int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
+                    ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    (void)msg_id;
+    (void)param;
+    (void)dest_id;
+    (void)src_id;
+    bs300_sync_timer_handler();
+    return (KE_MSG_CONSUMED);
+}
 
 const struct ke_task_desc TASK_DESC_APP = {
     NULL,       &appm_default_handler,
@@ -75,21 +88,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
 
     /* Restart timer */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
-
-    /* Turn on LED of EVB if the link is established and
-     * blinking when it is advertising */
-    if (ble_env.state == APPM_CONNECTED)
-    {
-        Sys_GPIO_Set_High(LED_DIO_NUM);
-    }
-    else if (ble_env.state == APPM_ADVERTISING)
-    {
-        Sys_GPIO_Toggle(LED_DIO_NUM);
-    }
-    else
-    {
-        Sys_GPIO_Set_Low(LED_DIO_NUM);
-    }
 
     /* Calculate the battery level as a percentage, scaling the battery
      * voltage between 1.4V (max) and 1.1V (min) */

@@ -19,12 +19,16 @@
 
 #include "app.h"
 #include <printf.h>
+#ifdef BS300_ENABLE
+#include "bs300_ram_sync.h"
+#endif    /* ifdef BS300_ENABLE */
 
 uint32_t data_rd = 0;
 
 /* For Test */
 uint8_t tmp;
-uint32_t ascc_cnt, audio_sink_phase_cnt, erraaa = 0;
+/* 与 app_func.c 解码块重复定义 audio_sink_phase_cnt；未使用，注释掉（同 sleep） */
+//uint32_t ascc_cnt, audio_sink_phase_cnt, erraaa = 0;
 
 uint8_t inTempBuffLeft[100]  = {
     0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf,
@@ -95,7 +99,7 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0x0d << 24));
+    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;
@@ -169,10 +173,10 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
             }
             else
             {
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
                 memcpy(outTempBuff, ptr, *length);
                 Rendering_func(outTempBuff);
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
 
 #if (OUTPUT_INTRF == SPI_TX_CODED_OUTPUT)
                 SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_1_BITBAND;
@@ -251,7 +255,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             PRINTF("__RM_LINK_DISCONNECTED\n");
             /* Stop audio transmission to avoid having annoying noise
              * decide if the number of lost links is large, do an action */
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT && SIMUL != 1)
+#if (OUTPUT_DECODE_PATH && SIMUL != 1)
             NVIC_DisableIRQ(AUDIOSINK_PHASE_IRQn);
             NVIC_DisableIRQ(AUDIOSINK_PERIOD_IRQn);
 
@@ -264,7 +268,19 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             /* Timer interrupts */
             NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
             Sys_Timers_Stop(1 << TIMER_REGUL);
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT && SIMUL != 1) */
+#if (OUTPUT_INTRF == OD_OUTPUT)
+            /* 停 OD DMA → OD 下溢保护静音 */
+            Sys_DMA_ChannelDisable(OD_DMA_NUM);
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH && SIMUL != 1) */
+#ifdef BS300_ENABLE
+            if (app_env.audio_streaming)
+            {
+                /* 远端流中断 → BS300 静音（参照 peripheral_server_sleep rm_app） */
+                bs300_mute();
+                app_env.audio_streaming = 0;
+            }
+#endif    /* ifdef BS300_ENABLE */
             app_env.rm_lostLink_counter++;
         }
         break;
@@ -279,13 +295,32 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
         {
             PRINTF("__RM_LINK_ESTABLISHED\n");
             /* start audio transmission */
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT && SIMUL != 1)
+#if (OUTPUT_DECODE_PATH && SIMUL != 1)
             asrc_stable     = false;
             cntr_stability  = 0;
             audio_sink_cnt  = 0;
             flag_ascc_phase = false;
 
             Sys_ASRC_Reset();
+
+#if (OUTPUT_INTRF == OD_OUTPUT)
+            /* 重启 OD DMA（BufferOut → OD_DATA） */
+            Sys_DMA_ChannelDisable(OD_DMA_NUM);
+            Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,
+                                  (uint32_t)BufferOut,
+                                  (uint32_t)&(AUDIO->OD_DATA));
+            DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
+            Sys_DMA_ChannelEnable(OD_DMA_NUM);
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+
+#ifdef BS300_ENABLE
+            /* BS300 切到程序3 并 active：让 OD 音频被 DSP 接管（参照 sleep rm_app） */
+            bs300_set_prog_volume(3, 9);
+            bs300_mute();
+            bs300_switch_program(3);
+            bs300_active();
+            app_env.audio_streaming = 1;
+#endif    /* ifdef BS300_ENABLE */
 
             /* ASCC interrupts */
             NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);
@@ -299,7 +334,7 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 
             /* Timer interrupts */
             NVIC_EnableIRQ(TIMER_IRQn(TIMER_REGUL));
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT && SIMUL != 1) */
+#endif    /* if (OUTPUT_DECODE_PATH && SIMUL != 1) */
         }
         break;
 

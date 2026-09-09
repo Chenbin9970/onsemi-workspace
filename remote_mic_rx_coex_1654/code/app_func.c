@@ -23,7 +23,7 @@
 
 uint8_t ear_side = APP_RM_AUDIO_CHANNEL;
 
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
 int16_t *Cm2DspBuff0enc = (int16_t *)MEM_CM2DSP_ADDR0_ENC;
 int16_t *Cm2DspBuff1enc = (int16_t *)MEM_CM2DSP_ADDR1_ENC;
 uint8_t *Dsp2CmBuff0enc = MEM_DSP2CM_ADDR0_ENC;
@@ -563,32 +563,4 @@ void Simulation_timer_isr(void)
 
 #endif    /* if (SIMUL == 1) */
 
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
-
-/* ----------------------------------------------------------------------------
- * Function      : void DIO0_IRQHandler(void)
- * ----------------------------------------------------------------------------
- * Description   : Toggle selection for left or right channel
- * Inputs        : None
- * Outputs       : None
- * Assumptions   : None
- * ------------------------------------------------------------------------- */
-void DIO0_IRQHandler(void)
-{
-    static uint8_t ignore_next_dio_int = 0;
-    if (ignore_next_dio_int)
-    {
-        ignore_next_dio_int = 0;
-    }
-    else if (DIO_DATA->ALIAS[BUTTON_DIO] == 0)
-    {
-        /* Button is pressed: Ignore next interrupt.
-         * This is required to deal with the debounce circuit limitations. */
-        ignore_next_dio_int = 1;
-
-        ear_side = !ear_side;
-#if (SIMUL != 1)
-        APP_RM_Init(ear_side);
-#endif    /* if (SIMUL != 1) */
-    }
-}
+#endif    /* if (OUTPUT_DECODE_PATH) */

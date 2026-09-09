@@ -54,7 +54,12 @@ extern "C"
  *  {2, 8, 14, 20, 26, 35, 38}
  *  {3, 9, 15, 21, 24, 33, 36}
  */
-#define RM_HOPLIST                      { 37, 9, 16, 20, 29, 32, 17 }
+/* BS300 DSP I2C 通讯子系统总开关（boot 初始化 + RM 流窗口联动） */
+#define BS300_ENABLE
+/* BS300 内核同步定时消息 id（bs300_ram_sync.h 内 #ifndef 自守卫保持一致） */
+#define BS300_SYNC_TIMER                0x10
+
+#define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
@@ -66,8 +71,41 @@ extern "C"
 #define NO_TX_OUTPUT                    2
 #define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
+#define OD_OUTPUT                       5    /*片上 LPDSP32 解码 + ASRC → RSL10 OD 直驱（DIO0/1 差分，参照 peripheral_server_sleep） */
 
-#define OUTPUT_INTRF                    SPI_TX_CODED_OUTPUT    /*SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
+#define OUTPUT_INTRF                    OD_OUTPUT    /*SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT//OD_OUTPUT// */
+
+/* 解码+ASRC 全链路使能：RAW(SPI 直出) 与 OD(片上解码→OD) 共用同一套解码初始化 */
+#define OUTPUT_DECODE_PATH              (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT || \
+                                         OUTPUT_INTRF == OD_OUTPUT)
+
+/* OD 直驱受话器输出（参照 peripheral_server_sleep） */
+#define OD_P_DIO                        0
+#define OD_N_DIO                        1
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
+                                                    AUDIO_CFG_DEC_RATE_Pos))
+#define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200                    | \
+                                         OD_ENABLE)
+#define RX_DMA_OD                       (DMA_LITTLE_ENDIAN |        \
+                                         DMA_ENABLE |               \
+                                         DMA_DISABLE_INT_DISABLE |  \
+                                         DMA_ERROR_INT_DISABLE |    \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_START_INT_DISABLE |    \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_DEST_OD |              \
+                                         DMA_PRIORITY_0 |           \
+                                         DMA_ADDR_CIRC)
+
 #define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
 #define SIMUL                           0    /*For test */
 
@@ -81,6 +119,7 @@ extern "C"
 #define ASRC_IN_IDX                     3
 #define ASRC_OUT_IDX                    4
 #define RX_DMA_NUM                      5
+#define OD_DMA_NUM                      5    /* OD 输出 DMA（BufferOut→OD_DATA，参照 sleep） */
 #define TX_DMA_NUM                      6
 #define UART_TX_NUM                     7
 
@@ -230,6 +269,19 @@ extern "C"
                                          DMA_ADDR_CIRC |            \
                                          DMA_DISABLE)
 
+/* DMA for ASRC output on RX side — OD 直驱版：ASRC→RAM BufferOut（参照 peripheral_server_sleep） */
+#define OD_RX_DMA_ASRC_OUT              (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
 #define STABLE_THR                      400
 
 #define AUDIO_FRAME_SIZE                60
@@ -249,7 +301,6 @@ extern "C"
 #define PCM_CLK_DO                      3
 #define PCM_FRAME_SYNC                  0
 
-#define BUTTON_DIO                      5
 #define DIO_SYNC_PULSE                  8
 #define SAMPL_CLK                       7
 
@@ -307,9 +358,6 @@ extern "C"
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
 
-/* DIO number that is connected to LED of EVB */
-#define LED_DIO_NUM                     6
-
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
                                         CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
@@ -323,7 +371,8 @@ typedef void (*appm_add_svc_func_t)(void);
 
 /* List of message handlers that are used by the different profiles/services */
 #define APP_MESSAGE_HANDLER_LIST \
-    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer)
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
+    DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer)
 
 /* List of functions used to create the database */
 #define SERVICE_ADD_FUNCTION_LIST                        \
@@ -386,7 +435,8 @@ extern uint8_t audio_right[120];
 
 extern uint8_t ear_side;
 
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
+extern int16_t BufferOut[];
 extern int16_t spi_buf[];
 extern int32_t pcm_buf[];
 extern int16_t asrc_in_buf[];
@@ -401,9 +451,9 @@ extern bool asrc_stable;
 extern bool flag_ascc_phase;
 extern int64_t audio_sink_cnt;
 
-#else    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#else    /* if (OUTPUT_DECODE_PATH) */
 extern int8_t spi_buf[];
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
 
 extern const struct ke_task_desc TASK_DESC_APP;
 
@@ -434,6 +484,10 @@ extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
                      ke_task_id_t const dest_id,
                      ke_task_id_t const src_id);
 
+extern int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
+                           ke_task_id_t const dest_id,
+                           ke_task_id_t const src_id);
+
 extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const dest_id,
                        ke_task_id_t const src_id);
@@ -444,9 +498,7 @@ extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
 
 extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
 
-extern void DIO0_IRQHandler(void);
-
-#if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT)
+#if (OUTPUT_DECODE_PATH)
 void Start_Dec_Lpdsp32(uint8_t *src_addr);
 
 void Start_Enc_Lpdsp32(uint32_t src_addr, uint8_t side);
@@ -479,7 +531,7 @@ void Simulation_timer_isr(void);
 
 void Asrc_reconfig(void);
 
-#endif    /* if (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT) */
+#endif    /* if (OUTPUT_DECODE_PATH) */
 
 /* ----------------------------------------------------------------------------
  * Close the 'extern "C"' block
