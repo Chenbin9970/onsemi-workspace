@@ -28,7 +28,9 @@
 | BS300 子系统文件（9 .c + 10 .h，verbatim 自 sleep） | code/bs300_*, include/bs300_* | 不含 bs300_test |
 | BS300 应用胶水：boot init、主循环 deferred、sync timer 消息 | app.c, app_process.c, app.h | 见 §7 |
 | RM 流窗口联动 BS300（切 prog3/active/mute） | code/rm_app.c | 见 §7 |
-| 删除按键功能（DIO5/DIO0 中断、ear_side 切换） | app_init.c, app_func.c, app.h | 去掉 DIO0_IRQHandler |
+| 移除原按键（DIO5/DIO0 中断、ear_side 切换） | app_init.c, app_func.c, app.h | 去掉 DIO0_IRQHandler |
+| 新增按键（DIO12，参考 sleep：短按音量+1 / 长按切程序） | app.c, app_init.c, app.h | `Button_Process()`，见 §8 |
+| 打印 IO → DIO5（pack printf.c，机器级共享） | 外部 pack printf.c | TX=DIO12→DIO5，RX=DIO6；DIO12 让给按键 |
 | 删除 LED 功能（DIO6） | app_init.c, app_process.c, app.h | LED_DIO_NUM 删除 |
 | RM 无线电参数对齐 sleep | include/app.h, code/rm_app.c | hoplist、accessword（见 §9） |
 | 链接修复 | code/rm_app.c | 注释与 app_func 重复的 `audio_sink_phase_cnt` 定义 |
@@ -49,11 +51,12 @@
 |------|------|------|
 | OD_P / OD_N（受话器，差分） | DIO0 / DIO1 | `DIO_MODE_OD_P`，照 peripheral_server_sleep |
 | BS300 I2C SCL / SDA（bit-bang） | DIO8 / DIO7，addr 0x01 | 与 sleep 一致；DIO7 同时作 audiosink 采样钟输入(SAMPL_CLK) |
-| 调试 UART TX / RX | DIO12 / DIO6（**pack printf.c 内硬编码**） | 115200；改引脚需改 pack 的 printf.c（影响所有工程） |
+| 调试 UART TX / RX | DIO5 / DIO6（**pack printf.c 内硬编码**） | 115200；当前调试口在 DIO5，改引脚需改 pack 的 printf.c（影响所有工程） |
+| 按键（active low，上拉） | DIO12 | 短按音量+1 / 长按切程序；参考 sleep；由原打印脚让出 |
 | 采样/audiosink 时钟输入 | DIO7 | `Sys_Audiosink_InputClock(SAMPL_CLK…)`，无条件配置 |
 | DIO_SYNC_PULSE | DIO8 | 复用为 BS300 SCL；GPIO 默认输出 |
 | 上电暂停/恢复(recovery) | DIO13 | 接地暂停便于重刷，勿占用 |
-| 已释放 | DIO5/DIO6/DIO12 | 按键、LED 已删；DIO12 让给 UART，DIO6 让给 UART RX |
+| 空闲/预留 | DIO2/3/4/9/10/14 | 调试 DIO15/11 为 GPIO 输出 |
 
 ## 6. 音频通路（OD 直驱）
 
@@ -111,7 +114,15 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 7. Flash overlay + loop cache（恢复保留，与 rx_coex 处理的取舍见 §12）
 8. DEBUG DIO/RF TX power 等
 
-`main()`（app.c）：`App_Initialize()` → 打印 started → `bs300_driver_init()` → while(1){ Kernel_Schedule(); 电池通知; `RM_StatusHandler()`; `bs300_process_deferred()`; 喂狗 }。
+`main()`（app.c）：`App_Initialize()` → 打印 started → `bs300_driver_init()` → while(1){ Kernel_Schedule(); 电池通知;
+`RM_StatusHandler()`; `Button_Process()`; `bs300_process_deferred()`; 喂狗 }。
+
+- **按键 `Button_Process()`（app.c，DIO12，参考 sleep）**：5 次采样去抖；短按 = 当前程序音量 +1（0..9 循环），
+  长按（≥`BTN_LONG_MS`=500ms，按按住时间累加） = 切程序 0→1→2→0（跳过程序 3）；动作走
+  `bs300_switch_program_async` / `bs300_set_volume_async` + `bs300_settings_persist()`；
+  RM 音频中（程序 3）、BS300 忙或未初始化时屏蔽。
+- 长按计时依赖主循环迭代频率：**按键按住期间主循环跳过 `SYS_WAIT_FOR_EVENT`**（否则 ~200ms 才醒一次，
+  计时被稀释导致长按永远判不成，会误判成短按）。DIO12 在 app_init 配为上拉输入。
 
 > **已验证**：以上启动顺序——`printf_init()` 放在 `App_Initialize()` 末尾（BLE/Env 初始化之后、
 > `APP_RM_Init` 之前），以及开机即 `RF_SwitchToCPMode(); RM_Enable(1000);` 切 RM——均已在板上验证正常。
@@ -128,7 +139,7 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 
 ## 10. 打印 / 调试
 
-- 出口：pack `printf.h` 默认 `OUTPUT_UART` → pack `printf.c`（本机已改成 **UART TX=DIO12 / RX=DIO6 @115200**）。
+- 出口：pack `printf.h` 默认 `OUTPUT_UART` → pack `printf.c`（本机已改成 **UART TX=DIO5 / RX=DIO6 @115200**）。
   `printf_init()` 在 `App_Initialize()` 末尾调用（app_init.c），app.c/rm_app.c 的 `PRINTF` 与其一致。
 - bs300 内部日志：bs300_*.c 已在各自 `#ifndef PRINTF` 前 `#include <printf.h>`，`[BS300] …` 会输出；
   若想静音删除这几行 include。

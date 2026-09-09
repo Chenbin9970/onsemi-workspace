@@ -311,6 +311,12 @@ void App_Initialize(void)
     Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
     Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
+#ifdef BS300_ENABLE
+    /* 按键 DIO12：active low，上拉输入（处理在主循环，见 app.c） */
+    Sys_DIO_Config(BTN_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
+                   DIO_LPF_DISABLE);
+#endif    /* ifdef BS300_ENABLE */
+
     /* Enable 6dBM or 0dBM mode*/
 #if (OUTPUT_POWER_6DBM)
     Sys_RFFE_SetTXPower(6);
