@@ -103,12 +103,13 @@ void App_Initialize(void)
 
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
 
-    /* Configure ADC channel 0 to measure VBAT/2 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL |
-                       ADC_PRESCALE_6400);
+    /* 电池 DIO3(IO) 采样（参考 peripheral_server_sleep） */
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
+                   DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
     Sys_ADC_InputSelectConfig(0,
                               (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_VBAT_DIV2));
+                               ADC_POS_INPUT_DIO3));
 
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();

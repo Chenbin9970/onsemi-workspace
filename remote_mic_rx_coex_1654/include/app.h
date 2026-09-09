@@ -378,10 +378,11 @@ extern "C"
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
 
-/* 电池原始量程（rempro GetBatteryInfo 用，与 VBAT 采样一致：0x1200≈1.1V→0%，0x16cc≈1.4V→100%） */
+/* 电池 DIO3(IO) 采样量程（参考 peripheral_server_sleep：raw 6950≈3.0V→0%，9374≈4.4V→100%） */
+#define BAT_ADC_DIO                     3
 #define BAT_ADC_CHANNEL                 0
-#define BAT_ADC_MIN                     VBAT_1p1V_MEASURED
-#define BAT_ADC_MAX                     VBAT_1p4V_MEASURED
+#define BAT_ADC_MIN                     6950
+#define BAT_ADC_MAX                     9374
 #define BAT_LVL_MAX                     100
 
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */

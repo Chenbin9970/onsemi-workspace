@@ -249,3 +249,14 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 
 **已验证**（FOTA ON 在 IDE 编译通过，0 错误）：链接 `libfota.a`（无 libblelib/libkelib）、post-build 产出
 `remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。默认状态 = **OFF**。
+
+## 17. 电池 DIO3(IO) 采样 & GetBatteryInfo 保护
+
+- **采样方式**（参考 peripheral_server_sleep）：电池经 **DIO3** 进 ADC，每读前重配
+  `ADC_NORMAL | ADC_PRESCALE_1280H`、输入 `ADC_POS_INPUT_DIO3`（channel 0）。
+- **量程**（app.h）：`BAT_ADC_DIO=3`、`BAT_ADC_MIN=6950`(≈3.0V)、`BAT_ADC_MAX=9374`(≈4.4V)、`BAT_LVL_MAX=100`。
+- **周期采样**：`APP_Timer`(200ms) 经 `read_battery_raw()` 采样，16 次平均 → `app_env.batt_lvl`，
+  每 ~3.2s 打 `__BATT n%`（暂无 BLE 上报，供后续使用）。
+- **按需读取**：Rempro `GetBatteryInfo` 命令走同一 `read_battery_raw()`。
+- **保护**：`cmd_getbatteryinfo` 算完百分比后 `if (pct==0) pct=1;` —— 低于阈值/取整到 0 时**最低报 1%**，不回 0。
+- 注：假定板子电池分压接 DIO3（同 sleep）；脚位/分压不同则改 `BAT_ADC_DIO` 与量程。

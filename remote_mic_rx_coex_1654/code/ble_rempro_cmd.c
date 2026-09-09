@@ -439,13 +439,14 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
 }
 
 /* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
- * Same sampling logic as GetBatteryInfo. */
+ * DIO3(IO) 电池采样（参考 peripheral_server_sleep），每次读前重配 ADC。 */
 uint32_t read_battery_raw(void)
 {
-    /* 1654 采样 VBAT/2（与 app_init/app_process 一致），不用 sleep 的 DIO3 方案 */
-    Sys_ADC_Set_Config(ADC_VBAT_DIV2_NORMAL | ADC_NORMAL | ADC_PRESCALE_6400);
+    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
+                   DIO_LPF_DISABLE);
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
     Sys_ADC_InputSelectConfig(0, (ADC_NEG_INPUT_GND |
-                                  ADC_POS_INPUT_VBAT_DIV2));
+                                  ADC_POS_INPUT_DIO3));
     return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
 }
 
@@ -462,6 +463,10 @@ static void cmd_getbatteryinfo(void)
     } else {
         pct = (raw - BAT_ADC_MIN) * BAT_LVL_MAX
               / (BAT_ADC_MAX - BAT_ADC_MIN);
+    }
+    /* 保护：低于阈值/取整到 0 时最低报 1%，不报 0 */
+    if (pct == 0) {
+        pct = 1;
     }
     resp_data[0] = (uint8_t)pct;  /* Left_Battery: measured */
     resp_data[1] = 0;             /* Right_Battery: 0 (single device) */
