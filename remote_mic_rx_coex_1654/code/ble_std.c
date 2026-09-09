@@ -28,6 +28,11 @@
 #include "ble_rempro_cmd.h"
 #include <printf.h>
 
+#ifdef CFG_FOTA
+/* 版本号符号放进 .rodata.boot.version（供 FOTA 启动校验） */
+SYS_FOTA_VERSION(VER_ID, VER_MAJOR, VER_MINOR, VER_REVISION);
+#endif    /* ifdef CFG_FOTA */
+
 /* Bluetooth Environment Structure */
 struct ble_env_tag ble_env;
 

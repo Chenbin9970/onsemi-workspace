@@ -20,6 +20,7 @@
 #include "app.h"
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
+#include <printf.h>
 
 /* Global variable definition */
 struct cs_env_tag cs_env;
@@ -437,6 +438,15 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
             switch (attnum)
             {
                 case REMPRO_IDX_ROLE_VALUE_VAL:
+#ifdef CFG_FOTA
+                    /* 0xFD = FOTA 触发（不是 HDLC 帧头 0x7E，安全保留） */
+                    if (param->length >= 1 && param->value[0] == 0xFD)
+                    {
+                        PRINTF("[FOTA] trigger via Rempro 0xFD\r\n");
+                        Sys_Fota_StartDfu(1);
+                        break;   /* 不送入 rempro 重装缓冲 */
+                    }
+#endif    /* ifdef CFG_FOTA */
                     /* 手机写入的命令数据直接进 rempro 重装缓冲 */
                     rempro_reasm_append(param->value, param->length);
                     break;

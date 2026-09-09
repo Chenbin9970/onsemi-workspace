@@ -215,3 +215,36 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 **RM ↔ BLE/调机兼容性（审计后已落地一项）**
 - 已加 `saved_prog_before_rm`（rm_app.c）：LINK_ESTABLISHED 记录 RM 前程序，LINK_DISCONNECTED 切回原程序并 `bs300_active()`，避免 RM 掉线后停在程序3 静音。
 - 待办（未做）：Rempro 拟合指令的 `audio_streaming/prog3` 护栏；手机侧 RM 启停通道 + RF 回 BLE（当前 RM 开机常开）。
+
+## 16. FOTA 空中升级（照 sleep，CFG_FOTA 开关 / fotaskill）
+
+**机制**（同 peripheral_server_sleep）：FOTA ON 时 app 重定位到 `0x00130800`（前部预留给 boot + `fota.bin` 子镜像），
+启动向量 7/8 = `Sys_Boot_app_version` / `image_descriptor`，Reset_Handler 在 SystemInit 后调用 `SystemFotaInit()`；
+BLE 侧在 Rempro ROLE 写入收到首字节 `0xFD` 时 `Sys_Fota_StartDfu(1)` 进入升级（0xFD 非 HDLC 帧头 0x7E，安全保留）。
+
+**开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
+
+**文件**（remote_mic_rx_coex_1654/ 下）：
+- 代码：`code/fota_system.c`（SystemFotaInit→fota_init + weak Device_Param_Prepare）、
+  `include/fota_system.h`；`ble_std.c` 里 `SYS_FOTA_VERSION(VER_ID,…)`（CFG_FOTA 时）生成版本符号；
+  `ble_custom.c` Rempro ROLE 写 0xFD 触发。
+- RTE/Device/RSL10：`startup_rsl10_fota.S` / `_nofota.S`、`sections_fota.ld` / `_nofota.ld`
+  （sections_fota 加 `__rom_start=0x00130800`、`__image_size`、FOTA rodata，不含 sleep 的 DRAM_DSP_CM3/.shared）。
+- 工程变体：`remote_mic_rx_coex_1654_fota.rteconfig` / `_nofota.rteconfig`（fota 把 Bluetooth Core 的
+  BLE Stack+Kernel 换成 Fota，提供 libfota.a/fota.bin/mkfotaimg.py）；`.cproject_fota`（CFG_FOTA=1 定义、
+  链接 libfota.a、post-build 用 mkfotaimg.py 生成 `.fota`）与 `.cproject_nofota`。
+
+**切换方法**
+- FOTA ON：
+  ```
+  cp RTE/Device/RSL10/startup_rsl10_fota.S  RTE/Device/RSL10/startup_rsl10.S
+  cp RTE/Device/RSL10/sections_fota.ld      RTE/Device/RSL10/sections.ld
+  cp remote_mic_rx_coex_1654_fota.rteconfig remote_mic_rx_coex_1654.rteconfig
+  cp .cproject_fota .cproject
+  # app.h 取消注释 #define CFG_FOTA
+  ```
+- FOTA OFF：把上面 4 个文件换回 `_nofota`（或 git 还原），并注释 `CFG_FOTA`。
+- OFF 构建不依赖 FOTA 库/头，行为与普通固件一致（fota_system.c 由 `--gc-sections` 剥掉）。
+
+**已验证**（FOTA ON 在 IDE 编译通过，0 错误）：链接 `libfota.a`（无 libblelib/libkelib）、post-build 产出
+`remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。默认状态 = **OFF**。

@@ -20,6 +20,17 @@
 #ifndef APP_H_
 #define APP_H_
 
+/* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
+ * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
+ * 见开发文档「FOTA」。 */
+//#define CFG_FOTA
+#ifdef CFG_FOTA
+#define VER_ID                  "Smart1654"
+#define VER_MAJOR               1
+#define VER_MINOR               0
+#define VER_REVISION            0
+#endif    /* ifdef CFG_FOTA */
+
 /* ----------------------------------------------------------------------------
  * Include files
  * --------------------------------------------------------------------------*/
@@ -36,6 +47,10 @@
 #include "ble_custom.h"
 #include "ble_bass.h"
 #include "ble_rempro.h"
+#ifdef CFG_FOTA
+#include "sys_fota.h"
+#include "sys_boot.h"
+#endif    /* ifdef CFG_FOTA */
 
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
