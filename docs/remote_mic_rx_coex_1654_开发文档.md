@@ -223,6 +223,7 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 BLE 侧在 Rempro ROLE 写入收到首字节 `0xFD` 时 `Sys_Fota_StartDfu(1)` 进入升级（0xFD 非 HDLC 帧头 0x7E，安全保留）。
 
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
+FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `CFG_FOTA` 分支），方便扫描区分。
 
 **文件**（remote_mic_rx_coex_1654/ 下）：
 - 代码：`code/fota_system.c`（SystemFotaInit→fota_init + weak Device_Param_Prepare）、

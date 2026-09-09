@@ -75,7 +75,12 @@ extern "C"
 
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
+#ifdef CFG_FOTA
+/* FOTA 固件广播名带标识，方便扫描区分 */
+#define APP_DFLT_DEVICE_NAME            "Smart1654FOTA"
+#else    /* ifdef CFG_FOTA */
 #define APP_DFLT_DEVICE_NAME            "Smart1654"
+#endif    /* ifdef CFG_FOTA */
 #define APP_DEVICE_NAME_FLAG            '\x09'
 
 /* ON SEMICONDUCTOR Company ID */
