@@ -57,15 +57,15 @@ extern "C"
 
 #define BD_TYPE_PUBLIC                  0
 #define BD_TYPE_PRIVATE                 1
-#define BD_ADDRESS_TYPE                 BD_TYPE_PRIVATE
+#define BD_ADDRESS_TYPE                 BD_TYPE_PUBLIC
 
 /* Static private Bluetooth device address */
-#define PRIVATE_BDADDR                  { 0x11, 0x11, 0x11, 0x11, 0x11, 0xC0 }
+#define PRIVATE_BDADDR                  { 0x94, 0x11, 0x22, 0xff, 0xff, 0xF5 }
 
-#define APP_PUBLIC_BDADDR               { 0x11, 0x44, 0x44, 0x44, 0x44, 0x33 }
+#define APP_PUBLIC_BDADDR               { 0x11, 0x22, 0x22, 0x44, 0x44, 0x33 }
 
 /* RF Oscillator accuracy in ppm */
-#define RADIO_CLOCK_ACCURACY            20
+#define RADIO_CLOCK_ACCURACY            500
 
 /* Slave preferred connection parameters */
 #define PREF_SLV_MIN_CON_INTERVAL       8
@@ -75,12 +75,12 @@ extern "C"
 
 /* Set the device name */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
-#define APP_DFLT_DEVICE_NAME            "RemoteMic_Rx"
+#define APP_DFLT_DEVICE_NAME            "Smart1654"
 #define APP_DEVICE_NAME_FLAG            '\x09'
 
 /* ON SEMICONDUCTOR Company ID */
-#define APP_COMPANY_ID_DATA             { 0x4, 0xff, 0x62, 0x3, 0x3 }
-#define APP_COMPANY_ID_DATA_LEN         (0x4 + 1)
+#define APP_COMPANY_ID_DATA             { 0x11, 0xff, 0x58, 0x29, 0x01, 0x63, 0x00, 0x14, 0x00, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }
+#define APP_COMPANY_ID_DATA_LEN         (0x11 + 1)
 
 /* Vendor specific scan response data (ON SEMICONDUCTOR Company ID) */
 #define APP_SCNRSP_DATA                 APP_COMPANY_ID_DATA

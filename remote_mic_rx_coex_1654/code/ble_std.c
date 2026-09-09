@@ -112,15 +112,14 @@ void BLE_Initialize(void)
     /* Initialize task state */
     ble_env.state = APPM_INIT;
 
-    /* Use the device's public address if an address is available at
-     * DEVICE_INFO_BLUETOOTH_ADDR (located in NVR3). If this address is
-     * not defined (all ones) use a pre-defined private address for this
-     * application */
+    /* 参考 peripheral_server_sleep：
+     * PUBLIC 类型时——(i) NVR3 / APP 参数里读到公共地址就直接用；(ii) 读不到用栈默认公共地址。
+     * PRIVATE 类型时——使用应用提供的 PRIVATE_BDADDR。 */
 #if (BD_ADDRESS_TYPE == BD_TYPE_PUBLIC)
     bdaddr_type = GAPM_CFG_ADDR_PUBLIC;
     if (Device_Param_Read(PARAM_ID_PUBLIC_BLE_ADDRESS, (uint8_t *)&bdaddr))
     {
-        memcpy(bdaddr, default_addr, sizeof(uint8_t) * BDADDR_LENGTH);
+        /* 使用读到的公共地址（勿用 default_addr 覆盖！） */
     }
     else
     {
@@ -197,8 +196,16 @@ void Advertising_Start(void)
 {
     uint8_t device_name_length;
     uint8_t device_name_avail_space;
-    uint8_t scan_rsp[SCAN_RSP_DATA_LEN] = APP_SCNRSP_DATA;
     uint8_t company_id[APP_COMPANY_ID_DATA_LEN] = APP_COMPANY_ID_DATA;
+
+    /* 把耳侧与设备 MAC 编入 company data（同 peripheral_server_sleep） */
+    company_id[10] = (ear_side == RM_RIGHT) ? 0x02 : 0x01;
+    company_id[12] = bdaddr[5];
+    company_id[13] = bdaddr[4];
+    company_id[14] = bdaddr[3];
+    company_id[15] = bdaddr[2];
+    company_id[16] = bdaddr[1];
+    company_id[17] = bdaddr[0];
 
     /* Prepare the GAPM_START_ADVERTISE_CMD message */
     struct gapm_start_advertise_cmd *cmd;
@@ -221,10 +228,10 @@ void Advertising_Start(void)
         cmd->info.host.mode = GAP_GEN_DISCOVERABLE;
         cmd->info.host.adv_filt_policy   = 0;
 
-        /* Set the scan response data */
-        cmd->info.host.scan_rsp_data_len = APP_SCNRSP_DATA_LEN;
+        /* Set the scan response data = company_id（含 MAC/耳侧，供主动扫描方识别） */
+        cmd->info.host.scan_rsp_data_len = APP_COMPANY_ID_DATA_LEN;
         memcpy(&cmd->info.host.scan_rsp_data[0],
-               scan_rsp, cmd->info.host.scan_rsp_data_len);
+               company_id, APP_COMPANY_ID_DATA_LEN);
 
         /* Get remaining space in the advertising data -
          * 2 bytes are used for name length/flag */
