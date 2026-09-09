@@ -25,6 +25,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "ble_rempro_cmd.h"
 #include <printf.h>
 
 /* Bluetooth Environment Structure */
@@ -602,6 +603,9 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
     ble_env.state = APPM_READY;
 
     BLE_SetServiceState(false, ble_env.conidx);
+
+    /* 清空 Rempro HDLC 重装缓冲，避免残留帧串到下一次连接 */
+    rempro_reasm_reset();
 
     Advertising_Start();
 

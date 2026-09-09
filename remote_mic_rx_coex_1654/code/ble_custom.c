@@ -18,6 +18,8 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "ble_rempro.h"
+#include "ble_rempro_cmd.h"
 
 /* Global variable definition */
 struct cs_env_tag cs_env;
@@ -149,7 +151,8 @@ int GATTM_AddSvcRsp(ke_msg_id_t const msg_id,
                     ke_task_id_t const dest_id,
                     ke_task_id_t const src_id)
 {
-    cs_env.start_hdl = param->start_hdl;
+    /* 只保留 Rempro Service：每次 TASK_APP 服务添加的 start_hdl 都属 Rempro */
+    rempro_env.start_hdl = param->start_hdl;
 
     /* Add the next requested service  */
     if (!Service_Add())
@@ -192,10 +195,58 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
     uint8_t *valptr = NULL;
 
     struct gattc_read_cfm *cfm;
+    bool is_rempro = (rempro_env.start_hdl != 0 &&
+                      param->handle > rempro_env.start_hdl);
 
-    /* Set the attribute handle using the attribute index
-     * in the custom service */
-    if (param->handle > cs_env.start_hdl)
+    /* Route handle to the correct service（RemoteMic CS 或 Rempro） */
+    if (is_rempro)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+        switch (attnum)
+        {
+            case REMPRO_IDX_ROLE_VALUE_VAL:
+            {
+                length = REMPRO_ROLE_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&rempro_env.role_value;
+            }
+            break;
+
+            case REMPRO_IDX_ROLE_VALU_CCC:
+            {
+                length = 2;
+                valptr = (uint8_t *)&rempro_env.role_cccd_value;
+            }
+            break;
+
+            case REMPRO_IDX_ROLE_VALUE_USR_DSCP:
+            {
+                length = strlen("ROLE_VALUE");
+                valptr = (uint8_t *)"ROLE_VALUE";
+            }
+            break;
+
+            case REMPRO_IDX_ONOFF_VALUE_VAL:
+            {
+                length = REMPRO_ONOFF_VALUE_MAX_LENGTH;
+                valptr = (uint8_t *)&rempro_env.onoff_value;
+            }
+            break;
+
+            case REMPRO_IDX_ONOFF_VALU_CCC:
+            {
+                length = 2;
+                valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+            }
+            break;
+
+            default:
+            {
+                status = ATT_ERR_READ_NOT_PERMITTED;
+            }
+            break;
+        }
+    }
+    else if (param->handle > cs_env.start_hdl)
     {
         attnum = (param->handle - cs_env.start_hdl - 1);
     }
@@ -205,7 +256,7 @@ int GATTC_ReadReqInd(ke_msg_id_t const msg_id,
     }
 
     /* If there is no error, send back the requested attribute value */
-    if (status == GAP_ERR_NO_ERROR)
+    if ((status == GAP_ERR_NO_ERROR) && !is_rempro)
     {
         switch (attnum)
         {
@@ -368,6 +419,8 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
     uint8_t *valptr = NULL;
     uint8_t oldValue_onoff = 0;
     struct rm_callback callback;
+    bool is_rempro = (rempro_env.start_hdl != 0 &&
+                      param->handle > rempro_env.start_hdl);
 
     /* Check that offset is not zero */
     if (param->offset)
@@ -375,9 +428,31 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
         status = ATT_ERR_INVALID_OFFSET;
     }
 
-    /* Set the attribute handle using the attribute index
-     * in the custom service */
-    if (param->handle > cs_env.start_hdl)
+    /* Route handle to the correct service（RemoteMic CS 或 Rempro） */
+    if (is_rempro)
+    {
+        attnum = (param->handle - rempro_env.start_hdl - 1);
+        if (status == GAP_ERR_NO_ERROR)
+        {
+            switch (attnum)
+            {
+                case REMPRO_IDX_ROLE_VALUE_VAL:
+                    /* 手机写入的命令数据直接进 rempro 重装缓冲 */
+                    rempro_reasm_append(param->value, param->length);
+                    break;
+                case REMPRO_IDX_ROLE_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.role_cccd_value;
+                    break;
+                case REMPRO_IDX_ONOFF_VALU_CCC:
+                    valptr = (uint8_t *)&rempro_env.onoff_cccd_value;
+                    break;
+                default:
+                    status = ATT_ERR_WRITE_NOT_PERMITTED;
+                    break;
+            }
+        }
+    }
+    else if (param->handle > cs_env.start_hdl)
     {
         attnum = (param->handle - cs_env.start_hdl - 1);
     }
@@ -387,7 +462,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
     }
 
     /* If there is no error, save the requested attribute value */
-    if (status == GAP_ERR_NO_ERROR)
+    if ((status == GAP_ERR_NO_ERROR) && !is_rempro)
     {
         switch (attnum)
         {
@@ -453,7 +528,7 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
     /* Send the message */
     ke_msg_send(cfm);
 
-    if ((oldValue_onoff != app_env.RM_on_off) &&
+    if (!is_rempro && (oldValue_onoff != app_env.RM_on_off) &&
         (attnum == CS_REMPRO_IDX_ONOFF_VALUE_VAL))
     {
         if (app_env.RM_on_off)
@@ -474,6 +549,30 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
         }
     }
 
+    return (KE_MSG_CONSUMED);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : int GATTC_CmpEvt(ke_msg_id_t const msg_id,
+ *                                 struct gattc_cmp_evt const *param,
+ *                                 ke_task_id_t const dest_id,
+ *                                 ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : Handle GATT operation completion (Rempro chunked notify
+ *                 pacing uses rempro_env.sentSuccess)
+ * ------------------------------------------------------------------------- */
+int GATTC_CmpEvt(ke_msg_id_t const msg_id,
+                 struct gattc_cmp_evt const *param,
+                 ke_task_id_t const dest_id, ke_task_id_t const src_id)
+{
+    if (param->operation == GATTC_NOTIFY)
+    {
+        if (param->status == GAP_ERR_NO_ERROR ||
+            param->status == GAP_ERR_DISCONNECTED)
+        {
+            rempro_env.sentSuccess = 1;
+        }
+    }
     return (KE_MSG_CONSUMED);
 }
 

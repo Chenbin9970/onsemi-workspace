@@ -142,7 +142,8 @@ enum cs_idx_att
 #define CS_MESSAGE_HANDLER_LIST                                     \
     DEFINE_MESSAGE_HANDLER(GATTC_READ_REQ_IND, GATTC_ReadReqInd),   \
     DEFINE_MESSAGE_HANDLER(GATTC_WRITE_REQ_IND, GATTC_WriteReqInd), \
-    DEFINE_MESSAGE_HANDLER(GATTM_ADD_SVC_RSP, GATTM_AddSvcRsp)      \
+    DEFINE_MESSAGE_HANDLER(GATTM_ADD_SVC_RSP, GATTM_AddSvcRsp),     \
+    DEFINE_MESSAGE_HANDLER(GATTC_CMP_EVT, GATTC_CmpEvt)             \
 
 
 /* Define the available custom service states */
@@ -193,6 +194,11 @@ extern int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
 
 extern void CustomService_SendNotification(uint8_t conidx, uint8_t attidx,
                                            uint8_t *value, uint8_t length);
+
+extern int GATTC_CmpEvt(ke_msg_id_t const msg_id,
+                        struct gattc_cmp_evt const *param,
+                        ke_task_id_t const dest_id,
+                        ke_task_id_t const src_id);
 
 /* ----------------------------------------------------------------------------
  * Close the 'extern "C"' block

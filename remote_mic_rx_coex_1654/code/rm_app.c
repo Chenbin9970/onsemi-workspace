@@ -246,6 +246,11 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
     return (0);
 }
 
+#ifdef BS300_ENABLE
+/* RM 前程序记录：RM 断开后切回原程序并 active，避免停在程序3 静音（参照 sleep saved_prog_before_rm） */
+static uint8_t s_saved_prog_before_rm = 0xFF;
+#endif    /* ifdef BS300_ENABLE */
+
 uint8_t RM_Callback_StatusUpdate(uint8_t status)
 {
     switch (status)
@@ -279,6 +284,17 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 /* 远端流中断 → BS300 静音（参照 peripheral_server_sleep rm_app） */
                 bs300_mute();
                 app_env.audio_streaming = 0;
+
+                /* 程序恢复：切回 RM 前程序并 active（参照 sleep saved_prog_before_rm） */
+                if (s_saved_prog_before_rm != 0xFF)
+                {
+                    if (s_saved_prog_before_rm != 3)
+                    {
+                        bs300_switch_program(s_saved_prog_before_rm);
+                    }
+                    bs300_active();
+                    s_saved_prog_before_rm = 0xFF;
+                }
             }
 #endif    /* ifdef BS300_ENABLE */
             app_env.rm_lostLink_counter++;
@@ -314,7 +330,8 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
 
 #ifdef BS300_ENABLE
-            /* BS300 切到程序3 并 active：让 OD 音频被 DSP 接管（参照 sleep rm_app） */
+            /* 记录 RM 前程序（断开后据此恢复），随后切到程序3 接管（参照 sleep） */
+            s_saved_prog_before_rm = bs300_get_active_prog();
             bs300_set_prog_volume(3, 9);
             bs300_mute();
             bs300_switch_program(3);

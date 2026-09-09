@@ -84,36 +84,8 @@ int APP_Timer(ke_msg_id_t const msg_id,
               ke_task_id_t const dest_id,
               ke_task_id_t const src_id)
 {
-    uint16_t level;
-
-    /* Restart timer */
+    /* Battery Service 已移除：该 200ms 定时器只保留重启（供内核周期性唤醒） */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
-
-    /* Calculate the battery level as a percentage, scaling the battery
-     * voltage between 1.4V (max) and 1.1V (min) */
-    level = ((ADC->DATA_TRIM_CH[0] - VBAT_1p1V_MEASURED) * 100
-             / (VBAT_1p4V_MEASURED - VBAT_1p1V_MEASURED));
-    level = ((level >= 100) ? 100 : level);
-
-    /* Add to the current sum and increment the number of reads,
-     * calculating the average over 16 voltage reads */
-    app_env.sum_batt_lvl += level;
-    app_env.num_batt_read++;
-    if (app_env.num_batt_read == 16)
-    {
-        if ((app_env.sum_batt_lvl >> 4) != app_env.batt_lvl)
-        {
-            app_env.send_batt_ntf = 1;
-        }
-
-        if (ble_env.state == APPM_CONNECTED && bass_support_env.enable)
-        {
-            app_env.batt_lvl = (app_env.sum_batt_lvl >> 4);
-        }
-
-        app_env.num_batt_read = 0;
-        app_env.sum_batt_lvl  = 0;
-    }
 
     return (KE_MSG_CONSUMED);
 }

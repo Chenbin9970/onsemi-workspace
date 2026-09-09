@@ -21,6 +21,7 @@
  * ------------------------------------------------------------------------- */
 #include "app.h"
 #include <printf.h>
+#include "ble_rempro_cmd.h"
 #ifdef BS300_ENABLE
 #include "bs300_driver.h"
 #include "bs300_ram_sync.h"
@@ -78,12 +79,17 @@ static void Button_Process(void)
         uint8_t prog = bs300_get_active_prog();
         if (pending_action == BTN_LONG)
         {
-            bs300_switch_program_async((uint8_t)((prog + 1) % 3), 0);
+            uint8_t next = (uint8_t)((prog + 1) % 3);
+            bs300_switch_program_async(next, 0);
+            /* 向手机推送场景/程序切换（参考 sleep：rempro_push_scene_change） */
+            rempro_push_scene_change(next);
         }
         else
         {
-            bs300_set_volume_async(
-                (uint8_t)((bs300_get_module_volume(prog) + 1) % 10), 0);
+            uint8_t vol = (uint8_t)((bs300_get_module_volume(prog) + 1) % 10);
+            bs300_set_volume_async(vol, 0);
+            /* 向手机推送音量变化（参考 sleep：rempro_push_volume_change） */
+            rempro_push_volume_change(prog, vol);
         }
         bs300_settings_persist();
         pending_action = BTN_NONE;
@@ -114,14 +120,13 @@ int main()
     {
         Kernel_Schedule();
 
+        /* 分块发送 rempro TX（每次通知完成后推进下一块，无 ke_timer） */
+        rempro_tx_poll();
+
         if (ble_env.state == APPM_CONNECTED)
         {
-            if (app_env.send_batt_ntf && bass_support_env.enable)
-            {
-            	PRINTF("__SEND BATTERY LEVEL\n %d\n",app_env.batt_lvl);
-                app_env.send_batt_ntf = 0;
-                Batt_LevelUpdateSend(0, app_env.batt_lvl, 0);
-            }
+            /* 处理 Rempro 接收到的完整 HDLC 帧 */
+            rempro_cmd_process();
         }
 
         RM_StatusHandler();

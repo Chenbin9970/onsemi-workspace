@@ -35,6 +35,7 @@
 #include "ble_std.h"
 #include "ble_custom.h"
 #include "ble_bass.h"
+#include "ble_rempro.h"
 
 /* ----------------------------------------------------------------------------
  * If building with a C++ compiler, make all of the definitions in this header
@@ -362,6 +363,12 @@ extern "C"
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
 
+/* 电池原始量程（rempro GetBatteryInfo 用，与 VBAT 采样一致：0x1200≈1.1V→0%，0x16cc≈1.4V→100%） */
+#define BAT_ADC_CHANNEL                 0
+#define BAT_ADC_MIN                     VBAT_1p1V_MEASURED
+#define BAT_ADC_MAX                     VBAT_1p4V_MEASURED
+#define BAT_LVL_MAX                     100
+
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
                                         CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
@@ -378,17 +385,16 @@ typedef void (*appm_add_svc_func_t)(void);
     DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
     DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer)
 
-/* List of functions used to create the database */
+/* List of functions used to create the database（只保留 Rempro Service） */
 #define SERVICE_ADD_FUNCTION_LIST                        \
-    DEFINE_SERVICE_ADD_FUNCTION(Batt_ServiceAdd_Server), \
-    DEFINE_SERVICE_ADD_FUNCTION(CustomService_ServiceAdd)
+    DEFINE_SERVICE_ADD_FUNCTION(RemproService_ServiceAdd)
 
 typedef void (*appm_enable_svc_func_t)(uint8_t);
 #define DEFINE_SERVICE_ENABLE_FUNCTION(func) (appm_enable_svc_func_t)func
 
 /* List of functions used to enable client services */
-#define SERVICE_ENABLE_FUNCTION_LIST \
-    DEFINE_SERVICE_ENABLE_FUNCTION(Batt_ServiceEnable_Server)
+/* 无需要按连接启用的 server 服务（只保留 Rempro，不启用任何 client/enable 函数） */
+#define SERVICE_ENABLE_FUNCTION_LIST NULL
 
 /* ----------------------------------------------------------------------------
  * Data types
