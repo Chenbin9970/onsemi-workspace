@@ -117,6 +117,8 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
 
     /* 每 tick(200ms)：推进 4 程序×(降噪/DFBC/WDRC) 读回（两段读校验，循环） */
     dsp_7100_rb_seq_tick();
+    /* 读回一轮完成后：P01 WDRC LowLevelGain 全 16 通道置 0 精简写会话（内部只在 rb done 后推进一次） */
+    dsp_7100_set_seq_tick();
 
     /* 每 25 tick(5s)：发心跳 {0x88,0x01} */
     if ((s_7100_cnt % 25) == 0) {

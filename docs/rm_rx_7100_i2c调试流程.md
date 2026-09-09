@@ -13,6 +13,7 @@
 > 5. 心跳 `{0x88,0x01}` 每 5s；I2C ISR 在读 ACK 前加了 ~3µs 人为延时，便于对齐参考时序。
 > 6. **parm1604 参数读回**：`scripts/gen_dsp_7100_parm.py` 解析 `parm1604.txt` 抽出 105 组 A7 三元组 → `code/dsp_7100_parm_tables.c`；`dsp_7100_parm_seq_tick()`(200ms) 与 7 组同逻辑两段读推进（读 3B 头→按头长读数据→04 82，头长==写端 dlen 即过，105 组循环）。已能跑通。
 > 7. **4 程序×(降噪/DFBC/WDRC) 最小读回（可正确读取）**：`scripts/gen_dsp_7100_rb.py` 从 parm1604.txt 按「选程序 A7 02 …12 P → 选模块 A7 03 …37 sub P → 读块 A7 01 00 blo bhi 38」过滤出 WDRC(77 01)/DFBC(32 01)/降噪(AE 00)×P1..4 共 28 条 → `code/dsp_7100_rb_tables.c`；`dsp_7100_rb_seq_tick()`(200ms) **跑一轮即停**，存 0x77/0x32/0xAE 块 payload，解析打印每程序：降噪 en/lvl（data0 bit7 + (data0>>3&0xF)/3−1）、DFBC on/off（data0&0x80）、WDRC 16 通道 Low/High LevelGain（rb_field 位解析，7bit 有符号，ch 起点 bit=267+ch×147，High +15）。已正确读取，与设置值一致。
+> 8. **读回一轮完成后自动写程序1 WDRC LowLevelGain 全通道=0（2026-09-09）**：读回跑完一轮后自动启动精简写会话（详见 §8），DFBC/降噪本轮不写。
 
 ## 1. 背景与目标
 
@@ -116,3 +117,35 @@ main():
 - `remote_mic_rx_coex/code/app_init.c`（App_Initialize 修复点）
 - `remote_mic_rx_coex/app.c`（触发时序）
 - `remote_mic_rx_coex/code/app_process.c`、`code/ble_std.c`、`include/app.h`（心跳）
+
+## 8. 读回后程序1 WDRC LowLevelGain 全通道=0 写会话（2026-09-09）
+
+**目的**：读回一轮确认拿到 7100 当前 4 程序参数后，把**程序1（P字节 01，读回 idx0）全部 16 通道 WDRC LowLevelGain 置 0**，用于验证写链路/听感。DFBC 开关、降噪档位本轮**不动**（若后续要写，参照 `docs/7100协议/DFBC/7100_DFBC设置.md`、`docs/7100协议/降噪/7100_降噪设置.md` 在生成脚本里加块即可）。
+
+**触发**：`dsp_7100_rb_seq_tick()` 一轮完成（`s_rb_done=1`、打印解析后）置 `s_set_active=true`；`APP_7100_HB_Handler`（200ms tick）每圈调 `dsp_7100_set_seq_tick()` 逐条推进，跑完即停（开机一次）。
+
+**命令表**：`scripts/gen_dsp_7100_set.py` → `code/dsp_7100_set_tables.c`，共 **38 条**：
+```
+mute(25) → select P01(12 01) → 16×(prep WDRC LL chN → A7 04 08 00 00 00)
+→ confirm(10 01) → unmute(26) → select P01 → commit(0C)
+```
+每条 = 写命令 → 读 3B 应答(`46 00 00`) → `04 82`；引擎在 `dsp_7100_init.c`（同 parm/rb 两段式，写与应答不同 tick）。
+
+**WDRC LL 参数号**（模块07 内 16bit 参数区，prep 尾 `01 <addr_hi> <addr_lo>`）：
+```
+LL(chN) = 0x15 + 0x11×(N−1)
+```
+| ch | 参数号 | 状态 |
+|:--:|:--:|---|
+| 1 | 0x0015 | 外推（7111 基址） |
+| 2 | 0x0026 | 抓包 ✓ |
+| 5 | 0x0059 | 抓包 ✓ |
+| 10 | 0x00AE | 抓包 ✓ |
+| 11..14 | 0x00BF..0x00F2 | 线性外推 |
+| 15/16 | 0x0103/0x0114 | 外推 + 高字节语义推断，**未抓包验证** |
+
+> ch15/16 参数号超 8bit（0x103/0x114），prep 命令按 16bit 高字节写在 `01 01 03` / `01 01 14`。上机后**读回 0x77 块复核 16 通道 LL 是否全为 0**，若 ch15/16 不符，抓一次高通道设置即可修正映射。
+>
+> 时机估算：38 条 × ~2 tick × 200ms ≈ **15s，全程静音**；嫌长可把写会话改成小命令一 tick 内连发或加快 tick。
+
+**参考**：`docs/7100协议/WDRC/7100_WDRC设置.md`、`d:/tmp/7111_proto.txt`（模块07 16bit 参数区）；`P0wdrclowlevergainchannel5set20.csv` 等抓包（ch≤10）。

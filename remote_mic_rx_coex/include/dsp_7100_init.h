@@ -52,6 +52,13 @@ extern const uint16_t     dsp_rb_cmd_cnt;
 /* 4 程序读回推进（200ms tick 调），同两段读逻辑，循环 */
 void dsp_7100_rb_seq_tick(void);
 
+/* P01 精简写会话（WDRC LowLevelGain 全 16 通道置 0）：读回一轮完成后自动跑一次（由 gen_dsp_7100_set.py 生成） */
+extern const dsp_a7_cmd_t dsp_set_cmds[];
+extern const uint16_t     dsp_set_cmd_cnt;
+
+/* 写会话推进（200ms tick 调）：每条写命令 -> 读 3B 应答 -> 04 82，跑完即停 */
+void dsp_7100_set_seq_tick(void);
+
 /* 7 组 A7 推进（200ms tick 调）：每组重发到读回逐字节全等，进下一条，循环 */
 void dsp_7100_a7_seq_tick(void);
 

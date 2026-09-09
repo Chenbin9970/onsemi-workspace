@@ -286,6 +286,12 @@ static void rb_parse_print(void)
     }
 }
 
+/* ---- P01 精简写会话（WDRC LowLevelGain 全 16 通道置 0）：读回一轮完成后自动跑一次，跑完即停 ---- */
+enum { SET_SEND, SET_READ };
+static bool     s_set_active = false;
+static uint8_t  s_set_st  = SET_SEND;
+static uint16_t s_set_idx = 0;
+
 void dsp_7100_rb_seq_tick(void)
 {
     const dsp_a7_cmd_t *g;
@@ -338,8 +344,49 @@ void dsp_7100_rb_seq_tick(void)
             s_rb_done = 1;
             PRINTF("[RB] round done, parse:\r\n");
             rb_parse_print();
+            s_set_active = true;    /* 读回完成后开始 P01 写会话 */
+            s_set_st  = SET_SEND;
+            s_set_idx = 0;
+            PRINTF("[SET] start write session\r\n");
             return;
         }
         s_rb_st = RB_SEND;
     }
+}
+
+/* 200ms tick 调：写会话逐条推进。每条 = 写命令 -> 读 3B 应答 -> 写 04 82。
+ * 写命令与应答不同 tick（间隔≥200ms，大于抓包 40-120ms）。跑完即停（只跑一次）。 */
+void dsp_7100_set_seq_tick(void)
+{
+    const dsp_a7_cmd_t *c;
+    uint8_t ack[3];
+    bool okw, okr;
+
+    if (!s_set_active) return;
+    if (dsp_set_cmd_cnt == 0) { s_set_active = false; return; }
+
+    if (s_set_idx >= dsp_set_cmd_cnt) {
+        s_set_active = false;
+        PRINTF("[SET] done\r\n");
+        return;
+    }
+    c = &dsp_set_cmds[s_set_idx];
+
+    if (s_set_st == SET_SEND) {
+        okw = i2c_7100_write(I2C_7100_ADDR, c->wr, c->wl);
+        (void)okw;
+        PRINTF("[SET] %u/%u TX ok=%u (len=%u)\r\n", s_set_idx + 1,
+               dsp_set_cmd_cnt, okw, c->wl);
+        s_set_st = SET_READ;
+        return;
+    }
+
+    /* 应答 3B（46 00 00）+ 04 82 收尾，进下一条 */
+    okr = i2c_7100_read(I2C_7100_ADDR, ack, sizeof(ack));
+    (void)okr;
+    i2c_7100_write(I2C_7100_ADDR, s_end82, sizeof(s_end82));
+    PRINTF("[SET] %u/%u ACK ok=%u: %02X %02X %02X\r\n", s_set_idx + 1,
+           dsp_set_cmd_cnt, okr, ack[0], ack[1], ack[2]);
+    s_set_idx++;
+    s_set_st = SET_SEND;
 }
