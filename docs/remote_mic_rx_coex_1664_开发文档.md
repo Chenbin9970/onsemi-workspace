@@ -25,7 +25,9 @@
 |--------|------|
 | `d9ddf9b` | 1664 工程基线：由 1654 复制（61 文件），设备名改 Smart1664/1664FOTA |
 | `0ad0541` | 删除按键 / 删除 AD 采样 / 打印口改 DIO12 |
-| （未提交） | 音频输出改为无输出（`NO_TX_OUTPUT`），腾出 DIO0/DIO1 给 7100 I2C；移植 7100 通讯层、删除 BS300；RM 调试 IO 关闭；移除 flash overlay；引脚对齐 7160test |
+| `95896c1` | 移植 7100 通讯层取代 BS300 + 读回参数 flash 缓存 |
+| `b6365f2` | Rempro 切模式 / 调音量接 7100 运行时命令 |
+| （未提交） | 降噪 / DFBC 写入（tick 模型）+ GetBatteryInfo 回 100% + I2C 收发日志 |
 
 1664 与 1654 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1654 逐字节一致
 （仅行尾符差异）。
@@ -70,7 +72,7 @@
 | `read_battery_raw()` 声明 | include/ble_rempro_cmd.h |
 
 **Rempro `GetBatteryInfo`（ID:4）行为变化**：1654 为「读取实测百分比，最低报 1%」；
-1664 改为**直接回 `flag=1`（不支持）**，不再触碰 ADC。手机端需相应处理该失败响应。
+1664 无 ADC 采样，现**固定回 `100/100`（flag=0）** —— 回 `flag=1` 会导致 App 连不上。
 
 随之失效并被清理的 include：`code/app_process.c` 的 `ble_rempro_cmd.h` 与 `<printf.h>`。
 
@@ -222,14 +224,15 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 | code/dsp_7100_init_tables.c | 生成的引导步骤表（106 步，`scripts/gen_dsp_7100_init.py`） |
 | code/dsp_7100_rb_tables.c | 生成的读回命令表（28 条，`scripts/gen_dsp_7100_rb.py`） |
 | code/dsp_7100_storage.c / include/dsp_7100_storage.h | 读回结果 Main Flash 缓存 |
-| code/dsp_7100_cmd.c / include/dsp_7100_cmd.h | 运行时命令：切程序 / 调音量（Rempro 用） |
+| code/dsp_7100_cmd.c / include/dsp_7100_cmd.h | 运行时命令：切程序 / 音量（同步）+ 降噪 / DFBC（tick 异步），见 §7.4 |
 | app.c | 上电握手（DIO13/DIO11）+ `dsp_7100_boot_init()` + `dsp_7100_cache_try_load()`；主循环 `dsp_7100_process_deferred()` |
-| code/app_process.c | `APP_7100_HB_Handler`：200ms tick 推读回 + 每 5s 心跳 `{0x88,0x01}` |
+| code/app_process.c | `APP_7100_HB_Handler`：200ms tick —— 会话中推会话，否则推读回 + 每 5s 心跳 `{0x88,0x01}` |
 | code/ble_std.c | GAPM_RESET 后挂 `APP_7100_HB_TIMER` |
 | code/ble_custom.c | Rempro ROLE 写 `0xFE` → 失效缓存 + 重启重读 |
 
 移植时**去掉了 rx_coex 的死代码**：`dsp_7100_parm_seq_tick` / `dsp_7100_a7_seq_tick` /
-`dsp_7100_a7_arm/poll` / `dsp_connect_replay`（全部无调用者）。**写路径未移植**（阶段二）。
+`dsp_7100_a7_arm/poll` / `dsp_connect_replay`（全部无调用者）。
+写路径参考其在 `dsp_7100_init.c` 的写会话骨架（见 §7.4.2）。
 
 ### 7.2 读回结果（RAM + Flash 缓存）
 
@@ -311,9 +314,11 @@ App_Initialize()
 
 > ⚠ 握手 `while(DIO_DATA->ALIAS[13] == 1)` **无超时**（照 rx_coex）。板上无 7100 时卡在开机。
 
-### 7.4 运行时命令（切程序 / 调音量）
+### 7.4 运行时命令（切程序 / 音量 / 降噪 / DFBC）
 
-移植自 `peripheral_server_sleep7160test` 的 `dsp_7100_cmd.c`。帧序列（抓包 `program1-4.csv` / `volume.csv`）：
+移植自 `peripheral_server_sleep7160test` + `remote_mic_rx_coex` 已验证写法。
+
+#### 7.4.1 切程序 / 调音量（同步阻塞）
 
 ```
 写帧  A2 00 <reg> <val>        reg: 0x16=程序, 0x12=音量
@@ -326,20 +331,100 @@ App_Initialize()
 | `dsp_7100_set_volume(L)` | 写 →2ms→ 读6B →1ms→ `82` | L = 1..6，值 `{0x11,0x21,0x32,0x43,0x53,0x64}` |
 | `dsp_7100_switch_program(P)` | 写 →80ms→ 读6B →1ms→ `82` →1ms→ 读6B →1ms→ `82` | P = 1..4 |
 
-均为**阻塞调用**（含 ms 级延时），只在主循环上下文（Rempro 命令处理）调用。
+阻塞调用（含 ms 级延时），在 Rempro 命令处理（主循环上下文）执行。
 
-**Rempro 接线**（`ble_rempro_cmd.c`）：
+#### 7.4.2 降噪 / DFBC（异步，命令表 + 200ms tick）
+
+⚠ **必须照 `remote_mic_rx_coex` 已验证的 tick 模型**，不要自创：
+
+- **无任何 0x03 状态读**（rx_coex 实测通过的会话表里一条都没有；加了会导致写入不生效）
+- 应答**固定读 3B**（`46 00 00`）
+- 一条命令一个 tick：**发命令 → 下个 tick 读应答 + 写 `82` → 进下一条**
+- 8 条命令 × 2 tick ≈ **3.2s** 完成
+
+会话骨架（与 rx_coex 写会话逐条一致）：
+
+```
+静音      A7 01 00 00 00 25
+选程序    A7 02 00 00 00 12 <P>          P = 程序号+1
+写块准备   A7 05 00 00 00 05 <blk> <P> <a> <b>
+写块      降噪: A7 27 <300B>
+          DFBC: A7 04 00 00 00 08 00 00 <X>   X = 01开/00关
+confirm   A7 02 00 00 00 10 <P>
+解除静音   A7 01 00 00 00 26
+选回程序0  A7 02 00 00 00 12 01          （恒为 01，与程序无关）
+commit    A7 01 00 00 00 0C
+```
+
+| 块 | blk | a | b |
+|----|-----|---|---|
+| 降噪 | `09` | `00` | `01` |
+| DFBC | `0A` | `00` | `00` |
+
+**降噪 300B 写块按公式生成**（不占表空间，`build` 见 `a7_add_noise_block`）：
+
+| 段 | 字节 | 内容 |
+|----|------|------|
+| 头 | `[0..7]` | `A7 27 01 00 00 08 00 00` |
+| 档位值 | `[8..152]` | 49 × `XX`（stride 3，中间补 0），`XX = 3×level + 3` |
+| 三元组 | `[153..299]` | 49 × 档位三元组 |
+
+| 档位 | XX | 三元组 |
+|:---:|:---:|---|
+| 0 | `03` | `2F 6E CD` |
+| 1 | `06` | `4C 58 CB` |
+| 2 | `09` | `60 D1 00` |
+| 3 | `0C` | `6F 4E C9` |
+| 4 | `0F` | `79 91 1C` |
+
+> 已与 `docs/7100协议/降噪/7100_降噪设置.md` 的 5 档 hex dump **逐字节比对通过**；
+> 会话事务序列与抓包 `p0dfbc0-1` / `noise0-1` **14/14 一致**。
+
+**驱动与互斥**（`app_process.c` `APP_7100_HB_Handler`）：
+
+```c
+if (dsp_7100_cmd_busy()) {   /* 写会话中：只推会话 */
+    dsp_7100_cmd_tick();
+    return;                  /* 不读回、不发心跳，避免抢 I2C */
+}
+dsp_7100_rb_seq_tick();
+/* 每 5s 心跳 */
+```
+
+**API 语义**：`dsp_7100_set_denoise/dfbc()` 返回 true = **已受理**（异步），不是已完成。
+完成后 `a7_session_finish()` 回写 RAM 参数并请求落盘，日志 `[7100] --- session done ok=? ---`。
+
+#### 7.4.3 Rempro 接线
 
 | 命令 ID | 处理 | 映射 |
 |---------|------|------|
 | `CMD_SETVOLUME` (2) | `cmd_setvolume_7100` | App vol 0-5 → 7100 档位 1-6（`+1`） |
 | `CMD_SETCURRENTSCENE` (16) | `cmd_setcurrentscene_7100` | App scene 0-3 → 7100 程序 1-4（`+1`） |
+| `CMD_SETDENOISE` (9) | `cmd_setdenoise_7100` | prog 0-3 → 程序 1-4；level 0-4（>4 钳位并告警） |
+| `CMD_SETFEEDBACKONOFF` (12) | `cmd_setfeedbackonoff_7100` | prog 0-3 → 程序 1-4；onoff 即 DFBC |
+| `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | **固定回 100/100**（回 flag=1 会导致 App 连不上） |
 
-`GetDeviceConfig` 相应改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
+`GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
 
-> 其余 13 个 Rempro 命令（SetGain / SetMPO / SetEqualizer / SetDenoise / GetFittingData / 听力计等）
-> 仍回 `flag=1`（不支持），待阶段二实现 7100 参数写路径。
-> `CMD_GETCURRENTSCENE` 也未实现（7160test 的 7100 路径同样没有）。
+> 其余 11 个 Rempro 命令（SetGain / SetMPO / SetEqualizer / GetFittingData / 听力计等）
+> 仍回 `flag=1`，待阶段二实现 7100 参数写路径。
+> `CMD_GETCURRENTSCENE` / `CMD_GETFEEDBACKONOFF` 未实现。
+
+#### 7.4.4 I2C 收发日志（四条链路统一）
+
+```c
+#define I2C_DUMP_CHUNK 32      /* ⚠ 每行最多 32 字节 */
+[7100] W (300B ok=1): A7 27 01 00 00 08 00 00 0C 00 00 ...   ← 首行带前缀
+       00 0C 00 00 0C 00 00 ...                              ← 续行
+[7100] R (3B ok=1): 46 00 00
+```
+
+- `W`/`R` = 方向；`(nB ok=x)` = 字节数 + 是否成功（读还含首字节 `0x46` 校验）
+- **不含 I2C 地址字节**（HAL 在 START 后发；逻辑分析仪上对应日志未显示的 `04`/`05`）
+
+> ⚠ **必须分块打印**：pack `printf.c` 用 `vsprintf` 写 **200B 静态缓冲（`TX_BUFFER_SIZE`）且无边界检查**。
+> 降噪写块 300B → 900+ 字符一次输出会冲爆缓冲导致**死机**（曾发生）。
+> 分块后单次 ≤ ~123 字符。同类隐患：`dsp_7100_init.c` 的 `dump_hex` 上限已收到 32（≤100 字符）。
 
 ## 7b. BS300 子系统（已删除）
 
@@ -415,6 +500,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 - `code/dsp_7100_init.c` / `include/dsp_7100_init.h`
 - `code/dsp_7100_init_tables.c`、`code/dsp_7100_rb_tables.c`（Python 生成）
 - `code/dsp_7100_storage.c` / `include/dsp_7100_storage.h`
+- `code/dsp_7100_cmd.c` / `include/dsp_7100_cmd.h`
 
 **修改**
 - app.c、code/app_init.c、code/app_process.c、code/ble_custom.c、code/ble_std.c、
@@ -425,13 +511,18 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 ## 12. 已知问题 / 待办
 
-1. **阶段二未开始**：7100 写路径（动态 A7 编码 / 会话状态机）+ Rempro 15 个验配命令重映射，见 §17。
+1. **阶段二未开始**：剩余 11 个 Rempro 验配命令（SetGain / SetMPO / SetEqualizer /
+   GetFittingData / 听力计等）仍需落到 7100 参数写路径，见 §17。
+   已完成：切程序 / 音量 / 降噪 / DFBC（§7.4）。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
 3. `rempro_push_volume_change()` 无调用者（按键删除的副作用）。保留与否待定。
 4. **采样钟脚位待硬件确认**：`SAMPL_CLK` 已按 7160test 改为 DIO3，需确认 1664 板实际接法（§5）。
 5. **RM 调试 IO 已全部关闭**（`debug_dio_num[0..3]=0xff`）：DIO15 也不再翻转，RM 调试波形没了。
 6. OD 引脚 DIO0/1 让给 7100 I2C；恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
 7. 读回缓存首次写入后即命中，**除非 0xFE 失效否则不会重读**；芯片侧参数变了需主动 0xFE。
+8. **I2C 打印必须分块**（§7.4.4）：pack `printf.c` 的 200B 静态缓冲 + `vsprintf` 无边界检查，
+   单次输出超长会死机（曾因 300B 写块一次打印而踩坑）。新增打印时务必遵守。
+9. 写会话期间读回与心跳被暂停（`dsp_7100_cmd_busy()`），会话 ~3.2s；期间手机多发命令会被忽略。
 
 ## 13. 验证步骤
 
@@ -446,7 +537,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 4. 主循环应见 DIO9/10/13 电平变化打印：`[IO] D9=… D10=… D13=…`（照 rx_coex）。
 5. 与已配对发射机建链：串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
    **当前无音频输出**（`NO_TX_OUTPUT`），不应期待听到声音。
-6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo` 回 `flag=1`。
+6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo` 回 **100%**。
 7. 示波器：**DIO0/DIO1 应有 I2C 波形**（SCL/SDA）；DIO12 打印 TX；DIO11 握手脉冲；DIO13 ready。
 8. 发 `0xFE`：应见 `[7100] 0xFE: invalidate cache + reset to reload`，重启后重新走读回。
 
@@ -470,7 +561,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 - `SERVICE_ADD_FUNCTION_LIST` 只剩 `RemproService_ServiceAdd`；`SERVICE_ENABLE_FUNCTION_LIST` 为 NULL。
 - Rempro 的 ATT 读写路由复用 `ble_custom.c` 的 GATTC 处理器（按 `rempro_env.start_hdl` 区间分流）。
-- **1664 起电池相关已全部移除**（Battery 不注册、无 ADC 采样、GetBatteryInfo 回不支持）。
+- **1664 起电池相关已全部移除**（Battery 不注册、无 ADC 采样）；
+  Rempro `GetBatteryInfo` 固定回 100%（回不支持会让 App 连不上）。
 
 | 项 | UUID |
 |---|---|
@@ -535,8 +627,8 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
    | SetVolume | **已完成** — `dsp_7100_set_volume()`（§7.4） |
    | SetEqualizer (EQ) | EQ 模块（`docs/7100协议/EQ/`） |
    | SetGain / SetMPO / SetCompressRatio | WDRC bin_gain / lmt / kp（`docs/7100协议/WDRC/`） |
-   | SetDenoise | 降噪 0x00AE（`docs/7100协议/降噪/`） |
-   | SetFeedbackOnOff | DFBC 0x132（`docs/7100协议/DFBC/`） |
+   | SetDenoise | **已完成** — `dsp_7100_set_denoise()`（§7.4.2） |
+   | SetFeedbackOnOff | **已完成** — `dsp_7100_set_dfbc()`（§7.4.2） |
    | SetCurrentScene | **已完成** — `dsp_7100_switch_program()`（§7.4） |
    | GetCurrentScene | 选程序 `A7 02 …12 <P>` + 读回解析 |
    | SetPlayVoice / SetStopVoice / SetAudiometryStatus | 需确认 7100 侧对应命令 |

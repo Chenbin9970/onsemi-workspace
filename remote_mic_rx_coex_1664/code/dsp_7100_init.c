@@ -42,8 +42,10 @@ static bool is_a7_query(const dsp_init_step_t *s)
 }
 
 /* 拼成一行的十六进制 dump（超过 DSP_DUMP_MAX 截断），一次 PRINTF 输出。
- * 逐字节 PRINTF 会因 UART DMA 阻塞而拖慢 106 步引导。 */
-#define DSP_DUMP_MAX    64
+ * 逐字节 PRINTF 会因 UART DMA 阻塞而拖慢 106 步引导。
+ * ⚠ pack printf.c 的 vsprintf 写 200B 静态缓冲且无边界检查 ——
+ *   DSP_DUMP_MAX×3+4 必须远小于 200（32 → 100 字符）。 */
+#define DSP_DUMP_MAX    32
 static void dump_hex(const uint8_t *p, uint16_t len)
 {
     static const char hexd[] = "0123456789ABCDEF";
@@ -289,6 +291,12 @@ void dsp_7100_cache_try_load(void)
         s_rb_needed = 1;
         PRINTF("[7100-cache] miss: 走 I2C 读回，完成后落盘\r\n");
     }
+}
+
+/* 运行时改了参数后请求落盘（实际擦写留给主循环 process_deferred） */
+void dsp_7100_cache_save_request(void)
+{
+    s_save_pending = 1;
 }
 
 /* 主循环调：读回跑完一轮 → 落盘（flash 擦写阻塞且关中断，不能放定时器上下文） */

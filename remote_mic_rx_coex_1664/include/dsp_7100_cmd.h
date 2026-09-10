@@ -29,6 +29,25 @@ bool dsp_7100_set_volume(uint8_t level);
 uint8_t dsp_7100_get_program(void);
 uint8_t dsp_7100_get_volume_level(void);
 
+/* ---- 降噪 / DFBC 设置（异步，照 remote_mic_rx_coex 已验证的 tick 模型）----
+ * 命令表 + 200ms tick，一条命令一个 tick：发命令 → 读 3B 应答 → 写 04 82 → 下一条。
+ * 会话骨架（与 rx_coex 写会话一致，无 0x03 状态读）：
+ *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
+ * 由 APP_7100_HB_Handler 每 tick 调 dsp_7100_cmd_tick() 推进。
+ * 启动返回 true = 已受理，实际完成看日志 [7100] --- session done ok=? ---。 */
+
+/* 降噪档位：prog 1-4，level 0-4。返回 true = 会话已启动。 */
+bool dsp_7100_set_denoise(uint8_t prog, uint8_t level);
+
+/* DFBC 开关：prog 1-4，onoff 0/1。返回 true = 会话已启动。 */
+bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
+
+/* 会话是否进行中（进行中时应暂停读回/心跳，避免抢 I2C） */
+bool dsp_7100_cmd_busy(void);
+
+/* 200ms tick 调：推进一条命令 */
+void dsp_7100_cmd_tick(void);
+
 #ifdef __cplusplus
 }
 #endif

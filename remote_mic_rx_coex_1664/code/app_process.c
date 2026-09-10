@@ -26,6 +26,7 @@
 
 #include "app.h"
 #include "dsp_7100_init.h"
+#include "dsp_7100_cmd.h"
 #include "i2c_7100_hal.h"
 
 /* ----------------------------------------------------------------------------
@@ -34,8 +35,9 @@
  *                                         ke_task_id_t const dest_id,
  *                                         ke_task_id_t const src_id)
  * ----------------------------------------------------------------------------
- * Description   : 200ms 周期 tick。每 tick 推进 7100 读回会话；每 5s(25 tick)
- *                 向 7100 发心跳 {0x88, 0x01}。BLE 连接与否都跑。
+ * Description   : 200ms 周期 tick。优先推进降噪/DFBC 写会话（一条命令一 tick），
+ *                 否则推进读回会话；每 5s(25 tick) 向 7100 发心跳 {0x88, 0x01}。
+ *                 写会话期间不读回/不发心跳，避免抢 I2C。
  * ------------------------------------------------------------------------- */
 int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
                         ke_task_id_t const dest_id, ke_task_id_t const src_id)
@@ -51,6 +53,12 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
     ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
     s_7100_cnt++;
+
+    /* 降噪/DFBC 写会话进行中：只推进它，不读回不发心跳 */
+    if (dsp_7100_cmd_busy()) {
+        dsp_7100_cmd_tick();
+        return (KE_MSG_CONSUMED);
+    }
 
     /* 每 tick(200ms)：推进 4 程序×(降噪/DFBC/WDRC) 读回（一轮完成即停止） */
     dsp_7100_rb_seq_tick();

@@ -320,6 +320,16 @@ static void cmd_getdeviceonoff(void)
     hdlc_response(CMD_GETDEVICEONOFF, 0, resp, 2);
 }
 
+/* ID:4  GetBatteryInfo — 1664 无电池 AD 采样，固定回 100%（回 flag=1 会导致 App 连不上） */
+static void cmd_getbatteryinfo_7100(void)
+{
+    uint8_t resp_data[2];
+    resp_data[0] = 100;   /* Left_Battery */
+    resp_data[1] = 100;   /* Right_Battery (single device) */
+    PRINTF("[REMPRO] GetBatteryInfo: 100%%\r\n");
+    hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
+}
+
 /* ID:2  SetVolume — App vol 0-5 → 7100 档位 1-6（Volume_Number=5） */
 static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
 {
@@ -370,6 +380,58 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
            scene_id, scene_id + 1, ok);
 
     hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
+}
+
+/* ID:9  SetDenoise — App prog 0-3 → 7100 程序 1-4，level 0-4 */
+static void cmd_setdenoise_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t prog;
+    uint8_t level;
+    bool ok;
+
+    if (len < 3) { hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return; }
+
+    dev_type = data[0];
+    prog     = data[1];
+    level    = data[2];
+
+    if (prog >= 4) { hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return; }
+    if (level > 4) {                     /* 7100 只有 5 档（0-4），超出则钳位 */
+        PRINTF("[REMPRO] SetDenoise: level %u 超范围，钳到 4\r\n", level);
+        level = 4;
+    }
+
+    ok = dsp_7100_set_denoise((uint8_t)(prog + 1), level);
+    PRINTF("[REMPRO] SetDenoise7100: dev=%u prog=%u level=%u started=%u\r\n",
+           dev_type, prog, level, ok);
+
+    /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
+    hdlc_response(CMD_SETDENOISE, ok ? 0 : 1, NULL, 0);
+}
+
+/* ID:12  SetFeedbackOnOff — App prog 0-3 → 7100 程序 1-4，onoff 0/1（= DFBC） */
+static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t prog;
+    uint8_t onoff;
+    bool ok;
+
+    if (len < 3) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    dev_type = data[0];
+    prog     = data[1];
+    onoff    = data[2];
+
+    if (prog >= 4) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    ok = dsp_7100_set_dfbc((uint8_t)(prog + 1), onoff ? 1 : 0);
+    PRINTF("[REMPRO] SetFeedbackOnOff7100: dev=%u prog=%u onoff=%u started=%u\r\n",
+           dev_type, prog, onoff, ok);
+
+    /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
+    hdlc_response(CMD_SETFEEDBACKONOFF, ok ? 0 : 1, NULL, 0);
 }
 
 /* ID:26  GetDeviceConfig */
@@ -522,10 +584,17 @@ void rempro_cmd_process(void)
             if (data) cmd_setcurrentscene_7100(data, data_len);
             else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
             break;
+        case CMD_SETDENOISE:
+            if (data) cmd_setdenoise_7100(data, data_len);
+            else hdlc_response(CMD_SETDENOISE, 1, NULL, 0);
+            break;
+        case CMD_SETFEEDBACKONOFF:
+            if (data) cmd_setfeedbackonoff_7100(data, data_len);
+            else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
+            break;
 
         /* ---- 需 DSP 参数读写：阶段二实现，暂回 flag=1（不支持）---- */
         case CMD_SETDEVICEONOFF:
-        case CMD_SETFEEDBACKONOFF:
         case CMD_GETFEEDBACKONOFF:
         case CMD_GETCURRENTSCENE:
         case CMD_SETEQUALIZER:
@@ -533,7 +602,6 @@ void rempro_cmd_process(void)
         case CMD_SETGAIN:
         case CMD_SETMPO:
         case CMD_SETCOMPRESSRATIO:
-        case CMD_SETDENOISE:
         case CMD_SETPLAYVOICE:
         case CMD_SETSTOPVOICE:
         case CMD_SETAUDIOMETRYSTATUS:
@@ -549,8 +617,7 @@ void rempro_cmd_process(void)
             cmd_getdeviceonoff();
             break;
         case CMD_GETBATTERYINFO:
-            /* 1664 无电池 AD 采样，该命令不支持 */
-            hdlc_response(CMD_GETBATTERYINFO, 1, NULL, 0);
+            cmd_getbatteryinfo_7100();
             break;
         case CMD_FOTA_STATUS:
             cmd_fota_status(data, data_len);

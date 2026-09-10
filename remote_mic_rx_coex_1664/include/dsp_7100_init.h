@@ -99,6 +99,9 @@ void dsp_7100_cache_try_load(void);
 /* 主循环调：读回跑完一轮后把结果落盘（flash 擦写不在定时器上下文做）。 */
 void dsp_7100_process_deferred(void);
 
+/* 请求把当前 RAM 参数落盘（运行时改了参数后调，实际擦写由 process_deferred 做）。 */
+void dsp_7100_cache_save_request(void);
+
 /* 指定程序参数是否有效（prog 越界返回 false） */
 bool dsp_7100_prog_valid(uint8_t prog);
 
