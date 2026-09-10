@@ -222,6 +222,7 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 | code/dsp_7100_init_tables.c | 生成的引导步骤表（106 步，`scripts/gen_dsp_7100_init.py`） |
 | code/dsp_7100_rb_tables.c | 生成的读回命令表（28 条，`scripts/gen_dsp_7100_rb.py`） |
 | code/dsp_7100_storage.c / include/dsp_7100_storage.h | 读回结果 Main Flash 缓存 |
+| code/dsp_7100_cmd.c / include/dsp_7100_cmd.h | 运行时命令：切程序 / 调音量（Rempro 用） |
 | app.c | 上电握手（DIO13/DIO11）+ `dsp_7100_boot_init()` + `dsp_7100_cache_try_load()`；主循环 `dsp_7100_process_deferred()` |
 | code/app_process.c | `APP_7100_HB_Handler`：200ms tick 推读回 + 每 5s 心跳 `{0x88,0x01}` |
 | code/ble_std.c | GAPM_RESET 后挂 `APP_7100_HB_TIMER` |
@@ -309,6 +310,36 @@ App_Initialize()
 重启后缓存不命中 → 重新从 7100 读并落盘。
 
 > ⚠ 握手 `while(DIO_DATA->ALIAS[13] == 1)` **无超时**（照 rx_coex）。板上无 7100 时卡在开机。
+
+### 7.4 运行时命令（切程序 / 调音量）
+
+移植自 `peripheral_server_sleep7160test` 的 `dsp_7100_cmd.c`。帧序列（抓包 `program1-4.csv` / `volume.csv`）：
+
+```
+写帧  A2 00 <reg> <val>        reg: 0x16=程序, 0x12=音量
+读回  43 03 00 00 <reg> <val>  （从机确认）
+结束  82
+```
+
+| 命令 | 序列 | 参数 |
+|------|------|------|
+| `dsp_7100_set_volume(L)` | 写 →2ms→ 读6B →1ms→ `82` | L = 1..6，值 `{0x11,0x21,0x32,0x43,0x53,0x64}` |
+| `dsp_7100_switch_program(P)` | 写 →80ms→ 读6B →1ms→ `82` →1ms→ 读6B →1ms→ `82` | P = 1..4 |
+
+均为**阻塞调用**（含 ms 级延时），只在主循环上下文（Rempro 命令处理）调用。
+
+**Rempro 接线**（`ble_rempro_cmd.c`）：
+
+| 命令 ID | 处理 | 映射 |
+|---------|------|------|
+| `CMD_SETVOLUME` (2) | `cmd_setvolume_7100` | App vol 0-5 → 7100 档位 1-6（`+1`） |
+| `CMD_SETCURRENTSCENE` (16) | `cmd_setcurrentscene_7100` | App scene 0-3 → 7100 程序 1-4（`+1`） |
+
+`GetDeviceConfig` 相应改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
+
+> 其余 13 个 Rempro 命令（SetGain / SetMPO / SetEqualizer / SetDenoise / GetFittingData / 听力计等）
+> 仍回 `flag=1`（不支持），待阶段二实现 7100 参数写路径。
+> `CMD_GETCURRENTSCENE` 也未实现（7160test 的 7100 路径同样没有）。
 
 ## 7b. BS300 子系统（已删除）
 
@@ -501,12 +532,13 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
 
    | 命令 | 需落到 7100 |
    |------|------|
-   | SetVolume | WDRC bin_gain / 音量寄存器 |
+   | SetVolume | **已完成** — `dsp_7100_set_volume()`（§7.4） |
    | SetEqualizer (EQ) | EQ 模块（`docs/7100协议/EQ/`） |
    | SetGain / SetMPO / SetCompressRatio | WDRC bin_gain / lmt / kp（`docs/7100协议/WDRC/`） |
    | SetDenoise | 降噪 0x00AE（`docs/7100协议/降噪/`） |
    | SetFeedbackOnOff | DFBC 0x132（`docs/7100协议/DFBC/`） |
-   | SetCurrentScene / GetCurrentScene | 选程序 `A7 02 …12 <P>` + 读回解析 |
+   | SetCurrentScene | **已完成** — `dsp_7100_switch_program()`（§7.4） |
+   | GetCurrentScene | 选程序 `A7 02 …12 <P>` + 读回解析 |
    | SetPlayVoice / SetStopVoice / SetAudiometryStatus | 需确认 7100 侧对应命令 |
    | GetFittingData | 读回解析（缓存已就绪，见 §7.2） |
 

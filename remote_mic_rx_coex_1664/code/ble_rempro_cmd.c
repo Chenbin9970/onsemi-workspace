@@ -1,6 +1,7 @@
 #include "app.h"
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
+#include "dsp_7100_cmd.h"
 
 #include <printf.h>   /* Rempro 收发日志跟随 OUTPUT_INTERFACE */
 #ifndef PRINTF
@@ -319,6 +320,58 @@ static void cmd_getdeviceonoff(void)
     hdlc_response(CMD_GETDEVICEONOFF, 0, resp, 2);
 }
 
+/* ID:2  SetVolume — App vol 0-5 → 7100 档位 1-6（Volume_Number=5） */
+static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t volume;
+    uint8_t level;
+    uint8_t status = 1;
+    bool ok;
+
+    if (len < 3) { hdlc_response(CMD_SETVOLUME, 1, NULL, 0); return; }
+
+    dev_type = data[0];
+    volume   = data[1];
+
+    if (dev_type != 0 && dev_type != 1) {   /* 仅左右/左，右耳不支持 */
+        hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+        return;
+    }
+    if (volume > 5) volume = 5;
+
+    level = (uint8_t)(volume + 1);          /* App 0-5 → 档位 1-6 */
+
+    ok = dsp_7100_set_volume(level);
+    PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u\r\n",
+           volume, level, ok);
+
+    hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+}
+
+/* ID:16  SetCurrentScene — App scene 0-3 → 7100 程序 1-4 */
+static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t scene_id;
+    uint8_t status = 1;
+    bool ok;
+
+    if (len < 2) { hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0); return; }
+
+    scene_id = data[1];
+
+    if (scene_id >= 4) {
+        hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+        return;
+    }
+
+    ok = dsp_7100_switch_program((uint8_t)(scene_id + 1));
+    PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u\r\n",
+           scene_id, scene_id + 1, ok);
+
+    hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
+}
+
 /* ID:26  GetDeviceConfig */
 static void cmd_getdeviceconfig(void)
 {
@@ -328,23 +381,23 @@ static void cmd_getdeviceconfig(void)
     /* Device_OnOff / Feedback_OnOff: only for Echo402BT, removed */
 
     d[pos++] = 1; d[pos++] = 0; d[pos++] = 0; d[pos++] = 0; /* Version 1.0.0.0 */
-    d[pos++] = 3;  /* Program_Num */
+    d[pos++] = 4;  /* Program_Num（7100 程序 1-4） */
 
     /* Left side */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
     d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
-    d[pos++] = 1;                                        /* Chip_Type = 1（原 BS300 值，7100 是否沿用待确认） */
+    d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
     /* Right side (same as left) */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
     d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
-    d[pos++] = 1;                                        /* Chip_Type = 1（原 BS300 值，7100 是否沿用待确认） */
+    d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
-    d[pos++] = 9;  /* Volume_Number */
+    d[pos++] = 5;  /* Volume_Number（App 音量 0-5 = 6 档，对应 7100 档位 1-6） */
 
     PRINTF("[REMPRO] GetDeviceConfig\r\n");
     hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);
@@ -460,12 +513,20 @@ void rempro_cmd_process(void)
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
 
         switch (cmd_id) {
-        /* ---- 需 DSP 参数读写：阶段二接 7100 后实现，暂回 flag=1（不支持）---- */
+        /* ---- 已接 7100 运行时命令（切模式/调音量）---- */
         case CMD_SETVOLUME:
+            if (data) cmd_setvolume_7100(data, data_len);
+            else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
+            break;
+        case CMD_SETCURRENTSCENE:
+            if (data) cmd_setcurrentscene_7100(data, data_len);
+            else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+            break;
+
+        /* ---- 需 DSP 参数读写：阶段二实现，暂回 flag=1（不支持）---- */
         case CMD_SETDEVICEONOFF:
         case CMD_SETFEEDBACKONOFF:
         case CMD_GETFEEDBACKONOFF:
-        case CMD_SETCURRENTSCENE:
         case CMD_GETCURRENTSCENE:
         case CMD_SETEQUALIZER:
         case CMD_GETFITTINGDATA:
