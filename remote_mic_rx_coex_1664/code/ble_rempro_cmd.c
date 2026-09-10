@@ -438,43 +438,6 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
 }
 
-/* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
- * DIO3(IO) 电池采样（参考 peripheral_server_sleep），每次读前重配 ADC。 */
-uint32_t read_battery_raw(void)
-{
-    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
-                   DIO_LPF_DISABLE);
-    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
-    Sys_ADC_InputSelectConfig(0, (ADC_NEG_INPUT_GND |
-                                  ADC_POS_INPUT_DIO3));
-    return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
-}
-
-/* ID:4  GetBatteryInfo */
-static void cmd_getbatteryinfo(void)
-{
-    uint8_t resp_data[2];
-    uint32_t raw = read_battery_raw();
-    uint32_t pct;
-    if (raw <= BAT_ADC_MIN) {
-        pct = 1;
-    } else if (raw >= BAT_ADC_MAX) {
-        pct = BAT_LVL_MAX;
-    } else {
-        pct = (raw - BAT_ADC_MIN) * BAT_LVL_MAX
-              / (BAT_ADC_MAX - BAT_ADC_MIN);
-    }
-    /* 保护：低于阈值/取整到 0 时最低报 1%，不报 0 */
-    if (pct == 0) {
-        pct = 1;
-    }
-    resp_data[0] = (uint8_t)pct;  /* Left_Battery: measured */
-    resp_data[1] = 0;             /* Right_Battery: 0 (single device) */
-
-    PRINTF("[REMPRO] GetBatteryInfo: raw=%u pct=%u%%\r\n", raw, pct);
-    hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
-}
-
 /* ID:16  SetCurrentScene */
 static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
 {
@@ -1032,7 +995,8 @@ void rempro_cmd_process(void)
             else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
             break;
         case CMD_GETBATTERYINFO:
-            cmd_getbatteryinfo();
+            /* 1664 无电池 AD 采样，该命令不支持 */
+            hdlc_response(CMD_GETBATTERYINFO, 1, NULL, 0);
             break;
         case CMD_SETCURRENTSCENE:
             if (data) cmd_setcurrentscene(data, data_len);

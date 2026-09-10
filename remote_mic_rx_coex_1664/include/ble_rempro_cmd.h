@@ -48,10 +48,6 @@ void rempro_cmd_process(void);
  * notification completed. No ke_timer — low-power safe. */
 void rempro_tx_poll(void);
 
-/* Re-trigger a fresh ADC conversion on the battery channel and return the raw
- * count. Used by the low-battery check. */
-uint32_t read_battery_raw(void);
-
 /* Called from GATT callback — appends raw BLE chunk directly to
  * reassembly buffer.  Avoids the single-slot role_value race condition
  * when the App sends multi-chunk frames back-to-back. */

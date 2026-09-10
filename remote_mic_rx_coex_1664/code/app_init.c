@@ -103,14 +103,6 @@ void App_Initialize(void)
 
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
 
-    /* 电池 DIO3(IO) 采样（参考 peripheral_server_sleep） */
-    Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
-                   DIO_LPF_DISABLE);
-    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
-    Sys_ADC_InputSelectConfig(0,
-                              (ADC_NEG_INPUT_GND |
-                               ADC_POS_INPUT_DIO3));
-
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();
     Sys_Audiosink_InputClock(0,
@@ -300,6 +292,10 @@ void App_Initialize(void)
     /* Initialize environment */
     App_Env_Initialize();
     printf_init();
+    /* 打印口改到 DIO12（pack printf.c 内硬编码 TX=DIO5，此处覆写并释放 DIO5） */
+    Sys_UART_DIOConfig(DIO_6X_DRIVE | DIO_WEAK_PULL_UP | DIO_LPF_ENABLE,
+                       PRINT_TX_DIO, PRINT_RX_DIO);
+    Sys_DIO_Config(5, DIO_MODE_DISABLE);
 #if (SIMUL != 1)
     APP_RM_Init(ear_side);
 #endif    /* if (SIMUL != 1) */
@@ -311,12 +307,6 @@ void App_Initialize(void)
     Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
     Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
     Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
-
-#ifdef BS300_ENABLE
-    /* 按键 DIO12：active low，上拉输入（处理在主循环，见 app.c） */
-    Sys_DIO_Config(BTN_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
-                   DIO_LPF_DISABLE);
-#endif    /* ifdef BS300_ENABLE */
 
     /* Enable 6dBM or 0dBM mode*/
 #if (OUTPUT_POWER_6DBM)

@@ -323,9 +323,9 @@ extern "C"
 /* DIO number that is used for easy re-flashing (recovery mode) */
 #define RECOVERY_DIO                    13
 
-/* 按键（active low，参考 peripheral_server_sleep）：短按音量+1，长按切程序 */
-#define BTN_DIO                         12
-#define BTN_LONG_MS                     500
+/* 调试打印口（pack printf.c 内硬编码 TX=DIO5，app_init 在 printf_init 后覆写为 DIO12） */
+#define PRINT_TX_DIO                    12
+#define PRINT_RX_DIO                    6
 
 #define DEBUG_DIO_FIRST                 15
 #define DEBUG_DIO_SECOND                11
@@ -378,13 +378,6 @@ extern "C"
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
 
-/* 电池 DIO3(IO) 采样量程（参考 peripheral_server_sleep：raw 6950≈3.0V→0%，9374≈4.4V→100%） */
-#define BAT_ADC_DIO                     3
-#define BAT_ADC_CHANNEL                 0
-#define BAT_ADC_MIN                     6950
-#define BAT_ADC_MAX                     9374
-#define BAT_LVL_MAX                     100
-
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
                                         CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
@@ -417,11 +410,6 @@ typedef void (*appm_enable_svc_func_t)(uint8_t);
  * --------------------------------------------------------------------------*/
 struct app_env_tag
 {
-    /* Battery service */
-    uint8_t batt_lvl;
-    uint32_t sum_batt_lvl;
-    uint16_t num_batt_read;
-    uint8_t send_batt_ntf;
     uint8_t RM_on_off;
     uint8_t volume;
     struct rm_param_tag rm_param;

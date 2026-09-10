@@ -26,8 +26,6 @@
 
 #include "app.h"
 #include "bs300_ram_sync.h"
-#include "ble_rempro_cmd.h"
-#include <printf.h>
 
 /* BS300 内核同步定时消息处理（见 bs300_ram_sync.h） */
 int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
@@ -88,39 +86,6 @@ int APP_Timer(ke_msg_id_t const msg_id,
 {
     /* 重启 200ms 定时器（供内核周期性唤醒） */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
-
-    /* 电池 DIO3(IO) 周期采样：200ms 采一次，16 次平均更新 app_env.batt_lvl
-     * （暂无 BLE 上报，供后续/打印使用；rempro GetBatteryInfo 为按需读取） */
-    {
-        static uint32_t sum = 0;
-        static uint8_t cnt = 0;
-        uint32_t raw = read_battery_raw();
-        uint32_t pct;
-
-        if (raw <= BAT_ADC_MIN)
-        {
-            pct = 0;
-        }
-        else if (raw >= BAT_ADC_MAX)
-        {
-            pct = BAT_LVL_MAX;
-        }
-        else
-        {
-            pct = (raw - BAT_ADC_MIN) * BAT_LVL_MAX /
-                  (BAT_ADC_MAX - BAT_ADC_MIN);
-        }
-
-        sum += pct;
-        cnt++;
-        if (cnt == 16)
-        {
-            app_env.batt_lvl = (uint8_t)(sum >> 4);
-            PRINTF("__BATT %u%%\r\n", app_env.batt_lvl);
-            sum = 0;
-            cnt = 0;
-        }
-    }
 
     return (KE_MSG_CONSUMED);
 }
