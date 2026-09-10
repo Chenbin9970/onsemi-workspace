@@ -961,6 +961,27 @@ static void cmd_iicdatacommunity(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_IICDATACOMMUNITY, 0, resp, pos);
 }
 
+/* ID:87 SetFOTAStatus — 设置进入 FOTA 状态
+ * 请求: [0]=Device_Type (0左右/1左/2右)
+ * 响应: [0]=Flag(0成功/非0失败), [1]=status(0不支持/非0操作成功) */
+static void cmd_fota_status(const uint8_t *data, uint8_t len)
+{
+    uint8_t resp[2];
+#ifdef CFG_FOTA
+    uint8_t dev_type = (len >= 1) ? data[0] : 0;
+    resp[0] = 0;   /* Flag: 成功 */
+    resp[1] = 1;   /* status: 操作成功 */
+    PRINTF("[REMPRO] SetFOTAStatus: dev=%u enter FOTA\r\n", dev_type);
+    hdlc_response(CMD_FOTA_STATUS, 0, resp, 2);
+    Sys_Fota_StartDfu(1);   /* 进入 DFU（FOTA 子镜像接管） */
+#else    /* ifdef CFG_FOTA */
+    resp[0] = 1;   /* Flag: 失败 */
+    resp[1] = 0;   /* status: 不支持（非 FOTA 固件） */
+    PRINTF("[REMPRO] SetFOTAStatus: not supported (no CFG_FOTA)\r\n");
+    hdlc_response(CMD_FOTA_STATUS, 0, resp, 2);
+#endif    /* ifdef CFG_FOTA */
+}
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
@@ -1064,6 +1085,9 @@ void rempro_cmd_process(void)
             break;
         case CMD_GETFEEDBACKONOFF:
             cmd_getfeedbackonoff(data, data_len);
+            break;
+        case CMD_FOTA_STATUS:
+            cmd_fota_status(data, data_len);
             break;
         case CMD_IICDATACOMMUNITY:
             if (data) cmd_iicdatacommunity(data, data_len);

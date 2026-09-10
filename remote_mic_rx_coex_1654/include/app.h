@@ -80,7 +80,7 @@ extern "C"
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
-#define APP_RM_AUDIO_CHANNEL            RM_LEFT
+#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
 
 #define OUTPUT_POWER_6DBM               0
 

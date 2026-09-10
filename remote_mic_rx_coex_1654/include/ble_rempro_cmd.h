@@ -32,6 +32,7 @@ extern "C" {
 #define CMD_GETFEEDBACKONOFF    34
 #define CMD_SETAUDIOMETRYSTATUS  40
 #define CMD_IICDATACOMMUNITY    78
+#define CMD_FOTA_STATUS         87   /* ID:87 SetFOTAStatus：进入 FOTA 状态 */
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
 #define CMD_PUSH_VOLUME              4

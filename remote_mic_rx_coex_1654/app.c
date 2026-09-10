@@ -72,7 +72,9 @@ static void Button_Process(void)
     }
     btn_prev = btn_now;
 
-    if ((pending_action != BTN_NONE) && !bs300_sync_is_busy()
+    /* RM 连接(流)中按键无效 */
+    if ((pending_action != BTN_NONE) && !app_env.audio_streaming
+        && !bs300_sync_is_busy()
         && bs300_driver_is_cached()
         && (bs300_get_active_prog() != 3))
     {
@@ -125,8 +127,16 @@ int main()
 
         if (ble_env.state == APPM_CONNECTED)
         {
-            /* 处理 Rempro 接收到的完整 HDLC 帧 */
-            rempro_cmd_process();
+            /* RM 连接(流)期间不处理任何 BLE 指令，并清掉残留 RX 帧 */
+            if (app_env.audio_streaming)
+            {
+                rempro_reasm_reset();
+            }
+            else
+            {
+                /* 处理 Rempro 接收到的完整 HDLC 帧 */
+                rempro_cmd_process();
+            }
         }
 
         RM_StatusHandler();

@@ -21,6 +21,7 @@
 #include <printf.h>
 #ifdef BS300_ENABLE
 #include "bs300_ram_sync.h"
+#include "ble_rempro_cmd.h"
 #endif    /* ifdef BS300_ENABLE */
 
 uint32_t data_rd = 0;
@@ -293,6 +294,11 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                         bs300_switch_program(s_saved_prog_before_rm);
                     }
                     bs300_active();
+                    /* RM 断开并恢复程序后，若有 BLE 连接则主动上报程序号 */
+                    if (ble_env.state == APPM_CONNECTED)
+                    {
+                        rempro_push_scene_change(s_saved_prog_before_rm);
+                    }
                     s_saved_prog_before_rm = 0xFF;
                 }
             }
@@ -337,6 +343,11 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             bs300_switch_program(3);
             bs300_active();
             app_env.audio_streaming = 1;
+            /* RM 连接切到程序3 播放时，若有 BLE 连接则主动上报程序号 */
+            if (ble_env.state == APPM_CONNECTED)
+            {
+                rempro_push_scene_change(3);
+            }
 #endif    /* ifdef BS300_ENABLE */
 
             /* ASCC interrupts */

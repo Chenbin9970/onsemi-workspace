@@ -260,3 +260,24 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 - **按需读取**：Rempro `GetBatteryInfo` 命令走同一 `read_battery_raw()`。
 - **保护**：`cmd_getbatteryinfo` 算完百分比后 `if (pct==0) pct=1;` —— 低于阈值/取整到 0 时**最低报 1%**，不回 0。
 - 注：假定板子电池分压接 DIO3（同 sleep）；脚位/分压不同则改 `BAT_ADC_DIO` 与量程。
+
+## 18. RM 与 BLE/按键互斥 + 特殊 Rempro 命令
+
+**RM 连接(流)期间互斥**（app.c）
+- `app_env.audio_streaming`（RM LINK_ESTABLISHED=1 / DISCONNECTED=0）期间：
+  - **BLE 指令不处理**：主循环 `rempro_cmd_process()` 被跳过并 `rempro_reasm_reset()` 丢弃残留 RX 帧；
+  - **按键无效**：`Button_Process()` 动作条件加 `&& !app_env.audio_streaming`（音量/切程序不响应）。
+
+**RM 程序号主动上报**（rm_app.c）
+- RM 建立并切到**程序3**播放时，若 `ble_env.state==APPM_CONNECTED` → `rempro_push_scene_change(3)`；
+- RM 断开并恢复 `saved_prog_before_rm` 后，若 BLE 连接 → `rempro_push_scene_change(saved_prog)`。
+
+**0xFE：重启并重读 BS300**（ble_custom.c，参照 sleep CS 0xFE）
+- Rempro ROLE 写入首字节 `0xFE` → 清 4 程序缓存(`bs300_storage_invalidate`) + `bs300_settings_invalidate()`
+  + `bs300_reset_to_defaults()`，然后 `NVIC_SystemReset()`；重启后 `bs300_driver_init()` 从芯片重读参数。
+
+**SetFOTAStatus(ID:87)**（ble_rempro_cmd.h/c）
+- 请求：`SYS=0 / CMD=87 / Device_Type(0左右/1左/2右)`；响应：`Flag`(0成功/非0失败)+`status`(0不支持/非0成功)。
+- `CFG_FOTA` 开：回 `Flag=0/status=1` 后 `Sys_Fota_StartDfu(1)` 进入 FOTA；
+  `CFG_FOTA` 关（普通固件）：回 `Flag=1/status=0`（不支持）。
+- 旧入口：Rempro ROLE 写首字节 `0xFD`（CFG_FOTA 下）也能直接触发 FOTA。
