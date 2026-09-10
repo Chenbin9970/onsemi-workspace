@@ -41,6 +41,7 @@
 | BLE 精简为只保留 Rempro | app.h 服务表等 | 去掉 Battery/Custom 注册与运行时电池（见 §15） |
 | RM 断链程序恢复 | code/rm_app.c | `saved_prog_before_rm`，断开切回原程序并 active（见 §15） |
 | 按键推送手机 | app.c | 长按/短按触发 `rempro_push_*`（见 §15） |
+| **设置掉电保存补断链落盘** | code/ble_std.c | `GAPC_DisconnectInd` 调 `bs300_settings_persist()`（见 §15.1） |
 
 ## 4. 构建与总开关
 
@@ -155,7 +156,8 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 ## 11. 关键文件清单
 
 修改（相对 commit `14811e3`）：
-- include/app.h、code/app_init.c、code/app_func.c、code/app_process.c、code/rm_app.c、app.c
+- include/app.h、code/app_init.c、code/app_func.c、code/app_process.c、code/rm_app.c、app.c、
+  code/ble_std.c（设置掉电保存断链落盘，见 §15.1）、include/ble_std.h
 新增（copied from peripheral_server_sleep）：
 - code/bs300_hal/startup/program_read/storage/ram_sync/param_encode/param_tables/calib/driver.c
 - include/bs300_*.h（9 个）+ include/bs300_encode_tables.h
@@ -179,6 +181,10 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 3. 与已配对发射机建链：应听到 OD 输出音频；断链应静音；串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
 4. 手机/工具扫描应看到名为 **Smart1654** 的可连接广播；用主动扫描可读到 scan response 里的厂商段（含 MAC/耳侧）。
 5. 示波器查 DIO0/DIO1（OD 差分）与 DIO8/DIO7（BS300 I2C）波形。
+6. **设置掉电保存（见 §15.1）**：手机连上后改音量 / 切模式 / 拉 EQ / 改降噪 / 开关 DFBC →
+   串口应在**断链那一刻**出现 `[BS300] settings saved prog=N slot=M vol=[...]` →
+   断电重启应出现 `[BS300] settings loaded from flash` / `settings restored prog=N` /
+   `boot cache: prog=... vol=... denoise=...`，且听感与断电前一致。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）
 
@@ -215,6 +221,50 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 **RM ↔ BLE/调机兼容性（审计后已落地一项）**
 - 已加 `saved_prog_before_rm`（rm_app.c）：LINK_ESTABLISHED 记录 RM 前程序，LINK_DISCONNECTED 切回原程序并 `bs300_active()`，避免 RM 掉线后停在程序3 静音。
 - 待办（未做）：Rempro 拟合指令的 `audio_streaming/prog3` 护栏；手机侧 RM 启停通道 + RF 回 BLE（当前 RM 开机常开）。
+
+### 15.1 设置掉电保存（程序 / 音量 / EQ / 降噪 / DFBC）
+
+五项用户设置在断电后恢复，存储层由 sleep 原样移植，**本次只补了 Rempro 路径的落盘触发点**。
+
+**保存内容**（均按程序 0-3 各一份）：
+
+| 项 | 字段 | 来源 |
+|---|---|---|
+| 当前程序 | `active_prog` | 按键长按切程序 / Rempro SetCurrentScene |
+| 音量 | `volume[4]` | 按键短按 / Rempro SetVolume |
+| 均衡器 | `eq_low[4]` / `eq_mid[4]` / `eq_high[4]` | Rempro SetEqualizer |
+| 降噪档位 | `denoise[4]` | Rempro SetDenoise |
+| DFBC 开关 | `feedback_onoff[4]` | Rempro SetFeedbackOnOff |
+
+**存储**（[bs300_storage.c:285-407](remote_mic_rx_coex_1654/code/bs300_storage.c#L285-L407)）：
+Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×32**，写满才擦一次扇区。
+槽内 = `active_prog(1) + volume(4) + eq_low/mid/high(各4) + denoise(4) + feedback_onoff(4)` + magic `"BSST"`
++ CRC16-XMODEM + version。**读取时从后往前扫，取最新有效槽**（避免擦写抖动）。
+
+**恢复**（[bs300_driver.c:92-118](remote_mic_rx_coex_1654/code/bs300_driver.c#L92-L118)，`bs300_driver_init()` Step 4）：
+`bs300_settings_load()` → `bs300_restore_settings()` 灌入 RAM 影子状态 →
+`bs300_cache_boot_state()` 把值应用到 DSP 状态（音量 / EQ / 降噪 max_att 偏移 / DFBC 覆盖位）。
+
+**落盘时机 —— 两条路**（与 sleep 行为一致）：
+
+| 来源 | 时机 | 位置 |
+|---|---|---|
+| **按键**（短按音量+1 / 长按切程序） | 动作发起后**立即**同步落盘 | [app.c:96](remote_mic_rx_coex_1654/app.c#L96) |
+| **Rempro 手机命令** | 命令 handler 只改 RAM（注释 *"Flash persist deferred to BLE disconnect"*），**延后到 BLE 断链**时统一落盘 | [ble_std.c](remote_mic_rx_coex_1654/code/ble_std.c) `GAPC_DisconnectInd` |
+
+> Rempro 路径延后的理由：`Flash_EraseSector` 在 BLE 连接态不安全（sleep 同注释）。
+> 本次补的即是该触发点 —— 此前 handler 里注释声明了"延后到断链"，但 `GAPC_DisconnectInd`
+> 里并没有对应的 `bs300_settings_persist()`，导致手机改的设置只活在 RAM，**断电即丢**。
+
+**验证**：手机改五项 → 串口在**断链那一刻**出现 `[BS300] settings saved prog=N slot=M vol=[...]`；
+断电重启出现 `[BS300] settings loaded from flash` → `settings restored prog=N` → `boot cache: ...`。
+反复改参数不重启则 slot 递增（0→1→2…），满 32 次打 `settings sector erased (32 slots full)`。
+
+> ⚠ **两处已知取舍**（与 sleep 相同，本次未改）：
+> 1. **连接期间直接断电会丢** —— 手机没断链就拔电，这期间改的值只在 RAM 未落盘。
+> 2. **RM 推流中手机断链** —— 此时 `s_cur_prog == 3`，`bs300_settings_persist()` 会把程序号存成
+>    **0**（[bs300_ram_sync.c:426](remote_mic_rx_coex_1654/code/bs300_ram_sync.c#L426) 的 `(s_cur_prog==3)?0:` 逻辑），
+>    而非用户原本的听音程序（程序 3 是 RM 音频模式，本就不跨掉电保存）。
 
 ## 16. FOTA 空中升级（照 sleep，CFG_FOTA 开关 / fotaskill）
 

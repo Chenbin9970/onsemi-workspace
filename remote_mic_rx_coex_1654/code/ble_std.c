@@ -26,6 +26,7 @@
 
 #include "app.h"
 #include "ble_rempro_cmd.h"
+#include "bs300_ram_sync.h"
 #include <printf.h>
 
 #ifdef CFG_FOTA
@@ -608,6 +609,13 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
     ble_env.state = APPM_READY;
 
     BLE_SetServiceState(false, ble_env.conidx);
+
+#ifdef BS300_ENABLE
+    /* 落盘 BS300 设置（程序 + 音量 + EQ + 降噪 + DFBC）——
+     * Rempro 命令处理里只改 RAM，注释注明延后到断链，此处补上。
+     * Flash_EraseSector 在连接态不安全，故不能在各命令 handler 里直接写。 */
+    bs300_settings_persist();
+#endif    /* ifdef BS300_ENABLE */
 
     /* 清空 Rempro HDLC 重装缓冲，避免残留帧串到下一次连接 */
     rempro_reasm_reset();
