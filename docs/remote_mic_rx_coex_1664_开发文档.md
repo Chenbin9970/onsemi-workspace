@@ -302,20 +302,21 @@ ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_read
 |------|------|
 | `0x0015D000` / `0x0015D800` / `0x0015E000` / `0x0015E800` | Program 0..3，各 2KB sector |
 
-**只存解析后的参数，不存原始 block**（原始 855B → 参数 51B，省 ~94%）。
+**只存解析后的参数，不存原始 block**（原始 855B → 参数 54B，省 ~94%）。
 
 | 偏移 | 长度 | 内容 |
 |------|------|------|
 | `[0]` | 1 | `denoise_en` |
 | `[1]` | 1 | `denoise_lvl`（0..4） |
 | `[2]` | 1 | `dfbc_en` |
-| `[3..18]` | 16 | `wdrc_ll[16]` |
-| `[19..34]` | 16 | `wdrc_hl[16]` |
-| `[35..50]` | 16 | `wdrc_ol[16]` |
-| `[51..54]` | 4 | magic `"D71P"` |
-| `[55]` | 1 | version（**v3**） |
-| `[56]` | 1 | valid `0xA5` |
-| `[57..58]` | 2 | CRC16-XMODEM（覆盖 `[0..50]`） |
+| `[3..5]` | 3 | `eq_low` / `eq_mid` / `eq_high`（int8，±dB） |
+| `[6..21]` | 16 | `wdrc_ll[16]`（**基准**，不含 EQ） |
+| `[22..37]` | 16 | `wdrc_hl[16]`（**基准**） |
+| `[38..53]` | 16 | `wdrc_ol[16]` |
+| `[54..57]` | 4 | magic `"D71P"` |
+| `[58]` | 1 | version（**v4**） |
+| `[59]` | 1 | valid `0xA5` |
+| `[60..61]` | 2 | CRC16-XMODEM（覆盖 `[0..53]`） |
 
 槽固定 64B（16 word），整扇区擦除后重写。RAM 侧同样只保留解析结果
 （`dsp_7100_rb_bufs_t` = 4 × `dsp_7100_prog_t`），原始块读到即弃 —— RAM 也从 3.4KB 降到 204B。
@@ -391,14 +392,17 @@ App_Initialize()
 
 阻塞调用（含 ms 级延时），在 Rempro 命令处理（主循环上下文）执行。
 
-#### 7.4.2 降噪 / DFBC（异步，命令表 + 200ms tick）
+#### 7.4.2 降噪 / DFBC / 均衡器（异步，命令表 + 200ms tick）
+
+> **验证状态**：降噪 / DFBC **已上板验证通过**；
+> **均衡器（EQ）尚未上板测试** —— 通道映射、±10dB 钳位、Value 语义均为待验证假设，见下。
 
 ⚠ **必须照 `remote_mic_rx_coex` 已验证的 tick 模型**，不要自创：
 
 - **无任何 0x03 状态读**（rx_coex 实测通过的会话表里一条都没有；加了会导致写入不生效）
 - 应答**固定读 3B**（`46 00 00`）
 - 一条命令一个 tick：**发命令 → 下个 tick 读应答 + 写 `82` → 进下一条**
-- 8 条命令 × 2 tick ≈ **3.2s** 完成
+- 命令数：降噪/DFBC = 8（16 tick ≈ **3.2s**）；EQ = 14/18/50（低/中/高，最长 **20s**）
 
 会话骨架（与 rx_coex 写会话逐条一致）：
 
@@ -449,6 +453,67 @@ dsp_7100_rb_seq_tick();
 /* 每 5s 心跳 */
 ```
 
+**均衡器（EQ）→ WDRC LL/HL**
+
+App `SetEqualizer` 是 3 段（低 ≤500Hz / 中 500-2000Hz / 高 >2000Hz），
+实测要求落到 WDRC 通道的低/高电平增益上，**1dB/LSB**：
+
+| 段 | 通道 | 数量 | 写入参数 | 会话命令数 | 时长（静音） |
+|----|------|:---:|---------|:---:|:---:|
+| 低音 | **ch1, ch2** | 2 | LL + HL | 14 | 5.6s |
+| 中音 | **ch3, ch4, ch5** | 3 | LL + HL | 18 | 7.2s |
+| 高音 | **ch6 ~ ch16** | 11 | LL + HL | 50 | **20s** |
+
+命令数 = 通道数 × 2 参数(LL/HL) × 2 命令(准备+写) + 6（静音/选程序/confirm/解除/选回/commit）。
+一条命令跨 2 个 tick（400ms），故时长 = 命令数 × 0.4s。
+
+> ⚠ **通道号按 1-based 理解**（ch1 = 数组下标 0）。
+> ⚠ **高音段 20 秒静音**为已知取舍（用户确认保持）：会话全程 mute，
+> 且期间读回与心跳暂停（§7.4.2 末）。
+
+**参数号**（`docs/7100协议/WDRC/7100_WDRC设置.md` 已验证）：
+
+```
+LowLevelGain (ch N) = 0x15 + 0x11×(N−1)
+HighLevelGain(ch N) = LowLevelGain + 2
+```
+
+已核验：ch2→`0x26/0x28`、ch5→`0x59/0x5B`、ch10→`0xAE/0xB0`，与文档实测点全等。
+
+**写入方式**：值是**相对调整量**，基准取读回值（flash 缓存的 `wdrc_ll/hl`，不含 EQ）：
+
+```
+目标 LL = clamp(基准 LL + eq_dB, 0, 127)        /* LL 7bit 无符号 */
+目标 HL = clamp(基准 HL + eq_dB, -128, 127)     /* HL 8bit 有符号 */
+```
+
+EQ 偏移量单独存（`eq_low/mid/high`），**基准值不被改写** —— 否则反复设置 EQ 会累积。
+
+写命令格式（照 WDRC 设置文档）：
+
+```
+A7 05 00 00 00 05 07 <P> <addr_hi> <addr_lo>   ← 准备
+A7 04 00 00 00 08 00 00 <val>                   ← 写值
+```
+
+单次 EQ 会话 = 静音 + 选程序 + N 通道×(LL prep/write + HL prep/write) + confirm + 解除静音 + 选回 + commit，
+N = 2/3/11（低/中/高）→ **14 / 18 / 50 条**。
+
+> App `Value` 语义：0-100 = 正 dB；`>100` → `Value-256` 得负值（即 253 → -3dB）。
+> 本实现钳位 **±10 dB**（`A7_EQ_MAX_DB`，超出打印告警）。
+> 依赖读回基准：若参数未读回（`dsp_7100_get_prog()` 返回 NULL），EQ 会话会拒绝启动并打日志。
+
+**EQ 待验证项（尚未上板）**
+
+| 项 | 当前假设 | 验证方法 |
+|----|---------|---------|
+| 通道号基准 | **1-based**（ch1 = 数组下标 0） | 改小值后读回对应通道看是否变化 |
+| 参数号公式 | `0x15 + 0x11×(N−1)`（文档已验证 ch2/5/10） | 高音段 ch6..ch16 参数号未被文档覆盖，需实测 |
+| 写入范围 | LL 7bit 无符号 `[0,127]` / HL 8bit 有符号 `[-128,127]` | 边界值写入读回 |
+| dB 钳位 | ±10（`A7_EQ_MAX_DB`） | 发大值看是否钳位 |
+| Value 语义 | 0-100 正、>100 取负 | 手机端实际下发值 |
+| **基准/偏移累积** | 设 EQ 后**不复位**；若中途 `0xFE` 重读，读回值=基准+EQ，会污染基准 | 设 EQ → 0xFE → 再设 EQ，看是否累积 |
+
 **API 语义**：`dsp_7100_set_denoise/dfbc()` 返回 true = **已受理**（异步），不是已完成。
 完成后 `a7_session_finish()` 回写 RAM 参数并请求落盘，日志 `[7100] --- session done ok=? ---`。
 
@@ -460,11 +525,12 @@ dsp_7100_rb_seq_tick();
 | `CMD_SETCURRENTSCENE` (16) | `cmd_setcurrentscene_7100` | App scene 0-3 → 7100 程序 1-4（`+1`） |
 | `CMD_SETDENOISE` (9) | `cmd_setdenoise_7100` | prog 0-3 → 程序 1-4；level 0-4（>4 钳位并告警） |
 | `CMD_SETFEEDBACKONOFF` (12) | `cmd_setfeedbackonoff_7100` | prog 0-3 → 程序 1-4；onoff 即 DFBC |
+| `CMD_SETEQUALIZER` (10) | `cmd_setequalizer_7100` | type 0低/1中/2高 → ch1,2 / ch6,7 / ch12,13 的 LL+HL（±dB） |
 | `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | **固定回 100/100**（回 flag=1 会导致 App 连不上） |
 
 `GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
 
-> 其余 11 个 Rempro 命令（SetGain / SetMPO / SetEqualizer / GetFittingData / 听力计等）
+> 其余 10 个 Rempro 命令（SetGain / SetMPO / GetFittingData / 听力计等）
 > 仍回 `flag=1`，待阶段二实现 7100 参数写路径。
 > `CMD_GETCURRENTSCENE` / `CMD_GETFEEDBACKONOFF` 未实现。
 
@@ -576,19 +642,25 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 ## 12. 已知问题 / 待办
 
-1. **阶段二未开始**：剩余 11 个 Rempro 验配命令（SetGain / SetMPO / SetEqualizer /
-   GetFittingData / 听力计等）仍需落到 7100 参数写路径，见 §17。
-   已完成：切程序 / 音量 / 降噪 / DFBC（§7.4）。
+1. **阶段二未开始**：剩余 10 个 Rempro 验配命令（SetGain / SetMPO / GetFittingData /
+   听力计等）仍需落到 7100 参数写路径，见 §17。
+   已完成：切程序 / 音量 / 降噪 / DFBC（已上板验证）、EQ（**未上板**，见 §7.4.2）。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
 3. `rempro_push_volume_change()` 无调用者（按键删除的副作用）。保留与否待定。
 4. **PCM 脚位待硬件确认**：按 7160test 定为 BCLK=DIO2 / FS=DIO3 / SERO=DIO14，需确认 1664 板
    与 7100 的实际走线（§5）。若不同，改 `app.h` 的 `PCM_CLK_DO/PCM_FRAME_SYNC/PCM_SER_DO`。
 5. **RM 调试 IO 已全部关闭**（`debug_dio_num[0..3]=0xff`）：DIO15 也不再翻转，RM 调试波形没了。
-6. OD 引脚 DIO0/1 让给 7100 I2C 且已改走 PCM；恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
+6. OD 引脚 DIO0/1 让给 7100 I2C；音频出口已改 **PCM 从机**（`PCM_SLAVE_OUTPUT`）。
+   恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
 7. 读回缓存首次写入后即命中，**除非 0xFE 失效否则不会重读**；芯片侧参数变了需主动 0xFE。
 8. **I2C 打印必须分块**（§7.4.4）：pack `printf.c` 的 200B 静态缓冲 + `vsprintf` 无边界检查，
    单次输出超长会死机（曾因 300B 写块一次打印而踩坑）。新增打印时务必遵守。
-9. 写会话期间读回与心跳被暂停（`dsp_7100_cmd_busy()`），会话 ~3.2s；期间手机多发命令会被忽略。
+9. 写会话期间读回与心跳被暂停（`dsp_7100_cmd_busy()`），期间手机多发命令会被拒绝
+   （日志 `上一会话未完成，忽略本次设置`）。会话时长：降噪/DFBC ≈3.2s；
+   EQ 低/中/高 = 5.6s / 7.2s / **20s**（高音段 11 通道，全程静音，已确认保持）。
+10. **EQ 的基准值污染风险**：EQ 写入后 7100 内实际值 = 基准 + offset，
+    但 flash 缓存只存基准。若在此期间触发 `0xFE` 重读，读回值会被当成新基准 → 再次设 EQ 即累积。
+    目前约定「设 EQ 后不重读」，未在代码中防护（§7.4.2 待验证表）。
 
 ## 13. 验证步骤
 
@@ -695,7 +767,7 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
    | 命令 | 需落到 7100 |
    |------|------|
    | SetVolume | **已完成** — `dsp_7100_set_volume()`（§7.4） |
-   | SetEqualizer (EQ) | EQ 模块（`docs/7100协议/EQ/`） |
+   | SetEqualizer (EQ) | **已完成** — `dsp_7100_set_eq()`（§7.4.2，映射到 WDRC LL/HL） |
    | SetGain / SetMPO / SetCompressRatio | WDRC bin_gain / lmt / kp（`docs/7100协议/WDRC/`） |
    | SetDenoise | **已完成** — `dsp_7100_set_denoise()`（§7.4.2） |
    | SetFeedbackOnOff | **已完成** — `dsp_7100_set_dfbc()`（§7.4.2） |

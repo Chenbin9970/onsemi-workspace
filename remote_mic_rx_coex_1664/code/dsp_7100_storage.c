@@ -32,36 +32,42 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
     CACHE_PROG0_BASE, CACHE_PROG1_BASE, CACHE_PROG2_BASE, CACHE_PROG3_BASE
 };
 
-/* ---- 槽布局（只存解析后的参数，51B）----
+/* ---- 槽布局（只存解析后的参数，54B）----
  *   [0]      denoise_en
  *   [1]      denoise_lvl
  *   [2]      dfbc_en
- *   [3..18]  wdrc_ll[16]
- *   [19..34] wdrc_hl[16]
- *   [35..50] wdrc_ol[16]
- *   [51..54] magic "D71P"
- *   [55]     version
- *   [56]     valid 0xA5
- *   [57..58] CRC16-XMODEM（覆盖 [0..50]）
+ *   [3]      eq_low   (int8, ±dB)
+ *   [4]      eq_mid
+ *   [5]      eq_high
+ *   [6..21]  wdrc_ll[16]   基准
+ *   [22..37] wdrc_hl[16]   基准
+ *   [38..53] wdrc_ol[16]
+ *   [54..57] magic "D71P"
+ *   [58]     version
+ *   [59]     valid 0xA5
+ *   [60..61] CRC16-XMODEM（覆盖 [0..53]）
  */
 #define CACHE_DEN_EN_OFF   0
 #define CACHE_DEN_LVL_OFF  1
 #define CACHE_DFBC_EN_OFF  2
-#define CACHE_LL_OFF       3
-#define CACHE_HL_OFF       (CACHE_LL_OFF + DSP7100_WDRC_CH)     /* 19 */
-#define CACHE_OL_OFF       (CACHE_HL_OFF + DSP7100_WDRC_CH)     /* 35 */
-#define CACHE_PARAM_LEN    (CACHE_OL_OFF + DSP7100_WDRC_CH)     /* 51 */
+#define CACHE_EQ_LOW_OFF   3
+#define CACHE_EQ_MID_OFF   4
+#define CACHE_EQ_HIGH_OFF  5
+#define CACHE_LL_OFF       6
+#define CACHE_HL_OFF       (CACHE_LL_OFF + DSP7100_WDRC_CH)     /* 22 */
+#define CACHE_OL_OFF       (CACHE_HL_OFF + DSP7100_WDRC_CH)     /* 38 */
+#define CACHE_PARAM_LEN    (CACHE_OL_OFF + DSP7100_WDRC_CH)     /* 54 */
 
-#define CACHE_MAGIC_OFF    CACHE_PARAM_LEN                      /* 51 */
-#define CACHE_VER_OFF      (CACHE_MAGIC_OFF + 4)                /* 55 */
-#define CACHE_VALID_OFF    (CACHE_MAGIC_OFF + 5)                /* 56 */
-#define CACHE_CRC_OFF      (CACHE_MAGIC_OFF + 6)                /* 57 */
+#define CACHE_MAGIC_OFF    CACHE_PARAM_LEN                      /* 54 */
+#define CACHE_VER_OFF      (CACHE_MAGIC_OFF + 4)                /* 58 */
+#define CACHE_VALID_OFF    (CACHE_MAGIC_OFF + 5)                /* 59 */
+#define CACHE_CRC_OFF      (CACHE_MAGIC_OFF + 6)                /* 60 */
 
-#define CACHE_SLOT_BYTES   64                         /* 51+8=59 → 64，4 字节对齐 */
+#define CACHE_SLOT_BYTES   64                         /* 54+8=62 → 64，4 字节对齐 */
 #define CACHE_SLOT_WORDS   (CACHE_SLOT_BYTES / 4)     /* 16 */
 
 static const uint8_t CACHE_MAGIC[4] = { 'D', '7', '1', 'P' };
-#define CACHE_VERSION   3    /* v3: 只存解析后的参数（v2 存原始块，格式不兼容） */
+#define CACHE_VERSION   4    /* v4: 增加三段 EQ 偏移（v3/v2 格式不兼容，自动失效重读） */
 #define CACHE_VALID     0xA5
 
 /* ---- Main Flash unlock（HIGH region 0x00150000+，同 BS300）---- */
@@ -127,6 +133,9 @@ bool dsp_7100_cache_load(void)
         p->denoise_en  = slot[CACHE_DEN_EN_OFF];
         p->denoise_lvl = slot[CACHE_DEN_LVL_OFF];
         p->dfbc_en     = slot[CACHE_DFBC_EN_OFF];
+        p->eq_low      = (int8_t)slot[CACHE_EQ_LOW_OFF];
+        p->eq_mid      = (int8_t)slot[CACHE_EQ_MID_OFF];
+        p->eq_high     = (int8_t)slot[CACHE_EQ_HIGH_OFF];
         memcpy(p->wdrc_ll, slot + CACHE_LL_OFF, DSP7100_WDRC_CH);
         memcpy(p->wdrc_hl, slot + CACHE_HL_OFF, DSP7100_WDRC_CH);
         memcpy(p->wdrc_ol, slot + CACHE_OL_OFF, DSP7100_WDRC_CH);
@@ -160,6 +169,9 @@ bool dsp_7100_cache_save(void)
         sb[CACHE_DEN_EN_OFF]  = p->denoise_en;
         sb[CACHE_DEN_LVL_OFF] = p->denoise_lvl;
         sb[CACHE_DFBC_EN_OFF] = p->dfbc_en;
+        sb[CACHE_EQ_LOW_OFF]  = (uint8_t)p->eq_low;
+        sb[CACHE_EQ_MID_OFF]  = (uint8_t)p->eq_mid;
+        sb[CACHE_EQ_HIGH_OFF] = (uint8_t)p->eq_high;
         memcpy(sb + CACHE_LL_OFF, p->wdrc_ll, DSP7100_WDRC_CH);
         memcpy(sb + CACHE_HL_OFF, p->wdrc_hl, DSP7100_WDRC_CH);
         memcpy(sb + CACHE_OL_OFF, p->wdrc_ol, DSP7100_WDRC_CH);

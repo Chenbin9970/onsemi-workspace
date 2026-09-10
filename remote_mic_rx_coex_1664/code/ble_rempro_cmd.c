@@ -434,6 +434,36 @@ static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_SETFEEDBACKONOFF, ok ? 0 : 1, NULL, 0);
 }
 
+/* ID:10  SetEqualizer — App: {Device_Type, Equalizer_Type 0低/1中/2高, Value}
+ * Value 0-100 = 正 dB；Value > 100 → Value-256 得负值（均衡器减小）。
+ * 映射到当前程序的 WDRC LL/HL（按通道频率分段，1dB/LSB）。 */
+static void cmd_setequalizer_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t eq_type;
+    int16_t db;
+    uint8_t prog;
+    bool ok;
+
+    if (len < 3) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
+
+    dev_type = data[0];
+    eq_type  = data[1];
+    db       = (int16_t)(int8_t)data[2];   /* 253 → -3 */
+
+    if (eq_type > 2) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
+
+    /* 当前程序：0-based → 7100 程序 1-4 */
+    prog = (uint8_t)(dsp_7100_get_program() - 1);
+    if (prog > 3) prog = 0;
+
+    ok = dsp_7100_set_eq((uint8_t)(prog + 1), eq_type, (int8_t)db);
+    PRINTF("[REMPRO] SetEqualizer7100: dev=%u type=%u db=%d prog=%u started=%u\r\n",
+           dev_type, eq_type, (int)db, prog, ok);
+
+    hdlc_response(CMD_SETEQUALIZER, ok ? 0 : 1, NULL, 0);
+}
+
 /* ID:26  GetDeviceConfig */
 static void cmd_getdeviceconfig(void)
 {
@@ -592,12 +622,15 @@ void rempro_cmd_process(void)
             if (data) cmd_setfeedbackonoff_7100(data, data_len);
             else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
             break;
+        case CMD_SETEQUALIZER:
+            if (data) cmd_setequalizer_7100(data, data_len);
+            else hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0);
+            break;
 
         /* ---- 需 DSP 参数读写：阶段二实现，暂回 flag=1（不支持）---- */
         case CMD_SETDEVICEONOFF:
         case CMD_GETFEEDBACKONOFF:
         case CMD_GETCURRENTSCENE:
-        case CMD_SETEQUALIZER:
         case CMD_GETFITTINGDATA:
         case CMD_SETGAIN:
         case CMD_SETMPO:

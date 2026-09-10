@@ -34,13 +34,23 @@ uint8_t dsp_7100_get_volume_level(void);
  * 会话骨架（与 rx_coex 写会话一致，无 0x03 状态读）：
  *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
  * 由 APP_7100_HB_Handler 每 tick 调 dsp_7100_cmd_tick() 推进。
- * 启动返回 true = 已受理，实际完成看日志 [7100] --- session done ok=? ---。 */
+ * 启动返回 true = 已受理，实际完成看日志 [7100] --- session done ok=? ---。
+ * 命令数：降噪/DFBC = 8（16 tick ≈ 3.2s）；EQ = 14（28 tick ≈ 5.6s）。 */
 
 /* 降噪档位：prog 1-4，level 0-4。返回 true = 会话已启动。 */
 bool dsp_7100_set_denoise(uint8_t prog, uint8_t level);
 
 /* DFBC 开关：prog 1-4，onoff 0/1。返回 true = 会话已启动。 */
 bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
+
+/* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = ±dB 调整量（1dB/LSB）。
+ * 写入值 = 读回基准 + db，同时作用于该段通道的 LowLevelGain 与 HighLevelGain。
+ * 通道映射：低音 ch1,ch2 ｜ 中音 ch3,ch4,ch5 ｜ 高音 ch6..ch16。
+ * db 超出 ±10 会被钳位。返回 true = 会话已启动。
+ * ⚠ 会话时长（一条命令跨 2 个 tick = 400ms）：
+ *   低音 14 命令 / 5.6s ｜ 中音 18 命令 / 7.2s ｜ 高音 50 命令 / 20s。
+ *   全程静音（mute → 写 → 解除），高音段静音时间较长，属已知取舍。 */
+bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db);
 
 /* 会话是否进行中（进行中时应暂停读回/心跳，避免抢 I2C） */
 bool dsp_7100_cmd_busy(void);

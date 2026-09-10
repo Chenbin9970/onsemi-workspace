@@ -151,8 +151,10 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
  *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
  * ========================================================================== */
 
-#define A7_MAX_CMDS      8
-#define A7_CMD_BUF_SZ    400    /* 最大单命令 300B（降噪块） */
+/* EQ 高音段最长：静音+选程序+11 通道×2 参数×2 命令+确认+解除+选回+提交 = 50 条
+ * （命令缓冲 50×10B = 500B，取 640 留余量） */
+#define A7_MAX_CMDS      56
+#define A7_CMD_BUF_SZ    640
 #define A7_RX_ACK        3      /* 应答固定 3B（46 00 00） */
 
 #define A7_OPT_MUTE      0x25
@@ -162,6 +164,35 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 #define A7_OPT_CONFIRM   0x10
 #define A7_BLK_DENOISE   0x09
 #define A7_BLK_DFBC      0x0A
+#define A7_BLK_WDRC      0x07   /* WDRC 参数（LL/HL）写块 */
+
+/* 会话类型 */
+#define A7_KIND_DENOISE  0
+#define A7_KIND_DFBC     1
+#define A7_KIND_EQ       2
+
+/* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2
+ * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1） */
+#define A7_WDRC_LL_ADDR(n1)   (0x15u + 0x11u * ((n1) - 1u))
+#define A7_WDRC_HL_ADDR(n1)   (A7_WDRC_LL_ADDR(n1) + 2u)
+
+/* EQ 三段 → WDRC 通道（数组下标 = 通道号-1，即 1-based 通道号减一）
+ *   低音 ch1,ch2  |  中音 ch3,ch4,ch5  |  高音 ch6..ch16 */
+static const uint8_t s_eq_ch_low[]  = { 0, 1 };
+static const uint8_t s_eq_ch_mid[]  = { 2, 3, 4 };
+static const uint8_t s_eq_ch_high[] = { 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+static const uint8_t *s_eq_ch[3]   = { s_eq_ch_low, s_eq_ch_mid, s_eq_ch_high };
+static const uint8_t  s_eq_ch_n[3] = { 2, 3, 11 };
+
+/* EQ 调整量上限（±dB），超出钳位并告警 */
+#define A7_EQ_MAX_DB     10
+
+/* WDRC 值编码范围：LL 7bit 无符号；HL 8bit 有符号 */
+#define A7_WDRC_LL_MIN   0
+#define A7_WDRC_LL_MAX   127
+#define A7_WDRC_HL_MIN   (-128)
+#define A7_WDRC_HL_MAX   127
 
 /* 降噪 5 档的三元组（49 个重复；XX = 3×档位+3）
  * 来源 docs/7100协议/降噪/7100_降噪设置.md §3 */
@@ -190,16 +221,19 @@ static uint16_t  s_cmd_used;
 
 /* 会话元信息（成功后回写缓存用） */
 static uint8_t   s_sess_prog;       /* 1-4 */
-static uint8_t   s_sess_kind;       /* 0=降噪 1=DFBC */
-static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 */
+static uint8_t   s_sess_kind;       /* A7_KIND_* */
+static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 / EQ 段 */
+static int8_t    s_sess_db;         /* EQ 调整量 ±dB */
+
+static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
 
 /* 从命令缓冲切一段并挂到步骤表 */
 static uint8_t *a7_put(uint16_t len)
 {
     uint8_t *p;
 
-    if (s_step_cnt >= A7_MAX_CMDS) return NULL;
-    if ((uint32_t)s_cmd_used + len > A7_CMD_BUF_SZ) return NULL;
+    if (s_step_cnt >= A7_MAX_CMDS) { s_build_fail = true; return NULL; }
+    if ((uint32_t)s_cmd_used + len > A7_CMD_BUF_SZ) { s_build_fail = true; return NULL; }
 
     p = s_cmd_buf + s_cmd_used;
     s_cmd_used = (uint16_t)(s_cmd_used + len);
@@ -239,6 +273,19 @@ static void a7_add_prep(uint8_t blk, uint8_t prog, uint8_t a, uint8_t b)
     p[5] = 0x05; p[6] = blk;  p[7] = prog; p[8] = a;    p[9] = b;
 }
 
+/* WDRC 参数写：准备 + 写值（两条命令）
+ *   A7 05 00 00 00 05 07 <P> <addr_hi> <addr_lo>
+ *   A7 04 00 00 00 08 00 00 <val> */
+static void a7_add_wdrc_param(uint8_t prog, uint16_t addr, uint8_t val)
+{
+    uint8_t *p = a7_put(9);
+
+    a7_add_prep(A7_BLK_WDRC, prog, (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF));
+    if (p == NULL) return;
+    p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+    p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val;
+}
+
 /* 生成 300B 降噪写块（照 docs/7100协议/降噪/7100_降噪设置.md §3 结构）：
  *   [0..7]    头 A7 27 01 00 00 08 00 00
  *   [8..152]  49 × XX（间隔 2 字节 0）
@@ -261,7 +308,7 @@ static uint8_t *a7_add_noise_block(uint8_t level)
     return p;
 }
 
-/* 会话骨架：静音 → 选程序 → [写块准备+写块] → confirm → 解除静音 →
+/* 会话骨架：静音 → 选程序 → [写块] → confirm → 解除静音 →
  * 选回程序0 → commit。写块由 kind 决定。 */
 static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
 {
@@ -269,20 +316,44 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     s_step_idx = 0;
     s_step_read = false;
     s_cmd_used = 0;
+    s_build_fail = false;
 
     a7_add_simple(A7_OPT_MUTE);
     a7_add_prog(A7_OPT_SELECT, prog);
 
-    if (kind == 0) {                      /* 降噪：块 09 + A7 27(300B) */
+    if (kind == A7_KIND_DENOISE) {          /* 降噪：块 09 + A7 27(300B) */
         a7_add_prep(A7_BLK_DENOISE, prog, 0x00, 0x01);
-        if (a7_add_noise_block(val) == NULL) return false;
-    } else {                              /* DFBC：块 0A + A7 04(08 00 00 X) */
+        a7_add_noise_block(val);
+    } else if (kind == A7_KIND_DFBC) {      /* DFBC：块 0A + A7 04(08 00 00 X) */
         uint8_t *p;
         a7_add_prep(A7_BLK_DFBC, prog, 0x00, 0x00);
         p = a7_put(9);
-        if (p == NULL) return false;
-        p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
-        p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val ? 0x01 : 0x00;
+        if (p != NULL) {
+            p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+            p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val ? 0x01 : 0x00;
+        }
+    } else {                                /* EQ：该段全部通道的 LL+HL */
+        const dsp_7100_prog_t *bp = dsp_7100_get_prog((uint8_t)(prog - 1));
+        uint8_t n;
+        uint8_t i;
+
+        if (bp == NULL) return false;       /* 无基准值 → 先做读回 */
+        if (val > 2) return false;
+
+        n = s_eq_ch_n[val];
+        for (i = 0; i < n; i++) {
+            uint8_t  ch  = s_eq_ch[val][i];             /* 0-based */
+            int32_t  ll  = (int32_t)bp->wdrc_ll[ch] + s_sess_db;
+            int32_t  hl  = (int32_t)bp->wdrc_hl[ch] + s_sess_db;
+
+            if (ll < A7_WDRC_LL_MIN) ll = A7_WDRC_LL_MIN;
+            if (ll > A7_WDRC_LL_MAX) ll = A7_WDRC_LL_MAX;
+            if (hl < A7_WDRC_HL_MIN) hl = A7_WDRC_HL_MIN;
+            if (hl > A7_WDRC_HL_MAX) hl = A7_WDRC_HL_MAX;
+
+            a7_add_wdrc_param(prog, A7_WDRC_LL_ADDR(ch + 1), (uint8_t)ll);
+            a7_add_wdrc_param(prog, A7_WDRC_HL_ADDR(ch + 1), (uint8_t)(int8_t)hl);
+        }
     }
 
     a7_add_prog(A7_OPT_CONFIRM, prog);
@@ -290,7 +361,7 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     a7_add_prog(A7_OPT_SELECT, 1);        /* 指针复位回程序0（照抓包恒为 01） */
     a7_add_simple(A7_OPT_COMMIT);
 
-    return (s_step_cnt == A7_MAX_CMDS);   /* 步骤齐了才算构建成功 */
+    return !s_build_fail;                 /* 无溢出即构建成功 */
 }
 
 /* 会话收尾：成功后同步 RAM 参数并请求落盘（否则下次开机缓存显示旧值） */
@@ -301,16 +372,20 @@ static void a7_session_finish(bool ok)
 
     if (!ok) return;
 
-    if (s_sess_kind == 0) {
+    if (s_sess_kind == A7_KIND_DENOISE) {
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         p->denoise_en  = 1;    /* 设档位即为开启（读回各档使能位均为 1） */
         p->denoise_lvl = s_sess_val;
-        dsp_7100_cache_save_request();
-    } else {
+    } else if (s_sess_kind == A7_KIND_DFBC) {
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         p->dfbc_en = s_sess_val ? 1 : 0;
-        dsp_7100_cache_save_request();
+    } else {                   /* EQ：只存偏移量，基准值不动（避免多次设置累积） */
+        dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
+        if (s_sess_val == 0)      p->eq_low  = s_sess_db;
+        else if (s_sess_val == 1) p->eq_mid  = s_sess_db;
+        else                      p->eq_high = s_sess_db;
     }
+    dsp_7100_cache_save_request();
 }
 
 /* 200ms tick 调：推进一条命令。发命令 → 下一 tick 读应答+82 → 进下一条 */
@@ -349,6 +424,13 @@ bool dsp_7100_cmd_busy(void)
     return s_sess_active;
 }
 
+static const char *a7_kind_name(uint8_t kind)
+{
+    if (kind == A7_KIND_DENOISE) return "Denoise";
+    if (kind == A7_KIND_DFBC)    return "DFBC";
+    return "EQ";
+}
+
 /* 启动会话；返回 true = 已受理（异步，完成情况看日志） */
 static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
 {
@@ -357,7 +439,7 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
         return false;
     }
     if (!a7_build_session(kind, prog, val)) {
-        PRINTF("[7100] 会话构建失败（命令缓冲不足）\r\n");
+        PRINTF("[7100] 会话构建失败（无基准值或命令缓冲不足）\r\n");
         return false;
     }
 
@@ -365,19 +447,33 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
     s_sess_kind = kind;
     s_sess_val  = val;
     s_sess_active = true;
-    PRINTF("[7100] --- session start: %s prog=%u val=%u cmds=%u ---\r\n",
-           kind == 0 ? "Denoise" : "DFBC", prog, val, s_step_cnt);
+    PRINTF("[7100] --- session start: %s prog=%u val=%u db=%d cmds=%u ---\r\n",
+           a7_kind_name(kind), prog, val, s_sess_db, s_step_cnt);
     return true;
 }
 
 bool dsp_7100_set_denoise(uint8_t prog, uint8_t level)
 {
     if (prog < 1 || prog > 4 || level > 4) return false;
-    return a7_session_start(0, prog, level);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_DENOISE, prog, level);
 }
 
 bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff)
 {
     if (prog < 1 || prog > 4) return false;
-    return a7_session_start(1, prog, onoff ? 1 : 0);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_DFBC, prog, onoff ? 1 : 0);
+}
+
+/* 三段均衡器：band 0=低音 1=中音 2=高音，db 为 ±dB 调整量。
+ * 基准取读回值，写入 基准+db 到该段的 2 个通道（LL 与 HL 同时平移）。 */
+bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db)
+{
+    if (prog < 1 || prog > 4 || band > 2) return false;
+    if (db > A7_EQ_MAX_DB)  { db = A7_EQ_MAX_DB; }
+    if (db < -A7_EQ_MAX_DB) { db = -A7_EQ_MAX_DB; }
+
+    s_sess_db = db;
+    return a7_session_start(A7_KIND_EQ, prog, band);
 }
