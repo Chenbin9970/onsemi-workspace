@@ -26,6 +26,31 @@
 /* OD 直驱输出缓存（ASRC OUT DMA → BufferOut → OD DMA → OD_DATA） */
 int16_t BufferOut[2 * FRAME_LENGTH];
 
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+/* PCM 输出双缓冲：ch4 填一边、ch5 流另一边，完成中断换手 */
+uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Initialize_Raw_PCM_Output_Type(void)
+ * ----------------------------------------------------------------------------
+ * Description   : Configure the PCM interface as slave for raw audio output.
+ *                 7100 提供 BCLK/FS，RSL10 从机移位输出 SERO(DIO14)。
+ * ------------------------------------------------------------------------- */
+void Initialize_Raw_PCM_Output_Type(void)
+{
+    /* 从机模式：BCLK=DIO2 / FS=DIO3 由 7100 提供；RSL10 只在 SERO(DIO14) 移位输出。
+       PCM 此处保持禁用，等 LIN DMA 武装好后再使能。 */
+    Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
+                      PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
+    Sys_PCM_Config(PCM_CFG_TX);
+
+    /* LIN DMA: pcm_tx_buf -> PCM->TX_DATA，由完成中断换手重武装
+       （不用 CIRC，CIRC 会在回绕边界欠载）。 */
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_tx_buf[0][0], (uint32_t)&PCM->TX_DATA);
+}
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
+
 uint8_t buff_test[100] = {
     0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x11, 0x12, 0x13, 0x14,
     0x15, 0x16, 0x17, 0x18, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18
@@ -251,7 +276,39 @@ void App_Initialize(void)
                           2 * FRAME_LENGTH, 0,
                           (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-#endif    /* sink: SPI_TX_RAW_OUTPUT(SPI0) vs OD_OUTPUT(OD) */
+#elif (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+    /* PCM 从机输出（参照 7160test 已验证实现）。
+       AUDIO 块只配时钟域，OD_ENABLE 必须关 —— DIO0/DIO1 是 7100 I2C。 */
+    Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
+    Sys_Audio_Set_Config(AUDIO_CONFIG_PCM);
+    AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
+    AUDIO->SDM_CFG = 0x00002;
+    AUDIO->OD_GAIN = 0x800;
+
+    Initialize_Raw_PCM_Output_Type();
+
+    /* ch4: ASRC->OUT -> pcm_tx_buf（16-bit 采样写进 32-bit 字低 16 位） */
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+
+    /* 双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 流 pcm_tx_buf[pcm_ready]。
+       ch5 不在初始化时使能，由 ch4 完成中断在 pcm_waiting 时启动，避免首帧竞争。 */
+    pcm_fill = 0;
+    pcm_ready = 0xFF;
+    pcm_waiting = 1;
+
+    NVIC_SetPriority(DMA_IRQn(ASRC_OUT_IDX), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    NVIC_SetPriority(DMA_IRQn(PCM_DMA_NUM), 3);
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+    NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+    Sys_PCM_Enable();
+#endif    /* sink: SPI_TX_RAW_OUTPUT(SPI0) / OD_OUTPUT(OD) / PCM_SLAVE_OUTPUT(PCM) */
 
 #if (SIMUL == 1)
     Sys_Timer_Set_Control(TIMER_SIMUL, TIMER_FREE_RUN | (10000 - 1) |

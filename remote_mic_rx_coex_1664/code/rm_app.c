@@ -271,6 +271,13 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             /* 停 OD DMA → OD 下溢保护静音 */
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+            /* 停 PCM 流水：ch4 不再采 ASRC，ch5 不再流出（否则会一直吐旧缓冲） */
+            Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+            Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+            pcm_ready   = 0xFF;
+            pcm_waiting = 0;
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 #endif    /* if (OUTPUT_DECODE_PATH && SIMUL != 1) */
             /* RM 流结束：解除 BLE 指令互斥（程序/DSP 侧动作待阶段二接 7100） */
             app_env.audio_streaming = 0;
@@ -305,6 +312,30 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             DMA_CTRL1[OD_DMA_NUM].TRANSFER_LENGTH_SHORT = 2 * FRAME_LENGTH;
             Sys_DMA_ChannelEnable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+            /* 重武装 PCM 流水（对应 7160test 的 Audio_Resume）：
+               ch4 重新采 ASRC->OUT，ch5 由 ch4 完成中断启动。 */
+            Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+            Sys_PCM_Config(PCM_CFG_TX);
+
+            Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+            Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                                  (uint32_t)&ASRC->OUT,
+                                  (uint32_t)&pcm_tx_buf[0][0]);
+
+            pcm_fill    = 0;
+            pcm_ready   = 0xFF;
+            pcm_waiting = 1;
+
+            NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+            NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+            Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+            Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+            NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
+            NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
+            Sys_PCM_Enable();
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 
             /* RM 流开始：置流标志以屏蔽 BLE 指令（DSP 侧动作待阶段二接 7100） */
             app_env.audio_streaming = 1;

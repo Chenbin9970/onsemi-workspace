@@ -256,6 +256,14 @@ int64_t Ck_prev = FRAME_LENGTH << SHIFT_BIT;
 bool phase_cnt_missed = false;
 uint8_t *frame_in;
 
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+/* PCM 双缓冲状态：pcm_fill = ch4 正在填的 buf，pcm_ready = ch5 待流的 buf
+   （0xFF = 无），pcm_waiting = ch5 空闲等待新数据。 */
+volatile uint8_t pcm_fill = 0;
+volatile uint8_t pcm_ready = 0xFF;
+volatile uint8_t pcm_waiting = 0;
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void Packet_regulator_timer_isr(void)
  * ----------------------------------------------------------------------------
@@ -330,9 +338,30 @@ void Asrc_reconfig(void)
     Ck_prev = Ck;
 
     /* Configure ASRC base on new Ck */
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+    /* 16k→24k（INT_MODE 上采样）：输出速率 = 2×FS（每 FS 周期 2 采样）。
+       闭环跟踪 7100 实际时钟漂移：inc = (Cr - 2Ck)<<29 / 2Ck。
+       Ck=audio_sink_cnt 测 12k FS（≈120/包），2Ck≈240/包 = 24k 输出。
+       硬编码名义 2:3 会因 7100 时钟偏差导致周期欠载/溢出爆音，闭环适配之。 */
+    {
+        int64_t ck_out = Ck * 2;
+
+        if (ck_out > ((FRAME_LENGTH >> 1) << SHIFT_BIT) &&
+            ck_out < ((FRAME_LENGTH * 2) << SHIFT_BIT))
+        {
+            asrc_inc_carrier = (((Cr - ck_out) << 29) / ck_out) & 0xFFFFFFFF;
+        }
+        else
+        {
+            asrc_inc_carrier = 0xF5555556;   /* Ck 异常时回退名义 2:3 */
+        }
+        Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_INT_MODE);
+    }
+#else
     asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);
     asrc_inc_carrier &= 0xFFFFFFFF;
     Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE1);
+#endif
     asrc_cnt_prev     = ASRC->PHASE_CNT;
 }
 
@@ -520,6 +549,66 @@ void Asrc_in_dma_isr(void)
     /* Stop ASRC if complete frame has been handled */
     Sys_ASRC_StatusConfig(ASRC_DISABLE);
 }
+
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_asrc_out_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : ASRC 输出 DMA 完成。ch4 把 ASRC->OUT 采进 pcm_tx_buf[pcm_fill]；
+ *                 换手后重武装 ch4；若 ch5 空闲则以新的 ready buf 启动 ch5。
+ * ------------------------------------------------------------------------- */
+void Pcm_asrc_out_dma_isr(void)
+{
+    pcm_ready = pcm_fill;
+    pcm_fill  = 1 - pcm_fill;
+
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    if (pcm_waiting)
+    {
+        pcm_waiting = 0;
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_tx_dma_isr(void)
+ * ----------------------------------------------------------------------------
+ * Description   : PCM TX DMA 完成。ch5 流完当前 buf；若 ch4 已有新 buf 则续流，
+ *                 否则置 pcm_waiting 等 ch4 的完成中断来启动。
+ * ------------------------------------------------------------------------- */
+void Pcm_tx_dma_isr(void)
+{
+    if (pcm_ready != 0xFF)
+    {
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+        pcm_ready = 0xFF;
+    }
+    else
+    {
+        pcm_waiting = 1;
+    }
+}
+
+/* PCM DMA ISR 别名：向量表 DMA4(ch4) / DMA5(ch5) -> 上述处理函数 */
+void __attribute__ ((alias("Pcm_asrc_out_dma_isr")))
+DMA_IRQ_FUNC(ASRC_OUT_IDX)(void);
+
+void __attribute__ ((alias("Pcm_tx_dma_isr")))
+DMA_IRQ_FUNC(PCM_DMA_NUM)(void);
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 
 #if (SIMUL == 1)
 /* ----------------------------------------------------------------------------

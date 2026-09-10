@@ -3,13 +3,12 @@
 ## 1. 工程概述
 
 `remote_mic_rx_coex_1664` 由 `remote_mic_rx_coex_1654` 复制而来，是 RSL10 远端麦克风接收机
-（RM receiver，BLE + RM 共存）的 1664 机型分支。音频出口继承 1654 的 **OD 直驱**方案
-（RSL10 片上 LPDSP32 解码 + ASRC 重采样 → 内置 Output Driver，DIO0 = OD_P / DIO1 = OD_N 差分
-直接驱动受话器），但**当前已关闭**（`OUTPUT_INTRF = NO_TX_OUTPUT`），用以腾出 DIO0/DIO1
-给 7100 I2C，见 §3.4 与 §6。
+（RM receiver，BLE + RM 共存）的 1664 机型分支。音频出口继承 1654 的 OD 直驱方案，但因 7100 I2C
+占用 DIO0/DIO1，**已改为 PCM 从机输出**（`OUTPUT_INTRF = PCM_SLAVE_OUTPUT`）：7100 做时钟主机
+提供 BCLK/FS，RSL10 从机在 SERO 移位输出，见 §3.4 与 §6。
 
 与 1654 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**删除电池 AD 采样**、
-**打印口由 DIO5 改到 DIO12**、**音频输出改为无输出**。
+**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
 > 原 BS300 子系统**（BS300 文件已删）。含上电握手、106 步引导、4 程序读回、flash 缓存、5s 心跳。
@@ -28,6 +27,7 @@
 | `95896c1` | 移植 7100 通讯层取代 BS300 + 读回参数 flash 缓存 |
 | `b6365f2` | Rempro 切模式 / 调音量接 7100 运行时命令 |
 | （未提交） | 降噪 / DFBC 写入（tick 模型）+ GetBatteryInfo 回 100% + I2C 收发日志 |
+| （未提交） | **音频出口改 PCM 从机**（DIO2/3/4/14，24k），见 §3.4 / §6 |
 
 1664 与 1654 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1654 逐字节一致
 （仅行尾符差异）。
@@ -41,7 +41,7 @@
 | **删除按键** | app.c、code/app_init.c、include/app.h | 见 §5 |
 | **删除电池 AD 采样** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h | 见 §5 |
 | **打印口 DIO5 → DIO12** | code/app_init.c、include/app.h | 见 §5、§10 |
-| **音频输出 → 无输出** | include/app.h | `OUTPUT_INTRF = NO_TX_OUTPUT`，腾出 DIO0/DIO1 给 7100 I2C，见 §3.4 |
+| **音频输出 → PCM 从机** | include/app.h、code/app_init.c、code/app_func.c、code/rm_app.c | `OUTPUT_INTRF = PCM_SLAVE_OUTPUT`；DIO0/DIO1 留给 7100 I2C，见 §3.4、§6 |
 | **关闭 RM 调试 IO** | code/rm_app.c、code/app_init.c、include/app.h | `debug_dio_num=0xff`，DIO11 让给 7100 握手，见 §3.5 |
 | **移除 Flash overlay + loop cache** | code/app_init.c | 否则 7100 I2C 读回全 0，见 §3.6 |
 | **移植 7100 通讯层、删除 BS300** | 新增 8 文件 / 删 19 文件 / 改 9 文件 | 见 §7、§7b |
@@ -94,36 +94,37 @@ Sys_DIO_Config(5, DIO_MODE_DISABLE);              /* 释放 DIO5 */
 
 > ⚠ pack 的 `printf.c` 未改动，1654 / 7160test 等其它工程的打印口仍为 DIO5。
 
-### 3.4 音频输出改为无输出（腾出 DIO0/DIO1）
+### 3.4 音频输出改为 PCM 从机（DIO0/DIO1 留给 7100 I2C）
 
-1664 的 OD 直驱占用 **DIO0(OD_P) / DIO1(OD_N)**，与待移植的 7100 I2C（rx_coex 用 DIO0=SCL /
-DIO1=SDA）冲突。定案：**先关闭音频输出，I2C 用 DIO0/DIO1**。
+1664 的 OD 直驱占用 **DIO0(OD_P) / DIO1(OD_N)**，与 7100 I2C（DIO0=SCL / DIO1=SDA）冲突。
+定案：**音频出口改走 PCM 从机**（参照 `peripheral_server_sleep7160test` 已验证实现）——
+7100 做时钟主机提供 BCLK/FS，RSL10 只在 SERO 移位输出，因此**用不到 DIO0/DIO1**，I2C 独占之。
 
-改动只有一处宏（include/app.h）：
+改动（include/app.h）：
 
 ```c
-#define OUTPUT_INTRF    NO_TX_OUTPUT    /* 原 OD_OUTPUT */
+#define PCM_SLAVE_OUTPUT   6    /* 新增接口值 */
+#define OUTPUT_INTRF       PCM_SLAVE_OUTPUT   /* 原 NO_TX_OUTPUT / OD_OUTPUT */
 ```
 
-因 `OUTPUT_DECODE_PATH = (OUTPUT_INTRF==SPI_TX_RAW_OUTPUT || ==OD_OUTPUT)`，该宏一变即连带关闭：
+`OUTPUT_DECODE_PATH` 并入 `PCM_SLAVE_OUTPUT`，于是被打通：
 
-| 被关闭的内容 | 位置 |
+| 打通的内容 | 位置 |
 |---|---|
 | DSP 固件 Flash_Copy、DSS reset、codec message 设置 | code/app_init.c（`#if OUTPUT_DECODE_PATH`） |
-| ASRC 输入 DMA、DSP1 / AUDIOSINK IRQ 使能 | code/app_init.c |
-| OD sink 初始化：`Sys_Clocks_SystemClkPrescale1`、`Sys_Audio_Set_Config`、`AUDIO->OD_CFG/SDM_CFG/OD_GAIN`、**`Sys_DIO_Config(OD_P_DIO,…)`**、ch5(OD)/ch4(ASRC OUT) DMA | code/app_init.c（`#elif OUTPUT_INTRF == OD_OUTPUT`） |
+| ASRC 输入 DMA(ch3)、DSP1 / AUDIOSINK IRQ 使能 | code/app_init.c |
+| PCM sink 初始化：`Sys_Clocks_SystemClkPrescale1`、`Sys_Audio_Set_Config(AUDIO_CONFIG_PCM)`、`Sys_PCM_ConfigClk`、ch5(PCM)/ch4(ASRC OUT) DMA | code/app_init.c（`#elif OUTPUT_INTRF == PCM_SLAVE_OUTPUT`） |
 | 全部解码/ASRC 处理（`Rendering_func`、`DspDec_isr`、`Ascc_*_isr` 等） | code/app_func.c（整个 `#if OUTPUT_DECODE_PATH` 段） |
 | RM 收包后的渲染调用 | code/rm_app.c |
-| RM 断链时的 OD DMA 停止 | code/rm_app.c |
+| RM 建链/断链时的 PCM DMA 重武装 / 停止 | code/rm_app.c |
 
-**保留不变**：audiosink 计数器与 DIO7 采样钟输入（无条件配置）、RM 收发本身（仍建链/收包，
-只是不渲染为音频）、BLE / Rempro / BS300 全部照常。
+**保留不变**：audiosink 计数器与 DIO3 采样钟输入、RM 收发本身、BLE / Rempro / 7100 通讯全部照常。
 
-**验证**（已做，未上板）：`arm-none-eabi-gcc -fsyntax-only` 全量编译 0 错误、告警数与改动前一致；
-预处理核对 `App_Initialize` 编译后只剩打印口 DIO12、`Sys_DIO_Config(5,DIO_MODE_DISABLE)`、
-DEBUG DIO15/11、DIO_SYNC_PULSE 8 —— **DIO0/DIO1 已无任何配置**，可交 7100 I2C 使用。
+**验证**（编译级，已做）：工程自带 makefile 全量构建通过（0 错误，告警数与改动前一致）；
+预处理核对 `App_Initialize` 中 `Sys_PCM_ConfigClk(SLAVE,…)` 的参数为 2/3/4/14、
+ch4/ch5 长度为 `PCM_FRAME_WORDS(120)`、**DIO0/DIO1 上无任何配置**（I2C 独占）。
 
-**恢复方法**：把 `OUTPUT_INTRF` 改回 `OD_OUTPUT` 即可（OD 相关代码全在，仅被宏关掉）。
+**回退方法**：把 `OUTPUT_INTRF` 改回 `OD_OUTPUT` 即可（OD 相关代码全在，仅被宏关掉）。
 注意届时需重新解决 DIO0/DIO1 与 7100 I2C 的冲突（改 OD 脚位或改 I2C 脚位）。
 
 ### 3.5 关闭 RM 调试 IO
@@ -154,8 +155,9 @@ SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 - `.cproject` sourceEntries 按目录整收：**新增到 `code/` 的 .c、`include/` 的 .h 自动参与编译**，
   无需改工程文件。
 - 总开关（include/app.h）：
-  - `OUTPUT_INTRF = NO_TX_OUTPUT`（**当前：无音频输出**，见 §3.4）；可改 `OD_OUTPUT`（解码直出 OD）
-    / `SPI_TX_CODED_OUTPUT` / `SPI_TX_RAW_OUTPUT`。
+  - `OUTPUT_INTRF = PCM_SLAVE_OUTPUT`（**当前：PCM 从机输出**，见 §3.4、§6）；可改
+    `OD_OUTPUT`（解码直出 OD，须重解 DIO0/DIO1 冲突）/ `SPI_TX_CODED_OUTPUT` / `SPI_TX_RAW_OUTPUT`
+    / `NO_TX_OUTPUT`（无音频输出）。
   - （原 `BS300_ENABLE` 已随 BS300 删除；7100 子系统无总开关，始终编译）
   - `CFG_FOTA`：FOTA 开关，默认注释（关），见 §16。
   - `OUTPUT_INTERFACE`（在 pack 的 printf.h，未在本工程覆盖 → 默认 UART）：打印出口选择。
@@ -164,52 +166,108 @@ SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 
 | 功能 | 引脚 | 说明 |
 |------|------|------|
-| 7100 I2C SCL / SDA（addr 0x02） | **DIO0 / DIO1** | 原 OD_P / OD_N；音频输出关闭后腾出（§3.4）。见 [i2c_7100_hal.h:28-29](remote_mic_rx_coex_1664/include/i2c_7100_hal.h#L28-L29) |
+| 7100 I2C SCL / SDA（addr 0x02） | **DIO0 / DIO1** | 原 OD_P / OD_N；音频改走 PCM 后腾出（§3.4）。见 [i2c_7100_hal.h:28-29](remote_mic_rx_coex_1664/include/i2c_7100_hal.h#L28-L29) |
 | 7100 ready 输入（握手） | **DIO13** | 7100 上电拉低 → RSL10 等低 → DIO11 低脉冲 → 等高。见 [app.c](remote_mic_rx_coex_1664/app.c) |
 | 7100 握手输出 | **DIO11** | RSL10 → 7100 应答脉冲（原 `DEBUG_DIO_SECOND`，已让出） |
 | 7100 观察输入 | DIO9 / DIO10 | 仅置输入打印电平变化 |
 | 采样 / audiosink 时钟输入 | **DIO3** | `SAMPL_CLK = PCM_FRAME_SYNC`，`Sys_Audiosink_InputClock()` 无条件配置；**与 7160test 一致**（原 DIO7） |
+| PCM BCLK 输入 | **DIO2** | `PCM_CLK_DO`，7100 提供 384 kHz（§6） |
+| PCM FS 输入 | **DIO3** | `PCM_FRAME_SYNC`，7100 提供 12 kHz；与 audiosink 采样钟同脚 |
+| PCM SERI 输入 | **DIO4** | `PCM_SER_DI`，从机不回传，未用 |
+| PCM SERO 输出 | **DIO14** | `PCM_SER_DO`；JTAG 已在 `App_Initialize` 运行时关（`CM3_JTAG_DATA/TRST` DISABLED）释放该脚 |
 | 上电暂停 / 恢复(recovery) | **DIO7** | 接地暂停便于重刷；**与 7160test 一致**（原 DIO13 → 曾暂定 DIO2） |
 | 调试 UART TX / RX | **DIO12** / DIO6 | 115200；在 `printf_init()` 后覆写（原 DIO5） |
 | DIO_SYNC_PULSE | DIO8 | GPIO 默认输出（原 BS300 SCL，BS300 已删） |
 | 已释放 | DIO5 | 原打印 TX，`DIO_MODE_DISABLE` |
-| 空闲 / 预留 | DIO2 / DIO4 / DIO14 / DIO15 | `DEBUG_DIO_*` 宏已删（RM 调试 IO 关闭、DIO11 让给握手） |
+| 空闲 / 预留 | DIO15 | `DEBUG_DIO_*` 宏已删（RM 调试 IO 关闭、DIO11 让给握手） |
 
-> **与 7160test 对齐的两处**：`SAMPL_CLK` 用 DIO3、`RECOVERY_DIO` 用 DIO7。
-> ⚠ 这假定 1664 硬件的采样钟实际接在 DIO3 —— 若板上仍接 DIO7，需改回。
-> （当前 `NO_TX_OUTPUT` 下 audiosink 链路空转，暂不影响功能。）
+> PCM 四脚（2/3/4/14）与 7100 I2C（DIO0/DIO1）**不重叠**，也与打印口（12/6）、
+> 握手（11/13）、观察（9/10）无冲突。
+
+> **与 7160test 完全对齐**：`SAMPL_CLK` 用 DIO3、`RECOVERY_DIO` 用 DIO7，PCM 四脚同为 2/3/4/14。
+> ⚠ 这假定 1664 硬件的采样钟与 7100 的 BCLK/FS 实际接在 DIO3/DIO2 —— 若板上走线不同，需改宏。
 >
 > **恢复 OD 直驱会与 7100 I2C 冲突**（DIO0/DIO1），届时须改脚位。
 
-## 6. 音频通路（OD 直驱 —— **当前已关闭**）
+## 6. 音频通路（PCM 从机输出）
 
-> ⚠ 本工程当前 `OUTPUT_INTRF = NO_TX_OUTPUT`，**整条链路被宏关闭**（见 §3.4）：
-> DSP 解码、ASRC、OD 输出均不初始化，RM 仍收包但不渲染音频。
-> 下列内容为**关闭前的设计**，恢复 `OUTPUT_INTRF = OD_OUTPUT` 即生效。
+> 本工程当前 `OUTPUT_INTRF = PCM_SLAVE_OUTPUT`（见 §3.4）。实现参照 `peripheral_server_sleep7160test`
+> 已验证的 PCM 从机方案，文档见 `docs/pcm/7160test_pcm_output.md` + `docs/pcm/7160test_pcm_24k.md`。
 
-接收链路（RX）：
+### 6.1 主机接口规格
+
+| 参数 | 值 |
+|------|-----|
+| 时钟角色 | **7100 是 clock master**，RSL10 做 PCM slave |
+| BCLK | 384 kHz（DIO2 输入，7100 提供） |
+| FS | 12 kHz（DIO3 输入，50% 占空比） |
+| **有效采样率** | **24k** —— `WORD_SIZE_16 + MULTIWORD_2` → 每 FS 帧 2×16-bit = 32 BCLK（384k÷12k） |
+| 数据 | 16-bit；每 32-bit 字**低 16 位**为采样（高 16 补零），7100 读 word1 |
+| 输出脚 | SERO = DIO14 |
+
+### 6.2 接收链路（RX）
 
 ```
 RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
          → Rendering_func(outTempBuff)      [app_func.c]
-         → Start_Dec_Lpdsp32 → LPDSP32 解码 (DspDec_isr)
+         → Start_Dec_Lpdsp32 → LPDSP32 G722 解码(16k) (DspDec_isr)
          → ch3 DMA: Dsp2CmBuff0dec → ASRC->IN
-         → ASRC 重采样（锁定 DIO7 采样钟，Ascc_phase/period_isr）
-         → ch4 DMA: ASRC->OUT → BufferOut  (OD_RX_DMA_ASRC_OUT, circ)
-         → ch5 DMA: BufferOut → AUDIO->OD_DATA (RX_DMA_OD, OD_DMA_NUM=5)
-         → OD 输出 DIO0/DIO1
+         → ASRC 重采样（INT_MODE 16k→24k 闭环，锁定 DIO3 的 12k FS，Ascc_phase/period_isr）
+         → ch4 DMA: ASRC->OUT → pcm_tx_buf[pcm_fill]  (PCM_RX_DMA_ASRC_OUT, LIN)
+         → ch5 DMA: pcm_tx_buf[pcm_ready] → PCM->TX_DATA (RX_DMA_PCM_STEREO, PCM_DMA_NUM=5)
+         → SERO(DIO14) → 7100
 ```
 
-关键配置（照 peripheral_server_sleep `Audio_Init` 末尾）：
+### 6.3 双缓冲握手（ch4 / ch5 ISR）
 
-- `Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5)`
-- `Sys_Audio_Set_Config(AUDIO_CONFIG)`；`AUDIO->OD_CFG/SDM_CFG/OD_GAIN`
-- `Sys_DIO_Config(OD_P_DIO(=0), …DIO_MODE_OD_P)`
-- `BufferOut[2*FRAME_LENGTH]`（code/app_init.c 全局）
-- OD DMA 在 RM 建链/断链时由 `rm_app.c` 的 `RM_Callback_StatusUpdate` 启停（断链下溢保护静音）
+`pcm_fill` = ch4 正在填的 buf；`pcm_ready` = ch5 待流的 buf（`0xFF` = 无）；`pcm_waiting` = ch5 空闲。
 
-门控宏：`OUTPUT_DECODE_PATH = (OUTPUT_INTRF==SPI_TX_RAW_OUTPUT || ==OD_OUTPUT)`，
+```
+初始化    pcm_fill=0, pcm_ready=0xFF, pcm_waiting=1；武装 ch4（填 buf0）；使能 ch4 ISR；ch5 只配不使能
+ch4 完成  pcm_ready=pcm_fill; pcm_fill=1-pcm_fill; 重武装 ch4（填新 buf）
+          if (pcm_waiting) { pcm_waiting=0; 武装 ch5(pcm_ready); 使能 ch5; pcm_ready=0xFF; }
+ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_ready=0xFF; }
+          else pcm_waiting = 1;        /* 等 ch4 完成中断来启动 */
+```
+
+**ch5 不在初始化时使能**，必须由 ch4 完成中断在 `pcm_waiting` 时启动 —— 避免首帧竞争。
+
+### 6.4 逐文件改动
+
+| 文件 | 改动 |
+|------|------|
+| include/app.h | 新增 `PCM_SLAVE_OUTPUT(6)` 并设为 `OUTPUT_INTRF`；`OUTPUT_DECODE_PATH` 并入该值；PCM 四脚宏改为 2/3/4/14；`PCM_CFG_TX`；`PCM_DMA_NUM(5)`、`PCM_FRAME_WORDS(3*FRAME_LENGTH/4=120)`、`PCM_DOUBLE_BUFFER`；`PCM_RX_DMA_ASRC_OUT` / `RX_DMA_PCM_STEREO`；`AUDIO_CONFIG_PCM`（去掉 `OD_ENABLE`）；`pcm_tx_buf` 与 `pcm_fill/ready/waiting` 的 extern |
+| code/app_init.c | `pcm_tx_buf[2][PCM_FRAME_WORDS]` 定义；`Initialize_Raw_PCM_Output_Type()`（`Sys_PCM_ConfigClk` + `Sys_PCM_Config` + ch5 DMA 配置）；`App_Initialize` 加 `#elif (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)` 分支 |
+| code/app_func.c | `pcm_fill/ready/waiting` 定义；`Asrc_reconfig` 加 PCM 分支（`INT_MODE` + 闭环 `2Ck`）；`Pcm_asrc_out_dma_isr()` / `Pcm_tx_dma_isr()`；`DMA4/DMA5_IRQHandler` 别名 |
+| code/rm_app.c | `LINK_DISCONNECTED` 停 ch4/ch5；`LINK_ESTABLISHED` 重武装 ch4/ch5 + `Sys_PCM_Enable()`（对应 7160test 的 `Audio_Resume`） |
+
+> DIO14 的 JTAG 释放在 `App_Initialize` 开头已有（`CM3_JTAG_DATA/TRST` DISABLED），无需新增。
+
+### 6.5 关键宏
+
+| 宏 | 值/说明 |
+|----|---------|
+| `PCM_CFG_TX` | MSB_FIRST \| TX_ALIGN_LSB \| **WORD_SIZE_16** \| FRAME_ALIGN_FIRST \| FRAME_WIDTH_LONG \| **MULTIWORD_2** \| SUBFRAME_ENABLE \| CONTROLLER_DMA \| DISABLE \| SELECT_SLAVE |
+| `PCM_DMA_NUM` | 5（与 `OD_DMA_NUM` 同值，两模式互斥） |
+| `PCM_FRAME_WORDS` | `3 * FRAME_LENGTH / 4` = 120 字 = 120 采样 = 5ms/缓冲 |
+| `PCM_RX_DMA_ASRC_OUT` | `SRC_ASRC` / `P_TO_M` / `SRC16` / **`DEST16`** / `LIN` / 完成中断 |
+| `RX_DMA_PCM_STEREO` | `DEST_PCM` / `M_TO_P` / 32→32 / `LIN` / 完成中断 |
+| `AUDIO_CONFIG_PCM` | 同 `AUDIO_CONFIG` 但**无 `OD_ENABLE`** |
+
+### 6.6 易错点
+
+- **ASRC 必须 `INT_MODE` + 闭环 `2Ck`**（`inc = (Cr - 2Ck)<<29 / 2Ck`，Ck 异常回退 `0xF5555556`）：
+  硬编码名义 2:3 会因 7100 时钟偏差造成周期性欠载/溢出爆音。这是与 OD 分支（`DEC_MODE1`）最大的差异。
+- **`PCM_SER_DO` 绝不能用 DIO1** —— 那是 7100 I2C 的 SDA（原模板值恰为 1，已改 14）。
+- **DMA 用 LIN 不用 CIRC**：ch5 用 CIRC 会在回绕边界欠载。
+- **`AUDIO_CONFIG_PCM` 必须去掉 `OD_ENABLE`**，否则 OD 输出与 DIO0/DIO1 的 I2C 打架。
+
+门控宏：`OUTPUT_DECODE_PATH = (OUTPUT_INTRF==SPI_TX_RAW_OUTPUT || ==OD_OUTPUT || ==PCM_SLAVE_OUTPUT)`，
 用于 app.h / app_init.c / app_func.c / rm_app.c 中所有「解码 + ASRC 初始化」的 `#if`。
+
+> **OD 直驱仍保留在代码里**（`#elif (OUTPUT_INTRF == OD_OUTPUT)`）：数据流为
+> ASRC(**DEC_MODE1**, 锁定 DIO7 采样钟) → ch4 → BufferOut(CIRC) → ch5 → `AUDIO->OD_DATA` → DIO0/DIO1。
+> 切回需 `OUTPUT_INTRF = OD_OUTPUT`，并重解 DIO0/DIO1 与 I2C 的冲突。
 
 ## 7. 7100 通讯子系统 & 读回缓存
 
@@ -452,16 +510,21 @@ dsp_7100_rb_seq_tick();
 
 1. 关中断、禁 JTAG DATA/TRST（释放 DIO）、等待 DIO13 释放
 2. 48MHz 时钟 / RF / **（1664 已删电池 ADC）**
-3. audiosink 计数 + 采样钟输入（DIO7）（无条件）
+3. audiosink 计数 + 采样钟输入（DIO3）（无条件）
 4. `#if OUTPUT_DECODE_PATH`：DSP 固件 Flash_Copy、DSS reset、设 codec message；
-   `#if OD`：ASRC/OD/DMA 初始化（DIO0 OD_P、ch3/4/5）……
-   —— **当前 `NO_TX_OUTPUT` 下整段落空**（不执行）
+   `#elif OUTPUT_INTRF == PCM_SLAVE_OUTPUT`（**当前生效**）：ASRC 输入 ch3、
+   `Sys_PCM_ConfigClk(2/3/4/14)` + `Sys_PCM_Config(PCM_CFG_TX)`、ch4(ASRC OUT→pcm_tx_buf)、
+   ch5 配置但**不使能**（等 ch4 完成中断启动）、`Sys_PCM_Enable()`
 5. 10k 喂狗延时 → `BLE_Initialize()` → `App_Env_Initialize()` → `printf_init()`
    → **覆写打印口到 DIO12、释放 DIO5** → `APP_RM_Init(ear_side)`
 6. `RF_SwitchToCPMode(); RM_Enable(1000);`（对齐 sleep：开机即进 RM）
 7. DEBUG DIO（DIO15/DIO11）配置
 8. Flash overlay + loop cache、`DEBUG_UART_LOG`（默认关）
 9. 使能中断
+
+> PCM 在 `App_Initialize` 就配置并 `Sys_PCM_Enable()`，**早于 `main()` 里的 7100 握手**。
+> RSL10 是从机，7100 未提供 BCLK/FS 时不会移位；ch5 又只由 ch4 完成中断启动，
+> 所以建链前不会有音频输出，无需额外门控。
 
 `main()`（app.c）：
 
@@ -505,6 +568,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 **修改**
 - app.c、code/app_init.c、code/app_process.c、code/ble_custom.c、code/ble_std.c、
   code/rm_app.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h
+- **PCM 输出（§3.4/§6）**：include/app.h、code/app_init.c、code/app_func.c、code/rm_app.c
+  —— 无新增文件
 
 **删除**
 - `code/bs300_*.c`（9）、`include/bs300_*.h`（10）
@@ -516,9 +581,10 @@ App_Initialize() → 打印 started → bs300_driver_init()
    已完成：切程序 / 音量 / 降噪 / DFBC（§7.4）。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
 3. `rempro_push_volume_change()` 无调用者（按键删除的副作用）。保留与否待定。
-4. **采样钟脚位待硬件确认**：`SAMPL_CLK` 已按 7160test 改为 DIO3，需确认 1664 板实际接法（§5）。
+4. **PCM 脚位待硬件确认**：按 7160test 定为 BCLK=DIO2 / FS=DIO3 / SERO=DIO14，需确认 1664 板
+   与 7100 的实际走线（§5）。若不同，改 `app.h` 的 `PCM_CLK_DO/PCM_FRAME_SYNC/PCM_SER_DO`。
 5. **RM 调试 IO 已全部关闭**（`debug_dio_num[0..3]=0xff`）：DIO15 也不再翻转，RM 调试波形没了。
-6. OD 引脚 DIO0/1 让给 7100 I2C；恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
+6. OD 引脚 DIO0/1 让给 7100 I2C 且已改走 PCM；恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
 7. 读回缓存首次写入后即命中，**除非 0xFE 失效否则不会重读**；芯片侧参数变了需主动 0xFE。
 8. **I2C 打印必须分块**（§7.4.4）：pack `printf.c` 的 200B 静态缓冲 + `vsprintf` 无边界检查，
    单次输出超长会死机（曾因 300B 写块一次打印而踩坑）。新增打印时务必遵守。
@@ -527,7 +593,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 ## 13. 验证步骤
 
 1. 编译 `remote_mic_rx_coex_1664` Debug，确认链接通过。
-   （已用命令行 `arm-none-eabi-gcc -fsyntax-only` 全量核查：0 错误，仅 2 条既有告警。）
+   （已用工程自带 makefile 全量构建：0 错误；告警数与 PCM 改动前一致，均为既有告警。）
 2. 烧录后用 **UART DIO12(115200)** 观察开机序列：
    `started` → `[IO] wait DIO13 low …` → `[IO] DIO13 high, run 7100 init`
    → `[7100-init] n/106 TX/RX …`（每步含收发字节）→ `[7100-init] sync pre-A7 done`
@@ -536,9 +602,13 @@ App_Initialize() → 打印 started → bs300_driver_init()
    → `[7100-cache] saved to flash`。**再次开机**应见 `[7100-cache] hit`，且无 `[RB]` 读回。
 4. 主循环应见 DIO9/10/13 电平变化打印：`[IO] D9=… D10=… D13=…`（照 rx_coex）。
 5. 与已配对发射机建链：串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
-   **当前无音频输出**（`NO_TX_OUTPUT`），不应期待听到声音。
+   **建链后开始有 PCM 音频输出**；断链应静音，重连应恢复出声（验证 `rm_app.c` 的重武装）。
 6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo` 回 **100%**。
-7. 示波器：**DIO0/DIO1 应有 I2C 波形**（SCL/SDA）；DIO12 打印 TX；DIO11 握手脉冲；DIO13 ready。
+7. 示波器：
+   - **DIO0/DIO1 应有 I2C 波形**（SCL/SDA），不受 PCM 影响；
+   - **DIO2 = BCLK 输入 384 kHz、DIO3 = FS 输入 12 kHz**（7100 提供）；
+     **DIO14 每个 FS 周期移出 32 bit = 2 段 16-bit 连续采样**（无插零），有效 24k；
+   - DIO12 打印 TX；DIO11 握手脉冲；DIO13 ready。
 8. 发 `0xFE`：应见 `[7100] 0xFE: invalidate cache + reset to reload`，重启后重新走读回。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）

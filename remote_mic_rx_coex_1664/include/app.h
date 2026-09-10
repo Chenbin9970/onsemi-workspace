@@ -83,14 +83,16 @@ extern "C"
 #define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
 #define OD_OUTPUT                       5    /*片上 LPDSP32 解码 + ASRC → RSL10 OD 直驱（DIO0/1 差分，参照 peripheral_server_sleep） */
+#define PCM_SLAVE_OUTPUT                6    /* PCM 从机：7100 提供 BCLK/FS，RSL10 在 SERO 移位输出（参照 7160test） */
 
-/* 1664 当前音频输出关闭（NO_TX_OUTPUT）：为 7100 I2C 腾出 DIO0/DIO1（原 OD_P/OD_N）。
- * 恢复 OD 直驱改回 OD_OUTPUT；可选 SPI_TX_RAW_OUTPUT / SPI_TX_CODED_OUTPUT。 */
-#define OUTPUT_INTRF                    NO_TX_OUTPUT    /*OD_OUTPUT//SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
+/* 1664 当前音频出口 = PCM 从机（DIO2=BCLK / DIO3=FS / DIO14=SERO），DIO0/DIO1 仍留给 7100 I2C。
+ * 改回 OD_OUTPUT 可恢复 OD 直驱（届时须重解 DIO0/DIO1 冲突）；NO_TX_OUTPUT 为无输出。 */
+#define OUTPUT_INTRF                    PCM_SLAVE_OUTPUT    /*OD_OUTPUT//SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
 
-/* 解码+ASRC 全链路使能：RAW(SPI 直出) 与 OD(片上解码→OD) 共用同一套解码初始化 */
+/* 解码+ASRC 全链路使能：RAW(SPI 直出)、OD(片上解码→OD) 与 PCM(从机移位输出) 共用同一套解码初始化 */
 #define OUTPUT_DECODE_PATH              (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT || \
-                                         OUTPUT_INTRF == OD_OUTPUT)
+                                         OUTPUT_INTRF == OD_OUTPUT || \
+                                         OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
 
 /* OD 直驱受话器输出（参照 peripheral_server_sleep） */
 #define OD_P_DIO                        0
@@ -103,6 +105,14 @@ extern "C"
                                          OD_INT_GEN_DISABLE                 | \
                                          DECIMATE_BY_200                    | \
                                          OD_ENABLE)
+
+/* PCM 模式：OD 输出必须关（DIO0/DIO1 是 7100 I2C），只保留音频时钟域配置 */
+#define AUDIO_CONFIG_PCM                (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200)
+
 #define RX_DMA_OD                       (DMA_LITTLE_ENDIAN |        \
                                          DMA_ENABLE |               \
                                          DMA_DISABLE_INT_DISABLE |  \
@@ -133,6 +143,7 @@ extern "C"
 #define ASRC_OUT_IDX                    4
 #define RX_DMA_NUM                      5
 #define OD_DMA_NUM                      5    /* OD 输出 DMA（BufferOut→OD_DATA，参照 sleep） */
+#define PCM_DMA_NUM                     5    /* PCM 输出 DMA（pcm_tx_buf→PCM->TX_DATA）；与 OD_DMA_NUM 互斥 */
 #define TX_DMA_NUM                      6
 #define UART_TX_NUM                     7
 
@@ -154,6 +165,19 @@ extern "C"
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
                                          PCM_SUBFRAME_DISABLE |    \
+                                         PCM_CONTROLLER_DMA |      \
+                                         PCM_DISABLE |             \
+                                         PCM_SELECT_SLAVE)
+
+/* PCM 从机输出（7100 提供 BCLK/FS）：WORD_SIZE_16 + MULTIWORD_2 → 每 FS 帧 2×16-bit
+   = 32 BCLK，有效采样率 24k（参照 7160test 已验证配置）。 */
+#define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
+                                         PCM_TX_ALIGN_LSB |        \
+                                         PCM_WORD_SIZE_16 |        \
+                                         PCM_FRAME_ALIGN_FIRST |   \
+                                         PCM_FRAME_WIDTH_LONG |    \
+                                         PCM_MULTIWORD_2 |         \
+                                         PCM_SUBFRAME_ENABLE |     \
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
@@ -295,6 +319,39 @@ extern "C"
                                          DMA_ADDR_CIRC |            \
                                          DMA_DISABLE)
 
+/* DMA for ASRC output on RX side — PCM 版：ASRC->OUT → pcm_tx_buf。
+   ASRC->OUT 是 16-bit 单声道采样；DEST16 只写每个 32-bit 字的低 16 位（高 16 补零）。
+   一次性 LIN，完成中断里重武装。 */
+#define PCM_RX_DMA_ASRC_OUT             (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* pcm_tx_buf -> PCM->TX_DATA。每次武装流 PCM_FRAME_WORDS 个字，完成中断换手重武装。
+   用 LIN 不用 CIRC（CIRC 会在回绕边界欠载）。每 32-bit 字 = 两个 16-bit 采样。 */
+#define RX_DMA_PCM_STEREO               (DMA_DEST_PCM |             \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* PCM 输出双缓冲：24k 下每缓冲 120 字 = 120 采样 = 5ms，ch4 填 / ch5 流 */
+#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
+#define PCM_DOUBLE_BUFFER               1   /* 1=双缓冲, 0=单缓冲 */
+
 #define STABLE_THR                      400
 
 #define AUDIO_FRAME_SIZE                60
@@ -308,11 +365,12 @@ extern "C"
 #define SPI_CLK_DO                      3
 #define SPI_CS_DO                       0
 
-/* DIO pin configuration for PCM interface */
-#define PCM_SER_DI                      2
-#define PCM_SER_DO                      1
-#define PCM_CLK_DO                      3
-#define PCM_FRAME_SYNC                  3
+/* DIO pin configuration for PCM interface（PCM 从机输出用，参照 7160test）。
+   注意：SERO 不能用 DIO1 —— 那是 7100 I2C 的 SDA。 */
+#define PCM_CLK_DO                      2    /* BCLK 输入（7100 提供，384 kHz） */
+#define PCM_FRAME_SYNC                  3    /* FS 输入（7100 提供，12 kHz） */
+#define PCM_SER_DI                      4    /* 从机不回传，未用 */
+#define PCM_SER_DO                      14   /* SERO 输出；需运行时关 JTAG 释放 DIO14 */
 
 #define DIO_SYNC_PULSE                  8
 /* 采样/audiosink 时钟输入：与 7160test 一致，用 PCM_FRAME_SYNC(DIO3) */
@@ -464,6 +522,15 @@ extern uint32_t cntr_stability;
 extern bool asrc_stable;
 extern bool flag_ascc_phase;
 extern int64_t audio_sink_cnt;
+
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+/* PCM 双缓冲状态（定义在 app_func.c） */
+extern volatile uint8_t pcm_fill;
+extern volatile uint8_t pcm_ready;
+extern volatile uint8_t pcm_waiting;
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 
 #else    /* if (OUTPUT_DECODE_PATH) */
 extern int8_t spi_buf[];
