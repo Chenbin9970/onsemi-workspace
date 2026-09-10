@@ -70,11 +70,6 @@ extern "C"
  *  {2, 8, 14, 20, 26, 35, 38}
  *  {3, 9, 15, 21, 24, 33, 36}
  */
-/* BS300 DSP I2C 通讯子系统总开关（boot 初始化 + RM 流窗口联动） */
-#define BS300_ENABLE
-/* BS300 内核同步定时消息 id（bs300_ram_sync.h 内 #ifndef 自守卫保持一致） */
-#define BS300_SYNC_TIMER                0x10
-
 #define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
 #define RM_LEFT                         0
@@ -89,7 +84,9 @@ extern "C"
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
 #define OD_OUTPUT                       5    /*片上 LPDSP32 解码 + ASRC → RSL10 OD 直驱（DIO0/1 差分，参照 peripheral_server_sleep） */
 
-#define OUTPUT_INTRF                    OD_OUTPUT    /*SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT//OD_OUTPUT// */
+/* 1664 当前音频输出关闭（NO_TX_OUTPUT）：为 7100 I2C 腾出 DIO0/DIO1（原 OD_P/OD_N）。
+ * 恢复 OD 直驱改回 OD_OUTPUT；可选 SPI_TX_RAW_OUTPUT / SPI_TX_CODED_OUTPUT。 */
+#define OUTPUT_INTRF                    NO_TX_OUTPUT    /*OD_OUTPUT//SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
 
 /* 解码+ASRC 全链路使能：RAW(SPI 直出) 与 OD(片上解码→OD) 共用同一套解码初始化 */
 #define OUTPUT_DECODE_PATH              (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT || \
@@ -315,20 +312,20 @@ extern "C"
 #define PCM_SER_DI                      2
 #define PCM_SER_DO                      1
 #define PCM_CLK_DO                      3
-#define PCM_FRAME_SYNC                  0
+#define PCM_FRAME_SYNC                  3
 
 #define DIO_SYNC_PULSE                  8
-#define SAMPL_CLK                       7
+/* 采样/audiosink 时钟输入：与 7160test 一致，用 PCM_FRAME_SYNC(DIO3) */
+#define SAMPL_CLK                       PCM_FRAME_SYNC
 
-/* DIO number that is used for easy re-flashing (recovery mode) */
-#define RECOVERY_DIO                    13
+/* DIO number that is used for easy re-flashing (recovery mode)。
+ * 与 7160test 一致用 DIO7（采样钟挪到 DIO3 后腾出）；
+ * DIO13 让给 7100 ready 握手输入（见开发文档 §5）。 */
+#define RECOVERY_DIO                    7
 
 /* 调试打印口（pack printf.c 内硬编码 TX=DIO5，app_init 在 printf_init 后覆写为 DIO12） */
 #define PRINT_TX_DIO                    12
 #define PRINT_RX_DIO                    6
-
-#define DEBUG_DIO_FIRST                 15
-#define DEBUG_DIO_SECOND                11
 
 /* LPDSP32 CODEC related defines */
 #define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
@@ -392,7 +389,7 @@ typedef void (*appm_add_svc_func_t)(void);
 /* List of message handlers that are used by the different profiles/services */
 #define APP_MESSAGE_HANDLER_LIST \
     DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
-    DEFINE_MESSAGE_HANDLER(BS300_SYNC_TIMER, BS300_SyncTimer)
+    DEFINE_MESSAGE_HANDLER(APP_7100_HB_TIMER, APP_7100_HB_Handler)
 
 /* List of functions used to create the database（只保留 Rempro Service） */
 #define SERVICE_ADD_FUNCTION_LIST                        \
@@ -432,6 +429,9 @@ enum appm_msg
 
     /* Timer used to have a tick periodically for application */
     APP_TEST_TIMER,
+
+    /* 7100 通讯：200ms tick（推进读回会话 + 每 5s 发心跳） */
+    APP_7100_HB_TIMER,
 };
 
 /* ----------------------------------------------------------------------------
@@ -498,9 +498,9 @@ extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
                      ke_task_id_t const dest_id,
                      ke_task_id_t const src_id);
 
-extern int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
-                           ke_task_id_t const dest_id,
-                           ke_task_id_t const src_id);
+extern int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                               ke_task_id_t const dest_id,
+                               ke_task_id_t const src_id);
 
 extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const dest_id,

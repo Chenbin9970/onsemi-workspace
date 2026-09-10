@@ -1,9 +1,6 @@
 #include "app.h"
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
-#include "bs300_ram_sync.h"
-#include "bs300_startup.h"
-#include "bs300_storage.h"
 
 #include <printf.h>   /* Rempro 收发日志跟随 OUTPUT_INTERFACE */
 #ifndef PRINTF
@@ -312,104 +309,6 @@ void rempro_push_audiometry_exit(void)
  * Command Handlers
  * ================================================================ */
 
-/* ID:2  SetVolume */
-static void cmd_setvolume(const uint8_t *data, uint8_t len)
-{
-    if (len < 3) { hdlc_response(CMD_SETVOLUME, 1, NULL, 0); return; }
-
-    uint8_t dev_type  = data[0];
-    uint8_t volume    = data[1];
-    uint8_t volume2   = data[2];
-
-    if (volume > 9) volume = 9;
-    if (volume2 > 9) volume2 = 9;
-
-    /* Left side volume — no tone, same path as EQ (re-encode bin_gain → 0x8060B2) */
-    if (dev_type == 0 || dev_type == 1) {
-        bs300_set_volume_notone_async(volume, NULL);
-        /* Flash persist deferred to BLE disconnect — see GAPC_DisconnectInd */
-    }
-    /* Right side not supported on this device — ignore */
-
-    PRINTF("[REMPRO] SetVolume: dev=%u vol=%u vol2=%u\r\n", dev_type, volume, volume2);
-
-    uint8_t status = 1;
-    hdlc_response(CMD_SETVOLUME, 0, &status, 1);
-}
-
-/* ID:3  SetDeviceOnOff */
-static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
-{
-    if (len < 2) { hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0); return; }
-    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t onoff    = data[1];
-
-    if (onoff) {
-        bs300_active();
-        s_device_on = 1;
-    } else {
-        bs300_mute();
-        s_device_on = 0;
-    }
-
-    PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u\r\n", dev_type, onoff);
-    uint8_t status = 1;
-    hdlc_response(CMD_SETDEVICEONOFF, 0, &status, 1);
-}
-
-/* ID:5  SetFeedbackOnOff — RAM-only, overrides flash dfbc_enable_mode bit7 */
-static void cmd_setfeedbackonoff(const uint8_t *data, uint8_t len)
-{
-    if (len < 3) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
-    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t prog     = data[1];
-    uint8_t onoff    = data[2];
-
-    if (prog >= 4) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
-
-    bs300_set_feedback_onoff(prog, onoff);
-
-    /* Reload struct from flash to get the target program's DFBC mode,
-     * then apply feedback override.  Don't change s_dsp_state unless the
-     * target program is currently active. */
-    bs300_prog_struct_t target;
-    const bs300_calib_t *calib = bs300_get_cached_calib();
-    bs300_storage_load_program(prog, bs300_work_buf);
-    bs300_flash_to_struct(bs300_work_buf, &target);
-
-    if (onoff) {
-        uint8_t mode = target.modules.dfbc_enable_mode & 0x0F;
-        if (mode == 0) mode = 0x07;
-        target.modules.dfbc_enable_mode = 0x80 | mode;
-    } else {
-        target.modules.dfbc_enable_mode = 0x00;
-    }
-
-    /* Send DFBC I2C only if target is the active program */
-    if (prog == bs300_get_active_prog()) {
-        bs300_prog_struct_t *dsp = bs300_get_dsp_state();
-        dsp->modules.dfbc_enable_mode = target.modules.dfbc_enable_mode;
-
-        uint8_t dfbc_data[48];
-        if (onoff) {
-            bs300_encode_dfbc(&dsp->modules, calib, dfbc_data);
-        } else {
-            memset(dfbc_data, 0, 48);
-        }
-        bs300_advanced_write(BS300_CMD_DFBC, dfbc_data);
-    }
-
-    PRINTF("[REMPRO] SetFeedbackOnOff: dev=%u prog=%u onoff=%u fb[%u]=%u active=%u\r\n",
-           dev_type, prog, onoff, prog, bs300_get_feedback_onoff(prog),
-           bs300_get_active_prog());
-    uint8_t status = 1;
-    hdlc_response(CMD_SETFEEDBACKONOFF, 0, &status, 1);
-}
-
 /* ID:33  GetDeviceOnOff */
 static void cmd_getdeviceonoff(void)
 {
@@ -418,68 +317,6 @@ static void cmd_getdeviceonoff(void)
     resp[1] = s_device_on;   /* Right_OnOff (same as left) */
     PRINTF("[REMPRO] GetDeviceOnOff: L=%u R=%u\r\n", resp[0], resp[1]);
     hdlc_response(CMD_GETDEVICEONOFF, 0, resp, 2);
-}
-
-/* ID:34  GetFeedbackOnOff */
-static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
-{
-    uint8_t prog = 0;
-    if (data != NULL && len >= 2) {
-        prog = data[1];   /* Scene_ID */
-        if (prog >= 4) prog = 0;
-    }
-
-    uint8_t onoff = bs300_get_feedback_onoff(prog);
-    uint8_t resp[2];
-    resp[0] = onoff;   /* Left_OnOff */
-    resp[1] = onoff;   /* Right_OnOff (same as left) */
-
-    PRINTF("[REMPRO] GetFeedbackOnOff: prog=%u onoff=%u\r\n", prog, onoff);
-    hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
-}
-
-/* ID:16  SetCurrentScene */
-static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
-{
-    if (len < 2) { hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t scene_id = data[1];
-
-    PRINTF("[REMPRO] SetCurrentScene: dev=%u active=%u -> %u\r\n",
-           dev_type, bs300_get_active_prog(), scene_id);
-
-    if (scene_id < 4) {
-        bs300_switch_program_async(scene_id, NULL);
-    }
-
-    uint8_t status = 1;
-    hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
-}
-
-/* ID:15  GetCurrentScene */
-static void cmd_getcurrentscene(void)
-{
-    uint8_t resp_data[12];
-    uint8_t prog = bs300_get_active_prog();
-
-    resp_data[0]  = prog;                                  /* Left_Scene_ID */
-    resp_data[1]  = prog;                                  /* Right_Scene_ID (same for single device) */
-    resp_data[2]  = bs300_get_module_volume(prog);         /* Volume_Left */
-    resp_data[3]  = bs300_get_module_volume(prog);         /* Volume_Right (same) */
-    resp_data[4]  = bs300_get_prog_denoise(prog);          /* Denoise 0-4 */
-    resp_data[5]  = (uint8_t)bs300_get_prog_eq_low(prog);  /* Left_EQ_Low [-5,5] */
-    resp_data[6]  = (uint8_t)bs300_get_prog_eq_mid(prog);  /* Left_EQ_Mid [-5,5] */
-    resp_data[7]  = (uint8_t)bs300_get_prog_eq_high(prog); /* Left_EQ_High [-5,5] */
-    resp_data[8]  = (uint8_t)bs300_get_prog_eq_low(prog);  /* Right_EQ_Low (same) */
-    resp_data[9]  = (uint8_t)bs300_get_prog_eq_mid(prog);  /* Right_EQ_Mid (same) */
-    resp_data[10] = (uint8_t)bs300_get_prog_eq_high(prog); /* Right_EQ_High (same) */
-    resp_data[11] = 0;                                     /* reserved/padding */
-
-    PRINTF("[REMPRO] GetCurrentScene: prog=%u vol=%u denoise=%u eq=%d/%d/%d\r\n",
-           prog, bs300_get_module_volume(prog), bs300_get_prog_denoise(prog),
-           bs300_get_prog_eq_low(prog), bs300_get_prog_eq_mid(prog), bs300_get_prog_eq_high(prog));
-    hdlc_response(CMD_GETCURRENTSCENE, 0, resp_data, 12);
 }
 
 /* ID:26  GetDeviceConfig */
@@ -496,14 +333,14 @@ static void cmd_getdeviceconfig(void)
     /* Left side */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
     d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
-    d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
+    d[pos++] = 1;                                        /* Chip_Type = 1（原 BS300 值，7100 是否沿用待确认） */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
     /* Right side (same as left) */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
     d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
-    d[pos++] = 1;                                        /* Chip_Type = 1 (BS300) */
+    d[pos++] = 1;                                        /* Chip_Type = 1（原 BS300 值，7100 是否沿用待确认） */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
@@ -511,365 +348,6 @@ static void cmd_getdeviceconfig(void)
 
     PRINTF("[REMPRO] GetDeviceConfig\r\n");
     hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);
-}
-
-/* ID:10  SetEqualizer */
-static void cmd_setequalizer(const uint8_t *data, uint8_t len)
-{
-    if (len < 3) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t eq_type  = data[1];
-    int8_t  dB       = (int8_t)data[2];  /* raw step [-5,5] */
-
-    if (dB > 5)   dB = 5;
-    if (dB < -5)  dB = -5;
-
-    bs300_prog_struct_t *dsp = bs300_get_dsp_state();
-    int8_t low  = dsp->modules.eq_low;
-    int8_t mid  = dsp->modules.eq_mid;
-    int8_t high = dsp->modules.eq_high;
-
-    switch (eq_type) {
-    case 0: low  = dB; break;   /* bass  ≤500Hz */
-    case 1: mid  = dB; break;   /* mid   500-2000Hz */
-    case 2: high = dB; break;   /* treble >2000Hz */
-    default: break;
-    }
-
-    PRINTF("[REMPRO] SetEqualizer: dev=%u type=%u dB=%d → L=%d M=%d H=%d\r\n",
-           dev_type, eq_type, dB, low, mid, high);
-    bs300_set_eq_async(low, mid, high, NULL);
-
-    uint8_t status = 1;
-    hdlc_response(CMD_SETEQUALIZER, 0, &status, 1);
-}
-
-/* Shared buffer for fitting command handlers — 490B, avoids stack alloc */
-static bs300_prog_struct_t s_fit_buf;
-
-/* Commit s_fit_buf to flash for the given program.
- * Caller must have already loaded raw→struct into s_fit_buf and modified it.
- * bs300_work_buf still holds the original raw 480B from the load call.
- * sync_dsp: if true and target is the active program, trigger I2C resync
- * to DSP; if false, flash-only (takes effect on next program switch/reboot). */
-static int fitting_commit(uint8_t prog_idx, bool sync_dsp)
-{
-    uint8_t active = bs300_get_active_prog();
-
-    if (bs300_struct_to_flash(&s_fit_buf, bs300_work_buf) < 0) return -1;
-    bs300_storage_write_program(prog_idx, bs300_work_buf);
-
-    PRINTF("[FITTING] commit prog=%u active=%u sync=%d\r\n",
-           prog_idx, active, sync_dsp);
-
-    if (sync_dsp && prog_idx == active) {
-        PRINTF("[FITTING] >>> I2C resync to DSP <<<\r\n");
-        bs300_resync_diff_async(&s_fit_buf, NULL);
-    } else {
-        PRINTF("[FITTING] flash-only, no I2C sync\r\n");
-    }
-    return 0;
-}
-
-/* ID:17  GetFittingData — read back gain/compress/MPO for one program.
- * Response payload (hdlc adds SYS_ID/CMD_ID/Flag):
- *   Scene_ID, LeftOrRight, Turn_Number, Gain_Number, Compress_Number,
- *   MPO_Number, Gain[32], Compress[32] (kp1[16]+kp2[16]), MPO[16]
- * Gain/MPO encoded as Flash raw (gain=value_in_MT+27, mpo=value_in_MT-30),
- * same format as SET commands, so the App can round-trip. */
-static void cmd_getfittingdata(const uint8_t *data, uint8_t len)
-{
-    uint8_t d[86];
-    uint8_t pos = 0;
-    uint8_t i;
-
-    if (len < 2) { hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return; }
-    if (bs300_sync_is_busy()) {
-        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
-    }
-
-    uint8_t dev_type = data[0];
-    uint8_t scene_id = data[1];
-    if (scene_id >= 4) {
-        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
-    }
-
-    /* Load flash → struct (same data as SET gain/MPO/compress commands) */
-    bs300_prog_struct_t fit;
-    bs300_storage_load_program(scene_id, bs300_work_buf);
-    if (bs300_flash_to_struct(bs300_work_buf, &fit) < 0) {
-        hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0); return;
-    }
-
-    d[pos++] = scene_id;         /* Scene_ID */
-    d[pos++] = dev_type;         /* LeftOrRight */
-    d[pos++] = 2;                /* Turn_Number */
-    d[pos++] = 32;               /* Gain_Number */
-    d[pos++] = 16;               /* Compress_Number */
-    d[pos++] = 16;               /* MPO_Number */
-
-    for (i = 0; i < 32; i++) d[pos++] = (uint8_t)(fit.wdrc.bin_gain[i] + 27);  /* Flash raw */
-    for (i = 0; i < 16; i++) d[pos++] = fit.wdrc.kp1_r_idx[i];
-    for (i = 0; i < 16; i++) d[pos++] = fit.wdrc.kp2_r_idx[i];
-    for (i = 0; i < 16; i++) d[pos++] = (uint8_t)(fit.wdrc.lmt_th_db[i] - 30); /* Flash raw */
-
-    PRINTF("[REMPRO] GetFittingData: dev=%u scene=%u → %u bytes\r\n",
-           dev_type, scene_id, pos);
-    hdlc_response(CMD_GETFITTINGDATA, 0, d, pos);
-}
-
-/* ID:6  SetGain */
-static void cmd_setgain(const uint8_t *data, uint8_t len)
-{
-    if (len < 4 || ((len - 2) & 1)) {
-        hdlc_response(CMD_SETGAIN, 1, NULL, 0); return;
-    }
-    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETGAIN, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t prog     = data[1];
-    uint8_t pairs    = (len - 2) / 2;
-    uint8_t i;
-
-    if (prog >= 4) { hdlc_response(CMD_SETGAIN, 1, NULL, 0); return; }
-
-    PRINTF("[REMPRO] SetGain IN: target_prog=%u active_prog=%u pairs=%u\r\n",
-           prog, bs300_get_active_prog(), pairs);
-
-    bs300_print_settings();
-
-    /* Load flash → struct */
-    bs300_storage_load_program(prog, bs300_work_buf);
-    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
-        hdlc_response(CMD_SETGAIN, 1, NULL, 0); return;
-    }
-
-    for (i = 0; i < pairs; i++) {
-        uint8_t spectrum = data[2 + i * 2];
-        int16_t raw_val  = data[3 + i * 2];
-        if (spectrum < 32) {
-            /* App sends Flash raw: raw = 27 + value_in_MT → value_in_MT = raw - 27 */
-            int16_t vmt = raw_val - 27;
-            if (vmt > 100) vmt = 100;
-            s_fit_buf.wdrc.bin_gain[spectrum] = (int8_t)vmt;
-        }
-    }
-
-    PRINTF("[REMPRO] SetGain: dev=%u prog=%u pairs=%u → gain[0-3]=%d,%d,%d,%d\r\n",
-           dev_type, prog, pairs,
-           s_fit_buf.wdrc.bin_gain[0], s_fit_buf.wdrc.bin_gain[1],
-           s_fit_buf.wdrc.bin_gain[2], s_fit_buf.wdrc.bin_gain[3]);
-    bs300_reset_user_params(prog);
-    fitting_commit(prog, false);
-    hdlc_response(CMD_SETGAIN, 0, NULL, 0);
-}
-
-/* ID:7  SetMPO */
-static void cmd_setmpo(const uint8_t *data, uint8_t len)
-{
-    if (len < 4 || ((len - 2) & 1)) {
-        hdlc_response(CMD_SETMPO, 1, NULL, 0); return;
-    }
-    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETMPO, 1, NULL, 0); return; }
-
-    uint8_t dev_type = data[0];
-    uint8_t prog     = data[1];
-    uint8_t pairs    = (len - 2) / 2;
-    uint8_t i;
-
-    if (prog >= 4) { hdlc_response(CMD_SETMPO, 1, NULL, 0); return; }
-
-    PRINTF("[REMPRO] SetMPO IN: target_prog=%u active_prog=%u pairs=%u\r\n",
-           prog, bs300_get_active_prog(), pairs);
-
-    bs300_print_settings();
-
-    bs300_storage_load_program(prog, bs300_work_buf);
-    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
-        hdlc_response(CMD_SETMPO, 1, NULL, 0); return;
-    }
-
-    for (i = 0; i < pairs; i++) {
-        uint8_t channel = data[2 + i * 2];
-        int16_t raw_val = data[3 + i * 2];
-        if (channel < 16) {
-            /* App sends Flash raw: raw = value_in_MT - 30 → value_in_MT = raw + 30 */
-            s_fit_buf.wdrc.lmt_th_db[channel] = (int8_t)(raw_val + 30);
-        }
-    }
-
-    PRINTF("[REMPRO] SetMPO: dev=%u prog=%u pairs=%u → lmt_th[0-3]=%d,%d,%d,%d\r\n",
-           dev_type, prog, pairs,
-           s_fit_buf.wdrc.lmt_th_db[0], s_fit_buf.wdrc.lmt_th_db[1],
-           s_fit_buf.wdrc.lmt_th_db[2], s_fit_buf.wdrc.lmt_th_db[3]);
-    fitting_commit(prog, false);
-    hdlc_response(CMD_SETMPO, 0, NULL, 0);
-}
-
-/* ID:8  SetCompressRatio */
-static void cmd_setcompressratio(const uint8_t *data, uint8_t len)
-{
-    if (len < 5 || ((len - 3) & 1)) {
-        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
-    }
-    if (bs300_sync_is_busy()) {
-        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
-    }
-
-    uint8_t dev_type  = data[0];
-    uint8_t prog      = data[1];
-    uint8_t turn_num  = data[2];
-    uint8_t pairs     = (len - 3) / 2;
-    uint8_t i;
-
-    if (prog >= 4) {
-        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
-    }
-
-    PRINTF("[REMPRO] SetCompressRatio IN: target_prog=%u active_prog=%u pairs=%u\r\n",
-           prog, bs300_get_active_prog(), pairs);
-
-    bs300_print_settings();
-
-    bs300_storage_load_program(prog, bs300_work_buf);
-    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
-        hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0); return;
-    }
-
-    for (i = 0; i < pairs; i++) {
-        uint8_t channel = data[3 + i * 2];
-        uint8_t step    = data[4 + i * 2];
-        if (channel < 16) {
-            if (turn_num == 0)
-                s_fit_buf.wdrc.kp1_r_idx[channel] = step;
-            else
-                s_fit_buf.wdrc.kp2_r_idx[channel] = step;
-        }
-    }
-
-    PRINTF("[REMPRO] SetCompressRatio: dev=%u prog=%u turn=%u pairs=%u → CR0[0-3]=%d,%d,%d,%d CR1[0-3]=%d,%d,%d,%d\r\n",
-           dev_type, prog, turn_num, pairs,
-           s_fit_buf.wdrc.kp1_r_idx[0], s_fit_buf.wdrc.kp1_r_idx[1],
-           s_fit_buf.wdrc.kp1_r_idx[2], s_fit_buf.wdrc.kp1_r_idx[3],
-           s_fit_buf.wdrc.kp2_r_idx[0], s_fit_buf.wdrc.kp2_r_idx[1],
-           s_fit_buf.wdrc.kp2_r_idx[2], s_fit_buf.wdrc.kp2_r_idx[3]);
-    fitting_commit(prog, false);
-    hdlc_response(CMD_SETCOMPRESSRATIO, 0, NULL, 0);
-}
-
-/* ID:9  SetDenoise — RAM-only, like volume. Does NOT modify program flash. */
-static void cmd_setdenoise(const uint8_t *data, uint8_t len)
-{
-    if (len < 3) {
-        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
-    }
-    if (bs300_sync_is_busy()) {
-        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
-    }
-
-    uint8_t dev_type = data[0];
-    uint8_t prog     = data[1];
-    uint8_t level    = data[2];
-
-    if (prog >= 4 || level > 5) {
-        hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return;
-    }
-
-    PRINTF("[REMPRO] SetDenoise: dev=%u prog=%u level=%u\r\n",
-           dev_type, prog, level);
-    bs300_set_prog_denoise(prog, level);
-
-    /* If active program, re-sync to apply new ENR max_att to DSP */
-    if (prog == bs300_get_active_prog()) {
-        bs300_switch_program_async(prog, NULL);
-    }
-    hdlc_response(CMD_SETDENOISE, 0, NULL, 0);
-}
-
-/* ================================================================
- * Audiometry frequency table: Spectrum (CMD 13) → Hz
- * ================================================================ */
-static const uint16_t s_audiometry_freq[17] = {
-    250, 500, 1000, 1500, 2000, 2500, 3000, 3500,
-    4000, 4500, 5000, 5500, 6000, 6500, 7000, 7500, 8000
-};
-
-/* ID:13  SetPlayVoice — play pure tone at given frequency & dB */
-static void cmd_setplayvoice(const uint8_t *data, uint8_t len)
-{
-    if (len < 3) { hdlc_response(CMD_SETPLAYVOICE, 1, NULL, 0); return; }
-
-    uint8_t spectrum = data[1];
-    uint8_t decibel  = data[2];
-    uint8_t status   = 1;
-
-    if (spectrum < 17 && decibel >= 20 && decibel <= 100) {
-        uint16_t freq_hz = s_audiometry_freq[spectrum];
-        const bs300_calib_t *calib = bs300_get_cached_calib();
-
-        /* Protocol flow: Mute → ITG write → Active */
-        bs300_mute();
-        if (bs300_itg_write(decibel, freq_hz, calib) == 0)
-            bs300_active();
-        else
-            status = 0;
-    } else {
-        status = 0;
-    }
-
-    PRINTF("[REMPRO] SetPlayVoice: spec=%u dB=%u freq=%u\r\n",
-           spectrum, decibel,
-           (spectrum < 17) ? s_audiometry_freq[spectrum] : 0);
-    hdlc_response(CMD_SETPLAYVOICE, 0, &status, 1);
-}
-
-/* ID:14  SetStopVoice — stop playing pure tone */
-static void cmd_setstopvoice(const uint8_t *data, uint8_t len)
-{
-    (void)data; (void)len;
-
-    /* Protocol flow: Mute → ITG clear */
-    bs300_mute();
-    bs300_itg_clear();
-
-    PRINTF("[REMPRO] SetStopVoice\r\n");
-    uint8_t status = 1;
-    hdlc_response(CMD_SETSTOPVOICE, 0, &status, 1);
-}
-
-/* ID:40  SetAudiometryStatus — enter/exit audiometry */
-static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
-{
-    if (len < 2) { hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0); return; }
-    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0); return; }
-
-    uint8_t fitting_status = data[1];
-
-    PRINTF("[REMPRO] SetAudiometryStatus: status=%u\r\n", fitting_status);
-
-    /* Respond immediately — acknowledge receipt */
-    {
-        uint8_t ack = 1;
-        hdlc_response(CMD_SETAUDIOMETRYSTATUS, 0, &ack, 1);
-    }
-
-    /* Then do the work; push initial-status-done after enter completes */
-    switch (fitting_status) {
-    case 0:  /* Enter audiometry */
-        if (bs300_audiometry_enter() == 0) {
-            bs300_set_audiometry_state(BS300_AUDIOMETRY_TEST);
-            /* Notify app after 2s DSP stabilization, non-blocking */
-            bs300_schedule_delayed_push(rempro_push_initial_status_done, 200);
-        }
-        break;
-    case 1:  /* Exit audiometry */
-        bs300_audiometry_exit();
-        bs300_schedule_delayed_push(rempro_push_audiometry_exit, 200);
-        break;
-    default:
-        break;
-    }
 }
 
 /* ID:78  IICDataCommunity — I2C / 1-wire data relay */
@@ -982,73 +460,36 @@ void rempro_cmd_process(void)
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
 
         switch (cmd_id) {
+        /* ---- 需 DSP 参数读写：阶段二接 7100 后实现，暂回 flag=1（不支持）---- */
         case CMD_SETVOLUME:
-            if (data) cmd_setvolume(data, data_len);
-            else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
-            break;
         case CMD_SETDEVICEONOFF:
-            if (data) cmd_setdeviceonoff(data, data_len);
-            else hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0);
-            break;
         case CMD_SETFEEDBACKONOFF:
-            if (data) cmd_setfeedbackonoff(data, data_len);
-            else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
-            break;
-        case CMD_GETBATTERYINFO:
-            /* 1664 无电池 AD 采样，该命令不支持 */
-            hdlc_response(CMD_GETBATTERYINFO, 1, NULL, 0);
-            break;
+        case CMD_GETFEEDBACKONOFF:
         case CMD_SETCURRENTSCENE:
-            if (data) cmd_setcurrentscene(data, data_len);
-            else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
-            break;
-        case CMD_SETGAIN:
-            if (data) cmd_setgain(data, data_len);
-            else hdlc_response(CMD_SETGAIN, 1, NULL, 0);
-            break;
-        case CMD_SETMPO:
-            if (data) cmd_setmpo(data, data_len);
-            else hdlc_response(CMD_SETMPO, 1, NULL, 0);
-            break;
-        case CMD_SETCOMPRESSRATIO:
-            if (data) cmd_setcompressratio(data, data_len);
-            else hdlc_response(CMD_SETCOMPRESSRATIO, 1, NULL, 0);
-            break;
-        case CMD_SETDENOISE:
-            if (data) cmd_setdenoise(data, data_len);
-            else hdlc_response(CMD_SETDENOISE, 1, NULL, 0);
-            break;
-        case CMD_SETEQUALIZER:
-            if (data) cmd_setequalizer(data, data_len);
-            else hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0);
-            break;
-        case CMD_SETPLAYVOICE:
-            if (data) cmd_setplayvoice(data, data_len);
-            else hdlc_response(CMD_SETPLAYVOICE, 1, NULL, 0);
-            break;
-        case CMD_SETSTOPVOICE:
-            if (data) cmd_setstopvoice(data, data_len);
-            else hdlc_response(CMD_SETSTOPVOICE, 1, NULL, 0);
-            break;
-        case CMD_SETAUDIOMETRYSTATUS:
-            if (data) cmd_setaudiometrystatus(data, data_len);
-            else hdlc_response(CMD_SETAUDIOMETRYSTATUS, 1, NULL, 0);
-            break;
         case CMD_GETCURRENTSCENE:
-            cmd_getcurrentscene();
+        case CMD_SETEQUALIZER:
+        case CMD_GETFITTINGDATA:
+        case CMD_SETGAIN:
+        case CMD_SETMPO:
+        case CMD_SETCOMPRESSRATIO:
+        case CMD_SETDENOISE:
+        case CMD_SETPLAYVOICE:
+        case CMD_SETSTOPVOICE:
+        case CMD_SETAUDIOMETRYSTATUS:
+            PRINTF("[REMPRO] CMD=%u 待阶段二（7100 写路径）\r\n", cmd_id);
+            hdlc_response(cmd_id, 1, NULL, 0);
             break;
+
+        /* ---- 与 DSP 无关，保持可用 ---- */
         case CMD_GETDEVICECONFIG:
             cmd_getdeviceconfig();
-            break;
-        case CMD_GETFITTINGDATA:
-            if (data) cmd_getfittingdata(data, data_len);
-            else hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0);
             break;
         case CMD_GETDEVICEONOFF:
             cmd_getdeviceonoff();
             break;
-        case CMD_GETFEEDBACKONOFF:
-            cmd_getfeedbackonoff(data, data_len);
+        case CMD_GETBATTERYINFO:
+            /* 1664 无电池 AD 采样，该命令不支持 */
+            hdlc_response(CMD_GETBATTERYINFO, 1, NULL, 0);
             break;
         case CMD_FOTA_STATUS:
             cmd_fota_status(data, data_len);

@@ -20,11 +20,8 @@
 #include "app.h"
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
+#include "dsp_7100_storage.h"
 #include <printf.h>
-#ifdef BS300_ENABLE
-#include "bs300_ram_sync.h"
-#include "bs300_storage.h"
-#endif    /* ifdef BS300_ENABLE */
 
 /* Global variable definition */
 struct cs_env_tag cs_env;
@@ -451,23 +448,15 @@ int GATTC_WriteReqInd(ke_msg_id_t const msg_id,
                         break;   /* 不送入 rempro 重装缓冲 */
                     }
 #endif    /* ifdef CFG_FOTA */
-#ifdef BS300_ENABLE
-                    /* 0xFE = 重启并重新读取 BS300 参数（参照 sleep CS 0xFE：清缓存→重启） */
+                    /* 0xFE = 清缓存并重启，重新从 7100 读取参数（参照 sleep CS 0xFE）。
+                     * 重启后 cache_try_load 命不中 → 走 I2C 读回 → 重新落盘。 */
                     if (param->length >= 1 && param->value[0] == 0xFE)
                     {
-                        uint8_t bi;
-                        PRINTF("[BS300] 0xFE: clear cache + reset to reload\r\n");
-                        for (bi = 0; bi < 4; bi++)
-                        {
-                            bs300_storage_invalidate(bi);
-                        }
-                        bs300_settings_invalidate();
-                        bs300_reset_to_defaults();
-                        /* 重启后 bs300_driver_init() 从芯片重新读取参数 */
+                        PRINTF("[7100] 0xFE: invalidate cache + reset to reload\r\n");
+                        dsp_7100_cache_invalidate();
                         NVIC_SystemReset();
                         break;   /* 不送入 rempro 重装缓冲 */
                     }
-#endif    /* ifdef BS300_ENABLE */
                     /* 手机写入的命令数据直接进 rempro 重装缓冲 */
                     rempro_reasm_append(param->value, param->length);
                     break;

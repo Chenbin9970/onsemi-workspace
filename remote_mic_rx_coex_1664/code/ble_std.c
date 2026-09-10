@@ -377,6 +377,9 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
                 /* Start a timer to be used as a periodic tick timer for
                  * application */
                 ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+                /* 7100 通讯 tick：读回会话推进 + 每 5s 心跳 */
+                ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
             }
         }
         break;

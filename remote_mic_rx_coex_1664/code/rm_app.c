@@ -19,10 +19,6 @@
 
 #include "app.h"
 #include <printf.h>
-#ifdef BS300_ENABLE
-#include "bs300_ram_sync.h"
-#include "ble_rempro_cmd.h"
-#endif    /* ifdef BS300_ENABLE */
 
 uint32_t data_rd = 0;
 
@@ -127,8 +123,10 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.mod_idx  = BLE_MOD_IDX;
     app_env.rm_param.dma_memcpy_num   = MEMCPY_DMA_NUM;
 
-    app_env.rm_param.debug_dio_num[0] = DEBUG_DIO_FIRST;
-    app_env.rm_param.debug_dio_num[1] = DEBUG_DIO_SECOND;
+    /* RM 调试 IO 全部关闭（0xff = 无效）：
+     * 1664 上 DIO15/DIO11 另有用途，DIO13/11 让给 7100 握手/ready。 */
+    app_env.rm_param.debug_dio_num[0] = 0xff;
+    app_env.rm_param.debug_dio_num[1] = 0xff;
     app_env.rm_param.debug_dio_num[2] = 0xff;
     app_env.rm_param.debug_dio_num[3] = 0xff;
 
@@ -247,11 +245,6 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
     return (0);
 }
 
-#ifdef BS300_ENABLE
-/* RM 前程序记录：RM 断开后切回原程序并 active，避免停在程序3 静音（参照 sleep saved_prog_before_rm） */
-static uint8_t s_saved_prog_before_rm = 0xFF;
-#endif    /* ifdef BS300_ENABLE */
-
 uint8_t RM_Callback_StatusUpdate(uint8_t status)
 {
     switch (status)
@@ -279,30 +272,8 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
 #endif    /* if (OUTPUT_DECODE_PATH && SIMUL != 1) */
-#ifdef BS300_ENABLE
-            if (app_env.audio_streaming)
-            {
-                /* 远端流中断 → BS300 静音（参照 peripheral_server_sleep rm_app） */
-                bs300_mute();
-                app_env.audio_streaming = 0;
-
-                /* 程序恢复：切回 RM 前程序并 active（参照 sleep saved_prog_before_rm） */
-                if (s_saved_prog_before_rm != 0xFF)
-                {
-                    if (s_saved_prog_before_rm != 3)
-                    {
-                        bs300_switch_program(s_saved_prog_before_rm);
-                    }
-                    bs300_active();
-                    /* RM 断开并恢复程序后，若有 BLE 连接则主动上报程序号 */
-                    if (ble_env.state == APPM_CONNECTED)
-                    {
-                        rempro_push_scene_change(s_saved_prog_before_rm);
-                    }
-                    s_saved_prog_before_rm = 0xFF;
-                }
-            }
-#endif    /* ifdef BS300_ENABLE */
+            /* RM 流结束：解除 BLE 指令互斥（程序/DSP 侧动作待阶段二接 7100） */
+            app_env.audio_streaming = 0;
             app_env.rm_lostLink_counter++;
         }
         break;
@@ -335,20 +306,8 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             Sys_DMA_ChannelEnable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
 
-#ifdef BS300_ENABLE
-            /* 记录 RM 前程序（断开后据此恢复），随后切到程序3 接管（参照 sleep） */
-            s_saved_prog_before_rm = bs300_get_active_prog();
-            bs300_set_prog_volume(3, 9);
-            bs300_mute();
-            bs300_switch_program(3);
-            bs300_active();
+            /* RM 流开始：置流标志以屏蔽 BLE 指令（DSP 侧动作待阶段二接 7100） */
             app_env.audio_streaming = 1;
-            /* RM 连接切到程序3 播放时，若有 BLE 连接则主动上报程序号 */
-            if (ble_env.state == APPM_CONNECTED)
-            {
-                rempro_push_scene_change(3);
-            }
-#endif    /* ifdef BS300_ENABLE */
 
             /* ASCC interrupts */
             NVIC_EnableIRQ(AUDIOSINK_PHASE_IRQn);

@@ -25,17 +25,43 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
-#include "bs300_ram_sync.h"
+#include "dsp_7100_init.h"
+#include "i2c_7100_hal.h"
 
-/* BS300 内核同步定时消息处理（见 bs300_ram_sync.h） */
-int BS300_SyncTimer(ke_msg_id_t const msg_id, void const *param,
-                    ke_task_id_t const dest_id, ke_task_id_t const src_id)
+/* ----------------------------------------------------------------------------
+ * Function      : int APP_7100_HB_Handler(ke_msg_id_t const msg_id,
+ *                                         void const *param,
+ *                                         ke_task_id_t const dest_id,
+ *                                         ke_task_id_t const src_id)
+ * ----------------------------------------------------------------------------
+ * Description   : 200ms 周期 tick。每 tick 推进 7100 读回会话；每 5s(25 tick)
+ *                 向 7100 发心跳 {0x88, 0x01}。BLE 连接与否都跑。
+ * ------------------------------------------------------------------------- */
+int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                        ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
+    static uint16_t s_7100_cnt = 0;
+
     (void)msg_id;
     (void)param;
     (void)dest_id;
     (void)src_id;
-    bs300_sync_timer_handler();
+
+    /* Re-arm: 200ms periodic tick */
+    ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
+
+    s_7100_cnt++;
+
+    /* 每 tick(200ms)：推进 4 程序×(降噪/DFBC/WDRC) 读回（一轮完成即停止） */
+    dsp_7100_rb_seq_tick();
+
+    /* 每 25 tick(5s)：发心跳 {0x88,0x01} */
+    if ((s_7100_cnt % 25) == 0) {
+        uint8_t hb[2] = {0x88, 0x01};
+        bool ok = i2c_7100_write(I2C_7100_ADDR, hb, sizeof(hb));
+        (void)ok;
+    }
+
     return (KE_MSG_CONSUMED);
 }
 

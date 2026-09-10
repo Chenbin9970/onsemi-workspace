@@ -22,10 +22,8 @@
 #include "app.h"
 #include <printf.h>
 #include "ble_rempro_cmd.h"
-#ifdef BS300_ENABLE
-#include "bs300_driver.h"
-#include "bs300_ram_sync.h"
-#endif    /* ifdef BS300_ENABLE */
+#include "dsp_7100_init.h"
+#include "i2c_7100_hal.h"
 
 int main()
 {
@@ -34,20 +32,60 @@ int main()
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
     PRINTF("__remote_mic_rx_coex has started!\r\n");
 
-#ifdef BS300_ENABLE
-    /* BS300 driver init：I2C init + 解锁/启动序列，首启约 2-3s 阻塞（已喂狗） */
-    if (!bs300_driver_init())
+    /* 上电握手（照 remote_mic_rx_coex 参考设计）：
+     * DIO13 = 7100 输出 → RSL10 输入；DIO11 = RSL10 输出 → 7100 输入。
+     * 7100 上电先拉低 DIO13 等待；RSL10 检测到低后在 DIO11 发一个低脉冲应答。 */
+    Sys_DIO_Config(13, DIO_MODE_INPUT | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+    Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_1);
+    Sys_DIO_Config(9,  DIO_MODE_INPUT | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+    Sys_DIO_Config(10, DIO_MODE_INPUT | DIO_WEAK_PULL_UP | DIO_LPF_DISABLE);
+
+    PRINTF("[IO] wait DIO13 low (7100 ready) ...\r\n");
+    while (DIO_DATA->ALIAS[13] == 1)
     {
-        PRINTF("__BS300_INIT_FAIL\r\n");
+        Sys_Watchdog_Refresh();
+        Sys_Delay_ProgramROM(SystemCoreClock / 1000);   /* 1ms */
     }
-    else
+
+    /* DIO13 低：DIO11 做一个极短低脉冲应答 */
+    PRINTF("[IO] DIO13 low -> DIO11 low pulse\r\n");
+    Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_0);
+    Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_1);
+
+    /* 等 DIO13 回到高（7100 应答握手完成） */
+    PRINTF("[IO] wait DIO13 high ...\r\n");
+    while (DIO_DATA->ALIAS[13] == 0)
     {
-        PRINTF("__BS300_INIT_OK\r\n");
+        Sys_Watchdog_Refresh();
+        Sys_Delay_ProgramROM(SystemCoreClock / 1000);   /* 1ms */
     }
-#endif    /* ifdef BS300_ENABLE */
+    PRINTF("[IO] DIO13 high, run 7100 init\r\n");
+
+    /* 7100 同步引导（A7 之前的普通步）；读回由 200ms tick 推进 */
+    dsp_7100_boot_init();
+
+    /* 开机优先用 flash 缓存的读回结果；未命中才走 I2C 读回（读完自动落盘） */
+    dsp_7100_cache_try_load();
+
+    /* 引导完：DIO11 发一个 ~2ms 低脉冲 */
+    Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_0);
+    Sys_Delay_ProgramROM(1000 * (SystemCoreClock / 1000));   /* ~2ms */
+    Sys_DIO_Config(11, DIO_MODE_GPIO_OUT_1);
 
     while (1)
     {
+        /* IO 电平有变化才打印：DIO9/10/13（7100 ready 等，照 remote_mic_rx_coex） */
+        {
+            static uint8_t l9 = 0xFF, l10 = 0xFF, l13 = 0xFF;
+            uint8_t n9  = (uint8_t)DIO_DATA->ALIAS[9];
+            uint8_t n10 = (uint8_t)DIO_DATA->ALIAS[10];
+            uint8_t n13 = (uint8_t)DIO_DATA->ALIAS[13];
+            if (n9 != l9 || n10 != l10 || n13 != l13) {
+                l9 = n9; l10 = n10; l13 = n13;
+                PRINTF("[IO] D9=%u D10=%u D13=%u\r\n", n9, n10, n13);
+            }
+        }
+
         Kernel_Schedule();
 
         /* 分块发送 rempro TX（每次通知完成后推进下一块，无 ke_timer） */
@@ -69,10 +107,8 @@ int main()
 
         RM_StatusHandler();
 
-#ifdef BS300_ENABLE
-        /* BS300 延迟动作在主循环处理（勿在定时器上下文做 flash 擦写等） */
-        bs300_process_deferred();
-#endif    /* ifdef BS300_ENABLE */
+        /* 7100 读回落盘（flash 擦写不在定时器上下文做） */
+        dsp_7100_process_deferred();
 
         /* Refresh the watchdog timer */
         Sys_Watchdog_Refresh();

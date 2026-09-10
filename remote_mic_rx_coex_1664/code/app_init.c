@@ -303,10 +303,9 @@ void App_Initialize(void)
     RF_SwitchToCPMode();
     RM_Enable(1000);
 
-    Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
+    /* RM 调试 IO 已关闭（rm_app.c debug_dio_num=0xff），不再配置 DIO15/DIO11 输出；
+     * DIO11 现由 app.c 的 7100 握手使用。 */
     Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
-    Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
     /* Enable 6dBM or 0dBM mode*/
 #if (OUTPUT_POWER_6DBM)
@@ -315,20 +314,9 @@ void App_Initialize(void)
     Sys_RFFE_SetTXPower(0);
 #endif    /* CFG_6DBM */
 
-    /* Enable Flash overlay */
-    memcpy((uint8_t *)PRAM0_BASE, (uint8_t *)FLASH_MAIN_BASE, PRAM0_SIZE);
-    memcpy((uint8_t *)PRAM1_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE),
-           PRAM1_SIZE);
-    memcpy((uint8_t *)PRAM2_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE +
-                                              PRAM1_SIZE), PRAM2_SIZE);
-    memcpy((uint8_t *)PRAM3_BASE, (uint8_t *)(FLASH_MAIN_BASE + PRAM0_SIZE +
-                                              PRAM1_SIZE + PRAM2_SIZE),
-           PRAM3_SIZE);
-
-    SYSCTRL->FLASH_OVERLAY_CFG  = 0xf;
-
-    /* Enable CM3 loop cache */
-    SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
+    /* Flash overlay + CM3 loop cache 已移除（与 remote_mic_rx_coex 一致）：
+     * overlay 打开后 CPU 从 PRAM0..3 取指/取数，会覆盖紧跟其后的 7100 I2C
+     * 路径 → 读全 0。本工程非 FOTA，不需要 overlay。 */
 
 #if (DEBUG_UART_LOG)
     UartLogInit();
