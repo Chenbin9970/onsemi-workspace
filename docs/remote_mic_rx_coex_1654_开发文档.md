@@ -42,6 +42,8 @@
 | RM 断链程序恢复 | code/rm_app.c | `saved_prog_before_rm`，断开切回原程序并 active（见 §15） |
 | 按键推送手机 | app.c | 长按/短按触发 `rempro_push_*`（见 §15） |
 | **设置掉电保存补断链落盘** | code/ble_std.c | `GAPC_DisconnectInd` 调 `bs300_settings_persist()`（见 §15.1） |
+| **采样钟 DIO7 → DIO10**（修 RM 重连失真） | include/app.h | 原与 BS300 I2C SDA 共用 DIO7，详见 §12.6 |
+| 关闭 RM 调试 IO + 清死宏 | app_init.c, rm_app.c, app.h | `debug_dio_num=0xff`，删 `DEBUG_DIO_*` / `DIO_SYNC_PULSE`（见 §12.6） |
 
 ## 4. 构建与总开关
 
@@ -57,13 +59,16 @@
 | 功能 | 引脚 | 说明 |
 |------|------|------|
 | OD_P / OD_N（受话器，差分） | DIO0 / DIO1 | `DIO_MODE_OD_P`，照 peripheral_server_sleep |
-| BS300 I2C SCL / SDA（bit-bang） | DIO8 / DIO7，addr 0x01 | 与 sleep 一致；DIO7 同时作 audiosink 采样钟输入(SAMPL_CLK) |
+| BS300 I2C SCL / SDA（bit-bang） | DIO8 / DIO7，addr 0x01 | 与 sleep 一致 |
+| **采样/audiosink 时钟输入** | **DIO10** | `Sys_Audiosink_InputClock(SAMPL_CLK…)`，无条件配置。**原为 DIO7，见 §12** |
 | 调试 UART TX / RX | DIO5 / DIO6（**pack printf.c 内硬编码**） | 115200；当前调试口在 DIO5，改引脚需改 pack 的 printf.c（影响所有工程） |
 | 按键（active low，上拉） | DIO12 | 短按音量+1 / 长按切程序；参考 sleep；由原打印脚让出 |
-| 采样/audiosink 时钟输入 | DIO7 | `Sys_Audiosink_InputClock(SAMPL_CLK…)`，无条件配置 |
-| DIO_SYNC_PULSE | DIO8 | 复用为 BS300 SCL；GPIO 默认输出 |
 | 上电暂停/恢复(recovery) | DIO13 | 接地暂停便于重刷，勿占用 |
-| 空闲/预留 | DIO2/3/4/9/10/14 | 调试 DIO15/11 为 GPIO 输出 |
+| 空闲/预留 | DIO2/3/4/9/14 | DIO15/11 原为 RM 调试 GPIO 输出，已关闭（见 §12） |
+
+> ⚠ **采样钟绝不能放回 DIO7**：DIO7 同时是 BS300 I2C 的 SDA，而 bit-bang 收发会把该脚
+> 重配成 GPIO 并来回翻转（`bs300_hal.c` 的 `sda_out/sda_h/sda_l`），采样钟就此丢失/被注入
+> 毛刺 → ASRC 失去锁相参考 → 音频失真。详见 §12。
 
 ## 6. 音频通路（OD 直驱）
 
@@ -173,6 +178,40 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 3. BS300 首启读 4 程序会写主 Flash 高位 `0x0015C800+`，需确认该区域未被 1654 镜像占用（sleep 同址验证过）。
 4. 板上是否确有 BS300：无芯片时 `bs300_driver_init()` 应约 2 s 返回 false（不挂死），需实测确认。
 5. OD 引脚目前为 DIO0/1 差分（照 base sleep）；如换 7160test 的 DIO12 单端+内部钟方案，需另改 OD_P_DIO 与采样钟源。
+6. **【已修复】RM 重连后音频失真/断续 —— 采样钟与 BS300 I2C 共用 DIO7**
+
+   **现象**：开机首次 RM 连接音频正常；断开后重连，音频在播但严重失真/断续（100% 复现）。
+
+   **根因**：`SAMPL_CLK`（audiosink 采样钟输入）与 BS300 I2C 的 SDA **是同一个脚 DIO7**：
+
+   | 用途 | 位置 |
+   |---|---|
+   | BS300 I2C SDA = DIO7 | `include/bs300_hal.h` 的 `BS300_I2C_SDA_DIO` |
+   | 采样钟 = DIO7 | `include/app.h` 的 `SAMPL_CLK` → `app_init.c` 的 `Sys_Audiosink_InputClock()` |
+
+   `bs300_hal.c` 的 bit-bang 每次收发都把 DIO7 重配成 GPIO 并翻转（`sda_out()` =
+   `DIO_MODE_GPIO_OUT_0`，`sda_h/sda_l()` 直接置位，`i2c_stop()` 结束时还停在「输出高」），
+   采样钟就此丢失/被注入毛刺 → `audio_sink_cnt`（Ck）测错 →
+   `asrc_inc_carrier = ((Cr - Ck) << 29) / Ck` 算错 → **ASRC 重采样失锁 → 失真**。
+
+   首次连接之所以正常：`LINK_ESTABLISHED` 里 `bs300_switch_program(3)` 的 I2C 恰好发生在音频
+   刚起跑的位置，被启动过程掩盖；重连时同样的 I2C 落在播放中间，就听得出失真。
+
+   **排查弯路（勿重复）**：先后怀疑并试过 ASRC 未重新使能、三通道 DMA 重配、`frame_decoded`
+   守卫、CRC 坏包拆分、ch4/ch5 环形错位、把阻塞 I2C 改异步 —— **全部无效**。其中「改异步」
+   反而更差（摊开 = DIO7 被反复抢占、干扰窗口更长），这恰好是引脚冲突的有力旁证。
+
+   **修复**：`SAMPL_CLK` 由 **DIO7 改为 DIO10**（`include/app.h`），采样钟与 BS300 I2C 物理解耦。
+   DIO10 在 1654 本为空闲脚。
+
+   **试过但不可行的替代方案**：改用片上内部源 `AUDIOSINK_CLK_SRC_DMIC_OD` —— 能解决重连失真，
+   但该源不是音频速率的正确基准，ASRC 会周期性重锁，引入**间歇性噗噗声**。
+
+   **连带清理**：RM 调试 IO 一并关闭（`rm_app.c` 的 `debug_dio_num[0..1] = 0xff`，删掉
+   DIO15/DIO11/DIO8 的 `Sys_DIO_Config` 与 `Sys_GPIO_Set_High(DIO_SYNC_PULSE)`）；
+   死宏 `DEBUG_DIO_FIRST` / `DEBUG_DIO_SECOND` / `DIO_SYNC_PULSE` 已删除。
+
+   > ⚠ **采样钟绝不能再放回 DIO7。**
 
 ## 13. 验证步骤
 
@@ -181,6 +220,10 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 3. 与已配对发射机建链：应听到 OD 输出音频；断链应静音；串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
 4. 手机/工具扫描应看到名为 **Smart1654** 的可连接广播；用主动扫描可读到 scan response 里的厂商段（含 MAC/耳侧）。
 5. 示波器查 DIO0/DIO1（OD 差分）与 DIO8/DIO7（BS300 I2C）波形。
+   **DIO7 上不应再出现采样钟**（已改到 DIO10）。
+6. **RM 重连回归测试（必测）**：建链 → 断开 → **反复重连 5~10 次**，每次音频都应正常，
+   不应出现失真/断续。这是 §12.6 那个 bug 的验证入口 —— 该 bug 曾是 100% 复现。
+   同时确认播放过程中**无间歇性噗噗声**（那是误用内部时钟源的副作用）。
 6. **设置掉电保存（见 §15.1）**：手机连上后改音量 / 切模式 / 拉 EQ / 改降噪 / 开关 DFBC →
    串口应在**断链那一刻**出现 `[BS300] settings saved prog=N slot=M vol=[...]` →
    断电重启应出现 `[BS300] settings loaded from flash` / `settings restored prog=N` /

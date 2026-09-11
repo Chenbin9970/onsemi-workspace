@@ -317,8 +317,7 @@ extern "C"
 #define PCM_CLK_DO                      3
 #define PCM_FRAME_SYNC                  0
 
-#define DIO_SYNC_PULSE                  8
-#define SAMPL_CLK                       7
+#define SAMPL_CLK                       10
 
 /* DIO number that is used for easy re-flashing (recovery mode) */
 #define RECOVERY_DIO                    13
@@ -326,9 +325,6 @@ extern "C"
 /* 按键（active low，参考 peripheral_server_sleep）：短按音量+1，长按切程序 */
 #define BTN_DIO                         12
 #define BTN_LONG_MS                     500
-
-#define DEBUG_DIO_FIRST                 15
-#define DEBUG_DIO_SECOND                11
 
 /* LPDSP32 CODEC related defines */
 #define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)

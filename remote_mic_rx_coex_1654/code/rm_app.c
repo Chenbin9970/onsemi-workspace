@@ -127,8 +127,8 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.mod_idx  = BLE_MOD_IDX;
     app_env.rm_param.dma_memcpy_num   = MEMCPY_DMA_NUM;
 
-    app_env.rm_param.debug_dio_num[0] = DEBUG_DIO_FIRST;
-    app_env.rm_param.debug_dio_num[1] = DEBUG_DIO_SECOND;
+    app_env.rm_param.debug_dio_num[0] = 0xff;
+    app_env.rm_param.debug_dio_num[1] = 0xff;
     app_env.rm_param.debug_dio_num[2] = 0xff;
     app_env.rm_param.debug_dio_num[3] = 0xff;
 

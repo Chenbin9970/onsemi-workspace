@@ -285,7 +285,6 @@ void App_Initialize(void)
 #endif    /* if (OUTPUT_DECODE_PATH) */
 
     /* Delay added to handle reset sequencing */
-    Sys_GPIO_Set_High(DIO_SYNC_PULSE);
     Sys_Watchdog_Refresh();
 
     for (i = 0; i < 10000; i++)
@@ -306,11 +305,6 @@ void App_Initialize(void)
 
     RF_SwitchToCPMode();
     RM_Enable(1000);
-
-    Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
-    Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
 #ifdef BS300_ENABLE
     /* 按键 DIO12：active low，上拉输入（处理在主循环，见 app.c） */
