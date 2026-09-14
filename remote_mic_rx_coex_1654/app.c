@@ -127,16 +127,11 @@ int main()
 
         if (ble_env.state == APPM_CONNECTED)
         {
-            /* RM 连接(流)期间不处理任何 BLE 指令，并清掉残留 RX 帧 */
-            if (app_env.audio_streaming)
-            {
-                rempro_reasm_reset();
-            }
-            else
-            {
-                /* 处理 Rempro 接收到的完整 HDLC 帧 */
-                rempro_cmd_process();
-            }
+            /* 处理 Rempro 接收到的完整 HDLC 帧。
+             * RM 连接(流)期间也照常收帧 —— 指令白名单在分发侧把关：
+             * 只放行 GetDeviceConfig(26) / GetBatteryInfo(4) / GetCurrentScene(15)，
+             * 其余静默丢弃、不回响应。见 ble_rempro_cmd.c 的 rempro_cmd_process()。 */
+            rempro_cmd_process();
         }
 
         RM_StatusHandler();

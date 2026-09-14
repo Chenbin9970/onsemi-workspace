@@ -38,6 +38,14 @@ void rempro_reasm_reset(void)
     reasm_pending = false;
 }
 
+/* 从重装缓冲移除已处理的 consumed 字节。分发路径有多个出口（正常处理 / RM 期间拒绝），
+ * 统一走这里，避免缓冲管理逻辑散落两处。 */
+static void reasm_drop_consumed(uint16_t consumed)
+{
+    reasm_len -= consumed;
+    if (reasm_len > 0) memmove(reasm_buf, reasm_buf + consumed, reasm_len);
+}
+
 #define TX_BUF_SIZE     200
 static uint8_t tx_buf[TX_BUF_SIZE];
 
@@ -357,6 +365,33 @@ static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u\r\n", dev_type, onoff);
     uint8_t status = 1;
     hdlc_response(CMD_SETDEVICEONOFF, 0, &status, 1);
+}
+
+/* ID:21  SetMuteData — 功能同 3 号 SetDeviceOnOff：data[1] 非 0 → bs300_active()，
+ * 0 → bs300_mute()。
+ *
+ * ⚠ 方向说明：接口文档把该字段命名为 Mute 并标注「0:关 1:开」（即 1=静音，与这里相反）。
+ * 产品要求与 3 号指令行为一致，故按 3 号的方向实现。若日后要改成文档语义，
+ * 把下面 if (onoff) 的两个分支对调即可。 */
+static void cmd_setmutedata(const uint8_t *data, uint8_t len)
+{
+    if (len < 2) { hdlc_response(CMD_SETMUTEDATA, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETMUTEDATA, 1, NULL, 0); return; }
+
+    uint8_t dev_type = data[0];
+    uint8_t onoff    = data[1];
+
+    if (onoff) {
+        bs300_active();
+        s_device_on = 1;
+    } else {
+        bs300_mute();
+        s_device_on = 0;
+    }
+
+    PRINTF("[REMPRO] SetMuteData: dev=%u mute=%u\r\n", dev_type, onoff);
+    uint8_t status = 1;
+    hdlc_response(CMD_SETMUTEDATA, 0, &status, 1);
 }
 
 /* ID:5  SetFeedbackOnOff — RAM-only, overrides flash dfbc_enable_mode bit7 */
@@ -1018,6 +1053,21 @@ void rempro_cmd_process(void)
         print_hex("RX frame", reasm_buf, consumed);
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
 
+        /* RM 连接(流)期间只放行三个查询类指令：
+         *   GetDeviceConfig(26) / GetBatteryInfo(4) / GetCurrentScene(15)
+         * 它们都是只读查询，不做 I2C、不改 DSP 状态，不会干扰 RM 音频。
+         * 其余指令（音量/程序/降噪/EQ/DFBC/验配等）在 RM 流期间**直接丢弃、不回响应** ——
+         * 它们要操作 BS300，而 BS300 的 bit-bang I2C 与 RM 音频通路有耦合（见开发文档 §12.6）。 */
+        if (app_env.audio_streaming
+            && cmd_id != CMD_GETDEVICECONFIG
+            && cmd_id != CMD_GETBATTERYINFO
+            && cmd_id != CMD_GETCURRENTSCENE)
+        {
+            PRINTF("[REMPRO] RM streaming, CMD=%u dropped\r\n", cmd_id);
+            reasm_drop_consumed(consumed);
+            continue;
+        }
+
         switch (cmd_id) {
         case CMD_SETVOLUME:
             if (data) cmd_setvolume(data, data_len);
@@ -1026,6 +1076,10 @@ void rempro_cmd_process(void)
         case CMD_SETDEVICEONOFF:
             if (data) cmd_setdeviceonoff(data, data_len);
             else hdlc_response(CMD_SETDEVICEONOFF, 1, NULL, 0);
+            break;
+        case CMD_SETMUTEDATA:
+            if (data) cmd_setmutedata(data, data_len);
+            else hdlc_response(CMD_SETMUTEDATA, 1, NULL, 0);
             break;
         case CMD_SETFEEDBACKONOFF:
             if (data) cmd_setfeedbackonoff(data, data_len);
@@ -1099,7 +1153,6 @@ void rempro_cmd_process(void)
         }
 
         /* Remove processed frame from buffer */
-        reasm_len -= consumed;
-        if (reasm_len > 0) memmove(reasm_buf, reasm_buf + consumed, reasm_len);
+        reasm_drop_consumed(consumed);
     }
 }
