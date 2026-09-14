@@ -44,6 +44,10 @@
 | **设置掉电保存补断链落盘** | code/ble_std.c | `GAPC_DisconnectInd` 调 `bs300_settings_persist()`（见 §15.1） |
 | **采样钟 DIO7 → DIO10**（修 RM 重连失真） | include/app.h | 原与 BS300 I2C SDA 共用 DIO7，详见 §12.6 |
 | 关闭 RM 调试 IO + 清死宏 | app_init.c, rm_app.c, app.h | `debug_dio_num=0xff`，删 `DEBUG_DIO_*` / `DIO_SYNC_PULSE`（见 §12.6） |
+| **RM 期间 BLE 指令白名单** | app.c, code/ble_rempro_cmd.c | 只放行 26/4/15 查询类，其余静默丢弃（见 §18） |
+| **RM ↔ BS300 切换改异步 + 抢断续传** | code/rm_app.c, code/bs300_ram_sync.c, include/bs300_ram_sync.h | 新增 `bs300_switch_pending()`；修 BS300 卡死（见 §12.7、§19） |
+| 新增 Rempro SetMuteData(21) | include/ble_rempro_cmd.h, code/ble_rempro_cmd.c | 功能同 3 号 SetDeviceOnOff（见 §18） |
+| **RM 声道选择** | include/app.h | `APP_RM_AUDIO_CHANNEL` = `RM_LEFT`(左) / `RM_RIGHT`(右)，出固件时切 |
 
 ## 4. 构建与总开关
 
@@ -213,6 +217,51 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 
    > ⚠ **采样钟绝不能再放回 DIO7。**
 
+7. **【已修复】RM 快速断/连导致 BS300 卡死在程序3（静音）**
+
+   **现象**：RM 快速反复断/连后，BS300 停在程序 3 再也不会切回，听不到听音程序的声音。
+
+   **根因（`s_saved_prog_before_rm` 被污染）**：RM 库的 `rm_env` **只有一个 `statusChange` 槽**，
+   且置位前会比较 `oldLinkStatus`（`rm_event.c`）：
+
+   ```c
+   if(rm_env.statusChange) { rm_env.statusChange=0; status_update(rm_env.linkStatus); ... }
+   ```
+
+   所以 `ESTABLISHED→DISCONNECTED→ESTABLISHED` 这种闪断会被**整个吞掉**，主循环只看到最后的建立。
+
+   而原实现把「记录原程序」放在 `LINK_ESTABLISHED` 里：
+
+   ```c
+   s_saved_prog_before_rm = bs300_get_active_prog();   // ← 此刻 s_cur_prog 可能已是 3
+   bs300_switch_program(3);
+   ```
+
+   `bs300_switch_program()` 在**发 I2C 之前**就改掉 `s_cur_prog`（`bs300_ram_sync.c`），
+   于是第二次建链时把「原程序」记成了 **3**。之后断链：
+
+   ```c
+   if (s_saved_prog_before_rm != 3)      // ← 3，恒为假
+       bs300_switch_program(s_saved_prog_before_rm);
+   ```
+
+   **切不回去 → 永久停在程序 3 静音。**
+
+   **修复**：加「只在本次会话首次建链时记录」的守卫（断链时本就清成 `0xFF`，语义自洽）：
+
+   ```c
+   if (s_saved_prog_before_rm == 0xFF)
+       s_saved_prog_before_rm = bs300_get_active_prog();
+   ```
+
+   **附带一并修的两处**（见 §19）：
+
+   - 进程序3 / 退回原程序都改**异步**（`bs300_switch_program_async()`），不再阻塞主循环
+   - 与按键 / Rempro 的异步会话冲突，交给 `bs300_switch_program_async()` 自身的**抢断**机制处理
+
+   > ⚠ 断链**必须**只进防抖 / 只 mute，**不要立刻切回**；否则每次闪断都要多一趟切换。
+   > （1654 未移植 sleep 的 `rm_disc_state` 防抖状态机，当前靠上面的守卫 + 抢断续传兜住。）
+
 ## 13. 验证步骤
 
 1. Eclipse 导入/编译 `remote_mic_rx_coex_1654` Debug，确认链接通过（bs300 新增文件自动入编）。
@@ -343,6 +392,50 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 **已验证**（FOTA ON 在 IDE 编译通过，0 错误）：链接 `libfota.a`（无 libblelib/libkelib）、post-build 产出
 `remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。默认状态 = **OFF**。
 
+### 16.1 ⚠ 两个 `.cproject` 备份是旧的，直接 `cp` 会坏
+
+`cp .cproject_fota .cproject`（或 `_nofota`）**不能直接用** —— 备份落后于活跃 `.cproject`，
+有**两个**问题（2026-09-14 实测）：
+
+| 备份 | 问题 | 后果 |
+|---|---|---|
+| `.cproject_fota` | ① 缺 6 项 `exclude`；② 库列表含 `libblelib`+`libkelib`**加**`libfota` | ① 启动/链接变体同时入编 → 重复 `Reset_Handler`；② 与 libfota **大量符号重复定义**（`rwble_isr`/`l2cc_send_error_evt`/`gattc_send_error_evt`…）→ 链接失败 |
+| `.cproject_nofota` | 缺 6 项 `exclude` | 同上① |
+
+**缺的 6 项 exclude**（Debug + Release 两个配置都要加）：
+
+```
+RTE/Device/RSL10/startup_rsl10_nofota.S | RTE/Device/RSL10/startup_rsl10_fota.S |
+RTE/Device/RSL10/sections_nofota.ld | RTE/Device/RSL10/sections_fota.ld |
+RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
+```
+
+（正确状态是：`startup_rsl10.S` / `sections.ld` 入编，四个变体文件全部排除。）
+
+**正确的库组合**（`libfota` 与 `libblelib`/`libkelib` **互斥**，FOTA 是替换整个 BLE 栈而非叠加）：
+
+| 配置 | 库 |
+|---|---|
+| FOTA ON | `libfota.a` + `libbass.a` |
+| FOTA OFF | `libblelib.a` + `libkelib.a` + `libbass.a` |
+
+切换后自检：`grep -o "lib[a-z]*\.a" .cproject | sort -u`。
+**建议**：修好后把活跃 `.cproject` 回写到对应备份，免得每次切换都要手工补。
+
+### 16.2 构建注意
+
+- **`.bin` / `.fota` 不是 `make main-build` 产出的**：post-build（`objcopy` → `mkfotaimg.py`）
+  挂在 Eclipse 的 `all` 目标上，而 CLI 的 `make all` 因 `$(MAKE)` 展开成含空格的绝对路径而跑不起来。
+  → 只跑 CLI 的话要手工补：
+  ```
+  objcopy -O binary <elf> <bin>
+  python RTE/Device/RSL10/mkfotaimg.py -o <fota> RTE/Device/RSL10/fota.bin <bin>
+  ```
+  Eclipse 里正常 Build 会自动产出。
+- **改过 `.cproject` 后要 `Project → Clean` 再 Build**：`Debug/` 下 `makefile`/`subdir.mk`/`objects.mk`
+  是 Eclipse 生成的，`.cproject` 变了它们不会自动跟上（实测出现「OBJS 列了对象但没有构建规则」
+  → 链接报 `cannot find xxx.o`；以及编译宏缺 `-DCFG_FOTA`）。Clean 会重新生成。
+
 ## 17. 电池 DIO3(IO) 采样 & GetBatteryInfo 保护
 
 - **采样方式**（参考 peripheral_server_sleep）：电池经 **DIO3** 进 ADC，每读前重配
@@ -356,10 +449,21 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 
 ## 18. RM 与 BLE/按键互斥 + 特殊 Rempro 命令
 
-**RM 连接(流)期间互斥**（app.c）
+**RM 连接(流)期间：指令白名单**（app.c + ble_rempro_cmd.c）
 - `app_env.audio_streaming`（RM LINK_ESTABLISHED=1 / DISCONNECTED=0）期间：
-  - **BLE 指令不处理**：主循环 `rempro_cmd_process()` 被跳过并 `rempro_reasm_reset()` 丢弃残留 RX 帧；
+  - **BLE 指令按白名单过滤**：主循环**照常**调 `rempro_cmd_process()` 收帧，白名单在分发侧把关
+    （`ble_rempro_cmd.c` 里 switch 之前）：
+    - **放行**：`GetDeviceConfig(26)` / `GetBatteryInfo(4)` / `GetCurrentScene(15)` —— 三者都是
+      只读查询，**不做 I2C、不改 DSP 状态**，不会干扰 RM 音频
+    - **其余一律静默丢弃，不回任何响应**；帧仍要从重装缓冲移除（否则会卡住后续帧解析），
+      日志 `[REMPRO] RM streaming, CMD=%u dropped`
   - **按键无效**：`Button_Process()` 动作条件加 `&& !app_env.audio_streaming`（音量/切程序不响应）。
+- 放行的指令经 `hdlc_response` + `rempro_tx_poll()` 分块 Notify 发出 —— RM 期间照常能发
+  （GATTC 完成事件驱动，不依赖 ke_timer）。
+- 缓冲移除抽成了 `reasm_drop_consumed()`（分发路径现在有两个出口：正常处理 / RM 拒绝）。
+
+> ⚠ 白名单的判据是「**只读查询**」。任何会写 BS300 的指令（音量/程序/降噪/EQ/DFBC/验配…）都**不要**
+> 加进白名单 —— BS300 的 bit-bang I2C 与 RM 音频通路历史上出过耦合问题（见 §12.6）。
 
 **RM 程序号主动上报**（rm_app.c）
 - RM 建立并切到**程序3**播放时，若 `ble_env.state==APPM_CONNECTED` → `rempro_push_scene_change(3)`；
@@ -374,3 +478,74 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 - `CFG_FOTA` 开：回 `Flag=0/status=1` 后 `Sys_Fota_StartDfu(1)` 进入 FOTA；
   `CFG_FOTA` 关（普通固件）：回 `Flag=1/status=0`（不支持）。
 - 旧入口：Rempro ROLE 写首字节 `0xFD`（CFG_FOTA 下）也能直接触发 FOTA。
+
+**SetMuteData(ID:21)**（ble_rempro_cmd.h/c）
+- **功能同 3 号 `SetDeviceOnOff`**：`data[1]` 非 0 → `bs300_active()`，0 → `bs300_mute()`，
+  并同步 `s_device_on`。同样有 `len<2` / `bs300_sync_is_busy()` 保护，同样回 `Flag=0, status=1`；
+  `data[0]`（Device_Type）读入但不使用。
+- ⚠ **字段方向与接口文档相反**：文档把该字段命名为 `Mute` 并标注「0:关 1:开」（即 1=静音），
+  产品要求与 3 号一致，故按 3 号方向（**1=开**）实现。要改成文档语义，把 `if (onoff)`
+  的两个分支对调即可（函数头有注释）。
+- ⚠ **不在** RM 白名单里 → RM 推流期间发 21 会被静默丢弃（它会写 BS300，属写指令）。
+
+## 19. RM ↔ BS300 程序切换（异步 + 抢断续传）
+
+RM 建链要切到程序 3、断链要切回原程序。**两个方向都必须走异步**
+（`bs300_switch_program_async()`），否则同步阻塞会饿死 `RM_StatusHandler()` 的音频包投递
+（历史教训见 §12.6 的排查弯路）。
+
+### 19.1 「被抢断从当前结束包续传」是现成的，不用新写
+
+`bs300_switch_program_async()` 把切换拆成「每 tick 一条 I2C 命令」，由 `BS300_SYNC_TIMER` 推进。
+被抢断时**不需要续传逻辑** —— 它是**状态收敛**而非命令重放：
+
+| 环节 | 位置 | 作用 |
+|---|---|---|
+| diff 基准 | `switch_diff_*()` 比对的是 `s_dsp_state` | 与「当前已生效状态」比，不回放命令序列 |
+| 影子更新 | `bs300_sync_tick()` 里的 `dsp_state_apply()` | **成功门控**（`poll_furproc()` 返回 0 才更新）|
+
+所以影子状态精确等于芯片已生效的参数；任何时刻被抢断，新会话的 diff 只发差额 →
+**自动从当前进度续传**。若某条命令重试 30 次后放弃（`state=ERROR`），影子不会更新，
+下次 diff 会把它再发一遍 —— **自愈**。
+
+### 19.2 抢断机制
+
+`bs300_switch_program_async()` 忙时（包括按键 / Rempro 正在跑的会话）：
+
+```c
+if (bs300_sync_is_busy()) {
+    g_bs300_sync.abort_requested = true;      /* 中止当前会话 */
+    s_pending_switch = new_prog_idx;          /* 单槽排队 —— 连抢两次保留最后一次（最后意图赢）*/
+    s_pending_switch_on_done = on_done;
+    return 0;
+}
+```
+
+被中止的会话 `state → IDLE`；`bs300_sync_timer_handler()` 仍会调用它的 `on_done`
+（DONE / ERROR / IDLE 三态都会调），之后主循环的 `bs300_process_deferred()` 再启动排队的那个。
+优先级上 RM 高于按键/验配（RM 请求会中止它们）。
+
+### 19.3 完成回调不能盲调 `bs300_active()`
+
+```c
+static void rm_bs300_switch_done(void)
+{
+    if (bs300_switch_pending()) return;   /* 已被抢断，让最后那次收尾 */
+    bs300_active();
+}
+```
+
+被抢断的旧会话其 `on_done` **也会**被调用；若它直接 `active()`，会在过渡中途解除静音，
+紧接着撞上下一次切换的参数写入（那次没有 mute 兜底）。
+为此在 `bs300_ram_sync.c` 新增查询接口 `bs300_switch_pending()`（返回 `s_pending_switch >= 0`）。
+
+### 19.4 现状与未做项
+
+- 进 / 退两个方向都已异步，`rm_app.c` 内已无同步切换调用
+- 建链到真正出声会有几百毫秒延迟（异步会话期间 BS300 保持 mute，直到回调 `active()`）——
+  这是异步切换的固有代价
+- **未移植 sleep 的 `rm_disc_state` 防抖状态机**：闪断会变成「排队切3 → abort → 排队切回 →
+  abort → 排队切3」，**能收敛**，只是多几轮 diff 计算与 I2C。加防抖可省掉这些 churn。
+  ⚠ 若要移植：sleep 是按主循环迭代次数累加（`RM_DISC_DEBOUNCE_THRESHOLD = 500`），
+  而 1654 主循环末尾有 `SYS_WAIT_FOR_EVENT`，迭代频率不固定，**照搬会算不准**；
+  应改用已有的 200ms `APP_Timer` 计 tick。
