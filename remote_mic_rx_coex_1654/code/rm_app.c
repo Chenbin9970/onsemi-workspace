@@ -250,6 +250,18 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
 #ifdef BS300_ENABLE
 /* RM 前程序记录：RM 断开后切回原程序并 active，避免停在程序3 静音（参照 sleep saved_prog_before_rm） */
 static uint8_t s_saved_prog_before_rm = 0xFF;
+
+/* 程序切换完成回调：会话收敛后才 active()。
+ *
+ * 若期间又来了更新的切换请求，本次会话会被 abort 并留下排队的请求
+ * （bs300_switch_pending() 为真）—— 此时**不能** active()，否则会在过渡
+ * 中途解除静音，紧接着撞上下一次切换的参数写入（那次没有 mute 兜底）。
+ * 让最后那一次会话收尾。 */
+static void rm_bs300_switch_done(void)
+{
+    if (bs300_switch_pending()) return;
+    bs300_active();
+}
 #endif    /* ifdef BS300_ENABLE */
 
 uint8_t RM_Callback_StatusUpdate(uint8_t status)
@@ -286,14 +298,18 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 bs300_mute();
                 app_env.audio_streaming = 0;
 
-                /* 程序恢复：切回 RM 前程序并 active（参照 sleep saved_prog_before_rm） */
+                /* 程序恢复：切回 RM 前程序（异步，active 在完成回调里） */
                 if (s_saved_prog_before_rm != 0xFF)
                 {
                     if (s_saved_prog_before_rm != 3)
                     {
-                        bs300_switch_program(s_saved_prog_before_rm);
+                        bs300_switch_program_async(s_saved_prog_before_rm,
+                                                   rm_bs300_switch_done);
                     }
-                    bs300_active();
+                    else
+                    {
+                        bs300_active();
+                    }
                     /* RM 断开并恢复程序后，若有 BLE 连接则主动上报程序号 */
                     if (ble_env.state == APPM_CONNECTED)
                     {
@@ -337,11 +353,24 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 
 #ifdef BS300_ENABLE
             /* 记录 RM 前程序（断开后据此恢复），随后切到程序3 接管（参照 sleep） */
-            s_saved_prog_before_rm = bs300_get_active_prog();
+            /* 只在本次 RM 会话**首次**建链时记录原程序。
+             *
+             * 必须加守卫：RM 库的 rm_env 只有一个 statusChange 槽且置位前比较
+             * oldLinkStatus，所以 ESTABLISHED→DISCONNECTED→ESTABLISHED 的闪断会被
+             * 整个吞掉。若每次都重记，第二次建链时 s_cur_prog 已被上面的异步切换
+             * 改成 3（bs300_switch_program_async 在发 I2C 前就改 s_cur_prog），
+             * 「原程序」就被记成 3 —— 之后 if (saved != 3) 永远为假，
+             * 断链再也切不回去，BS300 卡在程序3 静音。 */
+            if (s_saved_prog_before_rm == 0xFF)
+            {
+                s_saved_prog_before_rm = bs300_get_active_prog();
+            }
             bs300_set_prog_volume(3, 9);
             bs300_mute();
-            bs300_switch_program(3);
-            bs300_active();
+            /* 异步切换：不阻塞主循环。忙时 bs300_switch_program_async 会 abort 当前
+             * 会话并排队（含按键/Rempro 触发的会话），主循环的 process_deferred 再启动。
+             * diff 基准是 s_dsp_state（每命令被芯片确认后才更新），故自动从当前进度续传。 */
+            bs300_switch_program_async(3, rm_bs300_switch_done);
             app_env.audio_streaming = 1;
             /* RM 连接切到程序3 播放时，若有 BLE 连接则主动上报程序号 */
             if (ble_env.state == APPM_CONNECTED)

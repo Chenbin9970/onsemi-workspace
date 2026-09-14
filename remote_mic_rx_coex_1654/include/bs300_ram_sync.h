@@ -106,6 +106,8 @@ void bs300_settings_persist(void);
  *  Async API (non-blocking via ke_timer)
  * ================================================================ */
 int  bs300_sync_is_busy(void);
+/* 是否有切换请求在排队（被抢断的会话已结束、process_deferred 尚未启动的窗口）。 */
+bool bs300_switch_pending(void);
 int  bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void));
 int  bs300_resync_diff_async(bs300_prog_struct_t *_new, void (*on_done)(void));
 int  bs300_param_modify_async(uint8_t prog_idx, uint16_t offset,

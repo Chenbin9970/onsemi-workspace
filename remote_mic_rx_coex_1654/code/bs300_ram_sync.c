@@ -1612,6 +1612,17 @@ static void (*s_delayed_push_cb)(void) = NULL; /* one-shot callback after timer 
 
 static int reencode_bin_gain_async_core(void (*on_done)(void), uint32_t tone_cmd);
 
+/* 是否有切换请求在排队。
+ *
+ * 会话被抢断（bs300_switch_program_async 忙时 abort + 存 s_pending_switch）到
+ * bs300_process_deferred() 把它启动之间，这个窗口内为真。
+ * 调用方（如 rm_app.c 的切换完成回调）据此判断「自己是不是被取代的那一次」，
+ * 避免在过渡中途做出终结动作（例如 bs300_active() 提前解除静音）。 */
+bool bs300_switch_pending(void)
+{
+    return (s_pending_switch >= 0);
+}
+
 int bs300_sync_is_busy(void)
 {
     return (g_bs300_sync.state != BS300_SYNC_IDLE
