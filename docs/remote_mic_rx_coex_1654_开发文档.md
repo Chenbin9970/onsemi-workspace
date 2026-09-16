@@ -262,6 +262,37 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
    > ⚠ 断链**必须**只进防抖 / 只 mute，**不要立刻切回**；否则每次闪断都要多一趟切换。
    > （1654 未移植 sleep 的 `rm_disc_state` 防抖状态机，当前靠上面的守卫 + 抢断续传兜住。）
 
+8. **【已修复】延时推送（`bs300_schedule_delayed_push`）永不触发 —— 条件写成了 `state == IDLE`**
+
+   **现象**：发 40 号 SetAudiometryStatus 进入测听，收不到本该 2s 后主动推送的 `CMD=6`
+   （`CMD_PUSH_INITIAL_STATUS`）；串口也没有 `[REMPRO] push initial status done`。
+
+   **根因**：`bs300_sync_timer_handler()` 里延时回调的触发条件与忙闲定义不一致：
+
+   | 位置 | 判断 |
+   |---|---|
+   | `bs300_sync_is_busy()` | `IDLE` / `DONE` / `ERROR` **都算不忙** |
+   | 延时回调分支 | 只认 `state == BS300_SYNC_IDLE` ✗ |
+
+   而**会话跑完 state 停在 `DONE`（或 ERROR），不会回到 `IDLE`**（枚举 `IDLE=0`，
+   结束置 `DONE`）。于是只要之前跑过任何一次异步 BS300 会话，回调就永远不触发 ——
+   `s_delayed_push_cb` 被静默丢弃（`bs300_sync_tick()` 对 `DONE` 直接返回 0，
+   走到 `session_ended` 分支时 `g_bs300_sync_on_done` 又是 NULL）。
+   而 `bs300_audiometry_enter()` 内部全用阻塞 `bs300_advanced_write()`，不重置 state，
+   所以它救不了自己。
+
+   **修复**：触发条件改用现成的忙闲判断，避免两处定义漂移：
+
+   ```c
+   if (!bs300_sync_is_busy() && s_delayed_push_cb) { ... cb(); return; }
+   ```
+
+   **影响面**：所有走 `bs300_schedule_delayed_push()` 的功能 —— 测听进入的 06 推送
+   （`rempro_push_initial_status_done`）、测听退出的推送（`rempro_push_audiometry_exit`）。
+
+   > ⚠ 这是 BS300 移植时带来的**既有** bug；但 §19 把 RM↔BS300 切换改成异步后，
+   > 会话跑得频繁、state 停在 `DONE` 的机会大增，该问题从「偶发」变成「几乎必现」。
+
 ## 13. 验证步骤
 
 1. Eclipse 导入/编译 `remote_mic_rx_coex_1654` Debug，确认链接通过（bs300 新增文件自动入编）。
@@ -480,13 +511,25 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
 - 旧入口：Rempro ROLE 写首字节 `0xFD`（CFG_FOTA 下）也能直接触发 FOTA。
 
 **SetMuteData(ID:21)**（ble_rempro_cmd.h/c）
-- **功能同 3 号 `SetDeviceOnOff`**：`data[1]` 非 0 → `bs300_active()`，0 → `bs300_mute()`，
-  并同步 `s_device_on`。同样有 `len<2` / `bs300_sync_is_busy()` 保护，同样回 `Flag=0, status=1`；
-  `data[0]`（Device_Type）读入但不使用。
-- ⚠ **字段方向与接口文档相反**：文档把该字段命名为 `Mute` 并标注「0:关 1:开」（即 1=静音），
-  产品要求与 3 号一致，故按 3 号方向（**1=开**）实现。要改成文档语义，把 `if (onoff)`
-  的两个分支对调即可（函数头有注释）。
+- **按接口文档的 `Mute` 语义**：`data[1]` 非 0 → `bs300_mute()`（静音开），
+  0 → `bs300_active()`（取消静音），并同步 `s_device_on`。同样有 `len<2` /
+  `bs300_sync_is_busy()` 保护，同样回 `Flag=0, status=1`；`data[0]`（Device_Type）读入但不使用。
+- ⚠ **方向与 3 号 `SetDeviceOnOff` 相反**：3 号的 `data[1]` 非 0 是「开」，这里非 0 是「静音」。
+  两者不要混用（函数头有注释）。
 - ⚠ **不在** RM 白名单里 → RM 推流期间发 21 会被静默丢弃（它会写 BS300，属写指令）。
+
+**SetAudiometryStatus(ID:40)**（ble_rempro_cmd.h/c）
+- 请求 `data[1]`：`0`=进入测听，`1`=退出测听。先**立即回** `Flag=0, status=1`，
+  再做实际工作（避免上位机等待）。
+- **进入（`status=0`）**：`bs300_audiometry_enter()` 写一整套测听参数，然后
+  **保持静音、不发 `ACTIVE`（`0x800010`）** —— 测听期间由上位机控制发声，听音程序不应出声。
+  完成后重新 arm 一个 2s 的延时推送（`rempro_push_initial_status_done`）。
+- **退出（`status=1`）**：`bs300_audiometry_exit()` 恢复（结尾发 `bs300_active()`），
+  并 arm 延时推送 `rempro_push_audiometry_exit`。
+- 两个推送都发 `CMD_PUSH_INITIAL_STATUS(6)`，靠 `data[1]` 区分：
+  `2`=初始化完成（进入测听），`1`=未初始化（退出测听）。
+- ⚠ 这两个推送依赖 `bs300_schedule_delayed_push()`，曾因触发条件 bug 完全不工作，见 §12.8。
+- `len<2` / `bs300_sync_is_busy()` 时回 `Flag=1`，不做事。
 
 ## 19. RM ↔ BS300 程序切换（异步 + 抢断续传）
 
