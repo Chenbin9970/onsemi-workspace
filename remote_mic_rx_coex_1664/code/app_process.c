@@ -28,6 +28,7 @@
 #include "dsp_7100_init.h"
 #include "dsp_7100_cmd.h"
 #include "i2c_7100_hal.h"
+#include "ble_rempro_cmd.h"   /* rempro_deferred_tick() */
 
 /* ----------------------------------------------------------------------------
  * Function      : int APP_7100_HB_Handler(ke_msg_id_t const msg_id,
@@ -53,6 +54,9 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
     ke_timer_set(APP_7100_HB_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
     s_7100_cnt++;
+
+    /* 测听进入/退出的延时推送（纯 BLE，不占 I2C，放最前面不受会话影响） */
+    rempro_deferred_tick();
 
     /* 降噪/DFBC 写会话进行中：只推进它，不读回不发心跳 */
     if (dsp_7100_cmd_busy()) {

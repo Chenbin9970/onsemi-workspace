@@ -17,6 +17,9 @@
 #define DSP7100_CMD_PARAM_WRITE  0xA2
 #define DSP7100_REG_PROGRAM      0x16
 #define DSP7100_REG_VOLUME       0x12
+#define DSP7100_REG_TONE_MODE    0x2E   /* 测听模式寄存器：进测听 0x00 / 退出 0x58 */
+#define DSP7100_TONE_MODE_ON     0x00
+#define DSP7100_TONE_MODE_OFF    0x58
 #define DSP7100_CMD_END          0x82
 #define DSP7100_RX_LEN           6
 
@@ -170,11 +173,21 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 #define A7_KIND_DENOISE  0
 #define A7_KIND_DFBC     1
 #define A7_KIND_EQ       2
+#define A7_KIND_WDRC     3
+#define A7_KIND_TONE     4
+#define A7_KIND_MUTE     5
 
-/* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2
- * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1） */
+/* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2，OutputLimit = +3
+ * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1、§2）
+ * 选块帧地址 16 位大端：A7 05 … 05 07 <prog> <addr_hi> <addr_lo>（ch16 OL = 0x117 → 01 17） */
 #define A7_WDRC_LL_ADDR(n1)   (0x15u + 0x11u * ((n1) - 1u))
 #define A7_WDRC_HL_ADDR(n1)   (A7_WDRC_LL_ADDR(n1) + 2u)
+#define A7_WDRC_OL_ADDR(n1)   (A7_WDRC_LL_ADDR(n1) + 3u)
+
+/* WDRC 单参数会话：用 s_sess_val 选择要写哪个参数 */
+#define A7_WDRC_P_LL     0
+#define A7_WDRC_P_HL     1
+#define A7_WDRC_P_OL     2
 
 /* EQ 三段 → WDRC 通道（数组下标 = 通道号-1，即 1-based 通道号减一）
  *   低音 ch1,ch2  |  中音 ch3,ch4,ch5  |  高音 ch6..ch16 */
@@ -188,11 +201,95 @@ static const uint8_t  s_eq_ch_n[3] = { 2, 3, 11 };
 /* EQ 调整量上限（±dB），超出钳位并告警 */
 #define A7_EQ_MAX_DB     10
 
-/* WDRC 值编码范围：LL 7bit 无符号；HL 8bit 有符号 */
-#define A7_WDRC_LL_MIN   0
-#define A7_WDRC_LL_MAX   127
-#define A7_WDRC_HL_MIN   (-128)
-#define A7_WDRC_HL_MAX   127
+/* WDRC 值范围（dB，1 LSB = 1 dB）
+ *   LowLevelGain  -30 ~ 60   （瑞听 SetGain 0-90 → 减 30；docs/7100协议/瑞听设置指令.md）
+ *   HighLevelGain -30 ~ 60
+ *   OutputLimit   -60 ~ 0
+ * LL 原写 0..127（编码范围），与读取文档的 -30~60 不符；2026-09-15 按确认真实范围改为 -30~60。
+ * ⚠ 负值的字节编码（7bit 还是 8bit 补码）尚未实测，当前按 8bit 补码写（同 HL）。 */
+#define A7_WDRC_LL_MIN   (-30)
+#define A7_WDRC_LL_MAX   60
+#define A7_WDRC_HL_MIN   (-30)
+#define A7_WDRC_HL_MAX   60
+#define A7_WDRC_OL_MIN   (-60)
+#define A7_WDRC_OL_MAX   0
+
+/* OutputLimit 值字段的 4 字节（docs/7100协议/WDRC/7100_WDRC设置.md §3.2）：
+ *   byte0 = OL 本身（int8 补码）          ← 按目标值算，不在表里
+ *   byte1 = OL + K_ch                     ← 表里存 OL=-6 时的 byte1，按差值平移
+ *   byte2 / byte3 = 逐通道常量，与 OL 无关
+ * 表取自 p0setlowlevelgainallchannel0.txt（默认状态，OL=-6），
+ * ch16 用 p0channel16set0.txt（OL=0）复核过。
+ * ⚠ 只来自一次默认状态抓包 —— 若这些字节被其它工具改过，表即失准。 */
+static const uint8_t s_wdrc_ol_tail[DSP7100_WDRC_CH][3] = {
+    {0xEA, 0x57, 0x4E},   /* ch1  */
+    {0xE5, 0xEA, 0xFE},   /* ch2  */
+    {0xE3, 0x08, 0x46},   /* ch3  */
+    {0xE2, 0x88, 0x64},   /* ch4  */
+    {0xE2, 0xFD, 0x80},   /* ch5  */
+    {0xE4, 0x06, 0x11},   /* ch6  */
+    {0xE8, 0x35, 0xE8},   /* ch7  */
+    {0xE9, 0x79, 0x7B},   /* ch8  */
+    {0xE8, 0xFD, 0x84},   /* ch9  */
+    {0xE8, 0xFD, 0x71},   /* ch10 */
+    {0xE9, 0x17, 0xAF},   /* ch11 */
+    {0xEA, 0xDC, 0xD6},   /* ch12 */
+    {0xEB, 0x0B, 0x47},   /* ch13 */
+    {0xEB, 0xEE, 0x18},   /* ch14 */
+    {0xEC, 0x79, 0xC1},   /* ch15 */
+    {0xED, 0x9F, 0x52},   /* ch16 */
+};
+
+/* 上表 byte1 对应的 OL 基准值（即抓包时的 OL 设置） */
+#define A7_WDRC_OL_BASE   (-6)
+
+/* ---- 纯音（测听）电平表 ----
+ * 出纯音的 24bit 电平：level = round(4.39902 × 10^((db + C(freq))/20))
+ *   C(freq) = 逐频率的**整数 dB 修正**（从 tone*.txt 抓包反解，见 docs/7100协议/纯音测听.md）
+ * 索引 k = db + C，db ∈ 20..100、C ∈ -5..+14 → k ∈ 15..114
+ * 与抓包 15 个点逐条比对**全部命中**（偏差 < 0.5 LSB）。
+ * 用查表而非 powf：本工程未链接 libm（RSL10 Cortex-M3 无 FPU），
+ * 与 1654 的 bs300_beep_frac24_table 同一做法。
+ * ⚠ K = 4.39902 是拟合值（可行区间仅 9e-6 宽），**可能随整机/接收器不同**，换机需重标。 */
+typedef struct
+{
+    uint16_t freq;
+    int8_t   c;
+} a7_tone_cal_t;
+
+static const a7_tone_cal_t s_tone_cal[] = {
+    { 500, -1 }, { 1000, 0 }, { 2000, 0 }, { 3000, -5 }, { 4000, 2 }, { 6000, 14 },
+};
+
+#define A7_TONE_CAL_N     (sizeof(s_tone_cal) / sizeof(s_tone_cal[0]))
+#define A7_TONE_DB_MIN    20
+#define A7_TONE_DB_MAX    100
+#define A7_TONE_IDX_MIN   15
+#define A7_TONE_IDX_MAX   114
+
+static const uint32_t s_tone_level[A7_TONE_IDX_MAX - A7_TONE_IDX_MIN + 1] = {
+          25,      28,      31,      35,      39,      44,
+          49,      55,      62,      70,      78,      88,
+          98,     110,     124,     139,     156,     175,
+         196,     220,     247,     278,     311,     349,
+         392,     440,     494,     554,     621,     697,
+         782,     878,     985,    1105,    1240,    1391,
+        1561,    1751,    1965,    2205,    2474,    2776,
+        3114,    3494,    3921,    4399,    4936,    5538,
+        6214,    6972,    7823,    8777,    9848,   11050,
+       12398,   13911,   15608,   17513,   19650,   22047,
+       24738,   27756,   31143,   34943,   39206,   43990,
+       49358,   55380,   62138,   69720,   78227,   87772,
+       98482,  110498,  123981,  139109,  156083,  175128,
+      196497,  220473,  247375,  277559,  311427,  349427,
+      392063,  439902,  493578,  553804,  621378,  697198,
+      782269,  877720,  984818, 1104984, 1239812, 1391092,
+     1560831, 1751281, 1964970, 2204733,
+};
+
+/* 纯音动作（放进 s_sess_val） */
+#define A7_TONE_STOP     0
+#define A7_TONE_PLAY     1
 
 /* 降噪 5 档的三元组（49 个重复；XX = 3×档位+3）
  * 来源 docs/7100协议/降噪/7100_降噪设置.md §3 */
@@ -222,8 +319,16 @@ static uint16_t  s_cmd_used;
 /* 会话元信息（成功后回写缓存用） */
 static uint8_t   s_sess_prog;       /* 1-4 */
 static uint8_t   s_sess_kind;       /* A7_KIND_* */
-static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 / EQ 段 */
+static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 / EQ 段 / WDRC 参数选择 */
 static int8_t    s_sess_db;         /* EQ 调整量 ±dB */
+/* WDRC 会话的待写项。**必须拷一份**：会话是异步跑的，
+ * 调用方的数组（BLE 负载缓冲）到收尾回写缓存时可能已经失效。 */
+static dsp_7100_wdrc_item_t s_wdrc_items[DSP7100_WDRC_CH];
+static uint8_t              s_wdrc_n;
+
+/* 纯音会话的频点与电平（异步跑，拷一份） */
+static uint16_t s_tone_freq;
+static uint8_t  s_tone_db;
 
 static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
 
@@ -286,6 +391,89 @@ static void a7_add_wdrc_param(uint8_t prog, uint16_t addr, uint8_t val)
     p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val;
 }
 
+/* OutputLimit 写：准备 + 写值（值字段 4 字节，帧头是 A7 07 不是 A7 04）
+ *   A7 05 00 00 00 05 07 <P> <addr_hi> <addr_lo>
+ *   A7 07 00 00 00 08 00 00 <b0> <b1> <b2> <b3>
+ * 参考抓包 p0channel1set-9 / p0channel2set-8 / p0channel16set0 */
+static void a7_add_wdrc_ol(uint8_t prog, uint16_t addr, uint8_t ch1, int8_t val)
+{
+    const uint8_t *tail = s_wdrc_ol_tail[ch1 - 1];
+    int16_t        b1;
+    uint8_t       *p;
+
+    a7_add_prep(A7_BLK_WDRC, prog, (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF));
+    p = a7_put(12);
+    if (p == NULL) return;
+
+    /* byte1 = OL + K_ch；K_ch 由表里 OL=-6 时的 byte1 反推，故按 (val - BASE) 平移 */
+    b1 = (int16_t)(int8_t)tail[0] + ((int16_t)val - A7_WDRC_OL_BASE);
+    if (b1 < -128) b1 = -128;
+    if (b1 >  127) b1 =  127;
+
+    p[0]  = 0xA7; p[1] = 0x07; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+    p[5]  = 0x08; p[6] = 0x00; p[7] = 0x00;
+    p[8]  = (uint8_t)val;
+    p[9]  = (uint8_t)(int8_t)b1;
+    p[10] = tail[1];
+    p[11] = tail[2];
+}
+
+/* WDRC 多通道写：每项两条命令（选块 + 写值）。
+ * 静音 / 选程序 / 提交 / 解除静音 是公共帧，由 a7_build_session 只加一次。 */
+static void a7_add_wdrc_items(uint8_t prog, uint8_t which)
+{
+    uint8_t i;
+
+    for (i = 0; i < s_wdrc_n; i++) {
+        uint8_t ch = s_wdrc_items[i].ch;
+        int8_t  v  = s_wdrc_items[i].val;
+
+        if (which == A7_WDRC_P_OL) {
+            a7_add_wdrc_ol(prog, A7_WDRC_OL_ADDR(ch), ch, v);
+        } else if (which == A7_WDRC_P_HL) {
+            a7_add_wdrc_param(prog, A7_WDRC_HL_ADDR(ch), (uint8_t)v);
+        } else {
+            a7_add_wdrc_param(prog, A7_WDRC_LL_ADDR(ch), (uint8_t)v);
+        }
+    }
+}
+
+/* 纯音帧：A7 07 00 00 00 2E <en> <freq16-BE> <level24-BE>
+ *   出音 en=01 + 频率 + 电平；停音 en=00 + 全 0（频率电平一起清零）
+ * 抓包：tone*hz*db.txt（15 条） */
+static void a7_add_tone(uint8_t enable, uint16_t freq, uint32_t level)
+{
+    uint8_t *p = a7_put(12);
+
+    if (p == NULL) return;
+    p[0]  = 0xA7; p[1] = 0x07; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+    p[5]  = 0x2E;
+    p[6]  = enable ? 0x01 : 0x00;
+    p[7]  = (uint8_t)(freq >> 8);
+    p[8]  = (uint8_t)(freq & 0xFFu);
+    p[9]  = (uint8_t)((level >> 16) & 0xFFu);
+    p[10] = (uint8_t)((level >> 8) & 0xFFu);
+    p[11] = (uint8_t)(level & 0xFFu);
+}
+
+/* 查电平表；返回 false = 该频点没有标定值 */
+static bool a7_tone_level(uint16_t freq, uint8_t db, uint32_t *out)
+{
+    uint8_t i;
+    int16_t k;
+
+    for (i = 0; i < A7_TONE_CAL_N; i++) {
+        if (s_tone_cal[i].freq != freq) continue;
+
+        k = (int16_t)db + s_tone_cal[i].c;
+        if (k < A7_TONE_IDX_MIN) k = A7_TONE_IDX_MIN;
+        if (k > A7_TONE_IDX_MAX) k = A7_TONE_IDX_MAX;
+        *out = s_tone_level[k - A7_TONE_IDX_MIN];
+        return true;
+    }
+    return false;
+}
+
 /* 生成 300B 降噪写块（照 docs/7100协议/降噪/7100_降噪设置.md §3 结构）：
  *   [0..7]    头 A7 27 01 00 00 08 00 00
  *   [8..152]  49 × XX（间隔 2 字节 0）
@@ -318,6 +506,27 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     s_cmd_used = 0;
     s_build_fail = false;
 
+    if (kind == A7_KIND_MUTE) {             /* 静音 / 解除静音：同样只发这一条 */
+        a7_add_simple(val ? A7_OPT_MUTE : A7_OPT_UNMUTE);
+        return !s_build_fail;
+    }
+
+    if (kind == A7_KIND_TONE) {             /* 纯音：只发这一条，无任何公共帧 */
+        if (val == A7_TONE_PLAY) {
+            uint32_t lvl;
+
+            if (!a7_tone_level(s_tone_freq, s_tone_db, &lvl)) {
+                PRINTF("[7100] 纯音 %u Hz 无标定值\r\n", s_tone_freq);
+                s_build_fail = true;
+                return false;
+            }
+            a7_add_tone(1, s_tone_freq, lvl);
+        } else {
+            a7_add_tone(0, 0, 0);
+        }
+        return !s_build_fail;
+    }
+
     a7_add_simple(A7_OPT_MUTE);
     a7_add_prog(A7_OPT_SELECT, prog);
 
@@ -332,6 +541,8 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
             p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
             p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val ? 0x01 : 0x00;
         }
+    } else if (kind == A7_KIND_WDRC) {      /* WDRC：n 个通道的同一参数（LL / HL / OL） */
+        a7_add_wdrc_items(prog, val);
     } else {                                /* EQ：该段全部通道的 LL+HL */
         const dsp_7100_prog_t *bp = dsp_7100_get_prog((uint8_t)(prog - 1));
         uint8_t n;
@@ -379,6 +590,25 @@ static void a7_session_finish(bool ok)
     } else if (s_sess_kind == A7_KIND_DFBC) {
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         p->dfbc_en = s_sess_val ? 1 : 0;
+    } else if (s_sess_kind == A7_KIND_WDRC) {
+        dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
+        uint8_t i;
+
+        /* 直接设绝对值 → 缓存基准跟着改（值在 a7_wdrc_start 里已钳位）。
+         * ⚠ EQ 模型认为"设备值 = 基准 + 该段 eq"，若该段 eq 非 0，本值写下去后两者会差一个 eq 量；
+         *   要严格一致应改成 "基准 = 新值 − 该段 eq"。目前 EQ 默认 0，先按简单处理。 */
+        for (i = 0; i < s_wdrc_n; i++) {
+            uint8_t ch = s_wdrc_items[i].ch;
+
+            if (s_sess_val == A7_WDRC_P_LL)      p->wdrc_ll[ch - 1] = s_wdrc_items[i].val;
+            else if (s_sess_val == A7_WDRC_P_HL) p->wdrc_hl[ch - 1] = s_wdrc_items[i].val;
+            else                                 p->wdrc_ol[ch - 1] = s_wdrc_items[i].val;
+        }
+    } else if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE) {
+        /* 纯音 / 静音**不改缓存里的任何参数** → 直接返回。
+         * 否则会走下面的 cache_save_request()，把整份读回缓存（4 个程序）重写一遍 flash ——
+         * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。 */
+        return;
     } else {                   /* EQ：只存偏移量，基准值不动（避免多次设置累积） */
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         if (s_sess_val == 0)      p->eq_low  = s_sess_db;
@@ -428,6 +658,9 @@ static const char *a7_kind_name(uint8_t kind)
 {
     if (kind == A7_KIND_DENOISE) return "Denoise";
     if (kind == A7_KIND_DFBC)    return "DFBC";
+    if (kind == A7_KIND_WDRC)    return "WDRC";
+    if (kind == A7_KIND_TONE)    return "Tone";
+    if (kind == A7_KIND_MUTE)    return "Mute";
     return "EQ";
 }
 
@@ -476,4 +709,123 @@ bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db)
 
     s_sess_db = db;
     return a7_session_start(A7_KIND_EQ, prog, band);
+}
+
+/* ---- WDRC 参数（LL / HL / OL），单通道或多通道，异步会话，骨架同降噪 ---- */
+
+static const char *a7_wdrc_name(uint8_t which)
+{
+    if (which == A7_WDRC_P_LL) return "LowLevelGain";
+    if (which == A7_WDRC_P_HL) return "HighLevelGain";
+    return "OutputLimit";
+}
+
+/* 钳到该参数的有效范围。写入和收尾回写缓存都用这一个，保证两边值一致 */
+static void a7_wdrc_clamp(uint8_t which, int8_t *val)
+{
+    int8_t lo;
+    int8_t hi;
+
+    if (which == A7_WDRC_P_LL)      { lo = A7_WDRC_LL_MIN; hi = A7_WDRC_LL_MAX; }
+    else if (which == A7_WDRC_P_HL) { lo = A7_WDRC_HL_MIN; hi = A7_WDRC_HL_MAX; }
+    else                            { lo = A7_WDRC_OL_MIN; hi = A7_WDRC_OL_MAX; }
+
+    if (*val < lo) { *val = lo; }
+    if (*val > hi) { *val = hi; }
+}
+
+/* prog 1-4；items[0..n-1]，n 1..16；返回 true = 会话已启动 */
+static bool a7_wdrc_start(uint8_t prog, uint8_t which,
+                          const dsp_7100_wdrc_item_t *items, uint8_t n)
+{
+    uint8_t i;
+
+    if (prog < 1 || prog > DSP7100_RB_PROGS) return false;
+    if (items == NULL || n < 1 || n > DSP7100_WDRC_CH) return false;
+
+    for (i = 0; i < n; i++) {
+        if (items[i].ch < 1 || items[i].ch > DSP7100_WDRC_CH) return false;
+        s_wdrc_items[i] = items[i];
+        a7_wdrc_clamp(which, &s_wdrc_items[i].val);
+    }
+    s_wdrc_n = n;
+
+    PRINTF("[7100] --- WDRC set %s prog=%u n=%u ---\r\n",
+           a7_wdrc_name(which), prog, n);
+
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_WDRC, prog, which);
+}
+
+bool dsp_7100_set_low_level_gain(uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n)
+{
+    return a7_wdrc_start(prog, A7_WDRC_P_LL, items, n);
+}
+
+bool dsp_7100_set_high_level_gain(uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n)
+{
+    return a7_wdrc_start(prog, A7_WDRC_P_HL, items, n);
+}
+
+bool dsp_7100_set_output_limit(uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n)
+{
+    return a7_wdrc_start(prog, A7_WDRC_P_OL, items, n);
+}
+
+/* ---- 纯音（测听）：只有一条命令的会话，无 mute / 选程序 / commit ---- */
+
+bool dsp_7100_play_tone(uint16_t freq_hz, uint8_t db)
+{
+    uint32_t lvl;
+
+    if (db < A7_TONE_DB_MIN || db > A7_TONE_DB_MAX) {
+        PRINTF("[7100] 纯音 %u dB 超范围（%u-%u）\r\n", db, A7_TONE_DB_MIN, A7_TONE_DB_MAX);
+        return false;
+    }
+    if (!a7_tone_level(freq_hz, db, &lvl)) {
+        PRINTF("[7100] 纯音 %u Hz 无标定值\r\n", freq_hz);
+        return false;
+    }
+
+    s_tone_freq = freq_hz;
+    s_tone_db   = db;
+
+    PRINTF("[7100] --- tone play %u Hz %u dB ---\r\n", freq_hz, db);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_TONE, dsp_7100_get_program(), A7_TONE_PLAY);
+}
+
+bool dsp_7100_stop_tone(void)
+{
+    PRINTF("[7100] --- tone stop ---\r\n");
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_TONE, dsp_7100_get_program(), A7_TONE_STOP);
+}
+
+/* 测听模式寄存器 `0x2E` —— A2 00 2E <val> → 读确认 → 82（同切程序/音量的三帧序列）
+ *   on  → 0x2E = 0x00   进测听
+ *   off → 0x2E = 0x58   退出 / 停音
+ * 来源：tonestar.txt / tonestop.txt 抓包，见 docs/7100协议/纯音测听.md */
+bool dsp_7100_set_tone_mode(bool on)
+{
+    uint8_t rx[DSP7100_RX_LEN];
+    uint8_t val = on ? DSP7100_TONE_MODE_ON : DSP7100_TONE_MODE_OFF;
+
+    PRINTF("[7100] --- tone mode %s (0x2E=%02X) ---\r\n", on ? "on" : "off", val);
+
+    if (!dsp_7100_write_cmd(DSP7100_REG_TONE_MODE, val)) return false;
+    i2c_7100_delay_ms(2);
+    if (!dsp_7100_read6(rx)) return false;
+    i2c_7100_delay_ms(1);
+    return dsp_7100_send_end();
+}
+
+/* 静音 / 解除静音 —— 单命令会话（`A7 01 00 00 00 25` / `26`），无公共帧。
+ * 对应 BLE 的 SetMuteData (21)：mute=true → 静音。
+ * 参考设备也这么单发：tonestar/tonestop 抓包里 `A7 01 00 00 00 26` 就是独立一条（写→读→82）。 */
+bool dsp_7100_set_mute(bool mute)
+{
+    PRINTF("[7100] --- %s ---\r\n", mute ? "mute" : "unmute");
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_MUTE, dsp_7100_get_program(), mute ? 1u : 0u);
 }

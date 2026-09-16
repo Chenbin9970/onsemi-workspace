@@ -27,7 +27,12 @@ extern "C" {
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETFITTINGDATA      17
+#define CMD_SETMUTEDATA         21  /* ID:21 SetMuteData：静音开关，data[1] 非 0=静音（方向与 3 号相反） */
+#define CMD_GETGAINDATA         22  /* 增益数据 ← 7100 LowLevelGain */
+#define CMD_GETMPODATA          23  /* MPO 数据 ← 7100 OutputLimit */
 #define CMD_GETDEVICECONFIG     26
+#define CMD_SETHIGHLEVELGAINDATA 29  /* SetHighLevelGainData：高水平增益 → 7100 HighLevelGain */
+#define CMD_GETHIGHLEVELGAINDATA 30  /* 高水平增益数据 ← 7100 HighLevelGain */
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
 #define CMD_SETAUDIOMETRYSTATUS  40
@@ -53,6 +58,9 @@ void rempro_tx_poll(void);
  * when the App sends multi-chunk frames back-to-back. */
 void rempro_reasm_append(const uint8_t *data, uint8_t len);
 void rempro_reasm_reset(void);
+
+/* 由 APP_7100_HB_Handler 每 200ms 调：推进延时推送（测听进入/退出完成） */
+void rempro_deferred_tick(void);
 
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);

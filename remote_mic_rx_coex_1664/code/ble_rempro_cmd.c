@@ -2,6 +2,7 @@
 #include "ble_rempro.h"
 #include "ble_rempro_cmd.h"
 #include "dsp_7100_cmd.h"
+#include "dsp_7100_init.h"   /* DSP7100_WDRC_CH */
 
 #include <printf.h>   /* Rempro 收发日志跟随 OUTPUT_INTERFACE */
 #ifndef PRINTF
@@ -306,9 +307,54 @@ void rempro_push_audiometry_exit(void)
     hdlc_push(CMD_PUSH_INITIAL_STATUS, d, 2);
 }
 
+/* ---- 延时推送：测听进入/退出完成后，隔 1s 再推 ----
+ * 用 APP_7100_HB_Handler 的 200ms 周期 tick 计数（5 tick = 1s），不引入新的 ke_timer。
+ * 原因：切程序（dsp_7100_switch_program）是阻塞调用且 7100 侧要消化一下，
+ * 推早了 App 会拿到还没生效的状态；同时也避免推送抢在 CMD 40 的应答前面。 */
+#define AUD_PUSH_TICKS   5
+#define AUD_PUSH_ENTER   1
+#define AUD_PUSH_EXIT    2
+
+static uint8_t s_aud_push_cnt;       /* 倒计时，0 = 无待推 */
+static uint8_t s_aud_push_what;      /* AUD_PUSH_* */
+
+void rempro_deferred_tick(void)
+{
+    if (s_aud_push_cnt == 0) return;
+
+    s_aud_push_cnt--;
+    if (s_aud_push_cnt != 0) return;
+
+    if (s_aud_push_what == AUD_PUSH_ENTER)      rempro_push_initial_status_done();
+    else if (s_aud_push_what == AUD_PUSH_EXIT)  rempro_push_audiometry_exit();
+
+    s_aud_push_what = 0;
+}
+
+static void aud_push_schedule(uint8_t what)
+{
+    s_aud_push_what = what;
+    s_aud_push_cnt  = AUD_PUSH_TICKS;
+    PRINTF("[REMPRO] audiometry push scheduled (%u) in %u ms\r\n",
+           what, AUD_PUSH_TICKS * 200u);
+}
+
 /* ================================================================
  * Command Handlers
  * ================================================================ */
+
+/* 设置类命令的统一应答：Flag(1) + status(1)
+ * 协议文档：Flag 0=操作成功 / 非0=操作失败；status 0=不支持 / 非0=操作成功。
+ * （SYS_ID、CMD_ID 由 hdlc_response 补）
+ * ⚠ 2026-09-15：此前只有 SetVolume / SetCurrentScene 的**成功**分支回 status，
+ *   其余分支和 SetDenoise / SetFeedbackOnOff / SetEqualizer 只回 Flag。
+ *   这里按协议文档统一补齐 —— **Flag 的取值一律沿用原逻辑**，只补上缺失的 status 字节。 */
+static void hdlc_response_set(uint16_t cmd_id, bool ok)
+{
+    uint8_t status = ok ? 1 : 0;
+
+    hdlc_response(cmd_id, ok ? 0 : 1, &status, 1);
+}
 
 /* ID:33  GetDeviceOnOff */
 static void cmd_getdeviceonoff(void)
@@ -336,16 +382,16 @@ static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
     uint8_t dev_type;
     uint8_t volume;
     uint8_t level;
-    uint8_t status = 1;
     bool ok;
 
-    if (len < 3) { hdlc_response(CMD_SETVOLUME, 1, NULL, 0); return; }
+    if (len < 3) { hdlc_response_set(CMD_SETVOLUME, false); return; }
 
     dev_type = data[0];
     volume   = data[1];
 
     if (dev_type != 0 && dev_type != 1) {   /* 仅左右/左，右耳不支持 */
-        hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+        /* 沿用原行为：右耳按"已受理但无动作"回，Flag 不置错 */
+        hdlc_response_set(CMD_SETVOLUME, true);
         return;
     }
     if (volume > 5) volume = 5;
@@ -356,22 +402,21 @@ static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u\r\n",
            volume, level, ok);
 
-    hdlc_response(CMD_SETVOLUME, 0, &status, 1);
+    hdlc_response_set(CMD_SETVOLUME, true);
 }
 
 /* ID:16  SetCurrentScene — App scene 0-3 → 7100 程序 1-4 */
 static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
 {
     uint8_t scene_id;
-    uint8_t status = 1;
     bool ok;
 
-    if (len < 2) { hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0); return; }
+    if (len < 2) { hdlc_response_set(CMD_SETCURRENTSCENE, false); return; }
 
     scene_id = data[1];
 
     if (scene_id >= 4) {
-        hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+        hdlc_response_set(CMD_SETCURRENTSCENE, false);
         return;
     }
 
@@ -379,7 +424,7 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u\r\n",
            scene_id, scene_id + 1, ok);
 
-    hdlc_response(CMD_SETCURRENTSCENE, 0, &status, 1);
+    hdlc_response_set(CMD_SETCURRENTSCENE, true);
 }
 
 /* ID:9  SetDenoise — App prog 0-3 → 7100 程序 1-4，level 0-4 */
@@ -390,13 +435,13 @@ static void cmd_setdenoise_7100(const uint8_t *data, uint8_t len)
     uint8_t level;
     bool ok;
 
-    if (len < 3) { hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return; }
+    if (len < 3) { hdlc_response_set(CMD_SETDENOISE, false); return; }
 
     dev_type = data[0];
     prog     = data[1];
     level    = data[2];
 
-    if (prog >= 4) { hdlc_response(CMD_SETDENOISE, 1, NULL, 0); return; }
+    if (prog >= 4) { hdlc_response_set(CMD_SETDENOISE, false); return; }
     if (level > 4) {                     /* 7100 只有 5 档（0-4），超出则钳位 */
         PRINTF("[REMPRO] SetDenoise: level %u 超范围，钳到 4\r\n", level);
         level = 4;
@@ -407,7 +452,7 @@ static void cmd_setdenoise_7100(const uint8_t *data, uint8_t len)
            dev_type, prog, level, ok);
 
     /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
-    hdlc_response(CMD_SETDENOISE, ok ? 0 : 1, NULL, 0);
+    hdlc_response_set(CMD_SETDENOISE, ok);
 }
 
 /* ID:12  SetFeedbackOnOff — App prog 0-3 → 7100 程序 1-4，onoff 0/1（= DFBC） */
@@ -418,20 +463,20 @@ static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
     uint8_t onoff;
     bool ok;
 
-    if (len < 3) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+    if (len < 3) { hdlc_response_set(CMD_SETFEEDBACKONOFF, false); return; }
 
     dev_type = data[0];
     prog     = data[1];
     onoff    = data[2];
 
-    if (prog >= 4) { hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0); return; }
+    if (prog >= 4) { hdlc_response_set(CMD_SETFEEDBACKONOFF, false); return; }
 
     ok = dsp_7100_set_dfbc((uint8_t)(prog + 1), onoff ? 1 : 0);
     PRINTF("[REMPRO] SetFeedbackOnOff7100: dev=%u prog=%u onoff=%u started=%u\r\n",
            dev_type, prog, onoff, ok);
 
     /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
-    hdlc_response(CMD_SETFEEDBACKONOFF, ok ? 0 : 1, NULL, 0);
+    hdlc_response_set(CMD_SETFEEDBACKONOFF, ok);
 }
 
 /* ID:10  SetEqualizer — App: {Device_Type, Equalizer_Type 0低/1中/2高, Value}
@@ -445,13 +490,13 @@ static void cmd_setequalizer_7100(const uint8_t *data, uint8_t len)
     uint8_t prog;
     bool ok;
 
-    if (len < 3) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
+    if (len < 3) { hdlc_response_set(CMD_SETEQUALIZER, false); return; }
 
     dev_type = data[0];
     eq_type  = data[1];
     db       = (int16_t)(int8_t)data[2];   /* 253 → -3 */
 
-    if (eq_type > 2) { hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0); return; }
+    if (eq_type > 2) { hdlc_response_set(CMD_SETEQUALIZER, false); return; }
 
     /* 当前程序：0-based → 7100 程序 1-4 */
     prog = (uint8_t)(dsp_7100_get_program() - 1);
@@ -461,7 +506,357 @@ static void cmd_setequalizer_7100(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetEqualizer7100: dev=%u type=%u db=%d prog=%u started=%u\r\n",
            dev_type, eq_type, (int)db, prog, ok);
 
-    hdlc_response(CMD_SETEQUALIZER, ok ? 0 : 1, NULL, 0);
+    hdlc_response_set(CMD_SETEQUALIZER, ok);
+}
+
+/* ============================================================================
+ * ID:6 / 29 / 7 — WDRC 参数设置（SetGain / SetHighLevelGainData / SetMPO）
+ *
+ * 三条 payload 同构（SYS_ID、CMD_ID 已被 HDLC 层剥掉）：
+ *   { Device_Type(1), Current_Number(1), { Index(1), Value(1) } × k }
+ *   SetGain             ：Index = Spectrum 0-15 → 7100 ch1-16，Value 0-90 → LowLevelGain  -30~60
+ *   SetHighLevelGainData：Index = Channel  0-15 → 7100 ch1-16，Value 0-90 → HighLevelGain -30~60
+ *   SetMPO              ：Index = Channel  0-15 → 7100 ch1-16，Value 0-60 → OutputLimit   -60~0
+ * 一次可带多个 {Index, Value} 对，**共用同一次 7100 会话**（静音/提交/解除静音只发一次）。
+ * Index 16-31 忽略；超出 dsp 层范围的值由 dsp_7100_cmd.c 钳位。
+ *
+ * 应答按协议文档：Flag(1) + status(1)（status 0=不支持，非0=成功）。
+ * ⚠ 现有 SetDenoise / SetFeedbackOnOff / SetEqualizer 三个 handler 只回 Flag、不回 status，
+ *   与文档不符；这三条按文档实现，那三处未动。
+ * 详见 docs/7100协议/瑞听设置指令.md
+ * ========================================================================== */
+
+typedef bool (*dsp_7100_wdrc_set_fn)(uint8_t prog, const dsp_7100_wdrc_item_t *items,
+                                     uint8_t n);
+
+static void cmd_setwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *data,
+                             uint8_t len, int16_t val_offset, dsp_7100_wdrc_set_fn set_fn)
+{
+    dsp_7100_wdrc_item_t items[DSP7100_WDRC_CH];
+    uint8_t  dev_type;
+    uint8_t  prog;
+    uint8_t  n = 0;
+    uint16_t i;
+    bool     ok;
+
+    if (len < 2) { hdlc_response_set(cmd_id, false); return; }
+
+    dev_type = data[0];
+    prog     = data[1];
+
+    if (prog >= 4) { hdlc_response_set(cmd_id, false); return; }
+
+    for (i = 2; (i + 1u) < (uint16_t)len; i += 2u) {
+        uint8_t  idx = data[i];
+        int16_t  val = (int16_t)data[i + 1u] + val_offset;
+
+        if (n >= DSP7100_WDRC_CH) break;
+
+        if (idx >= DSP7100_WDRC_CH) {          /* 只用 0-15；16-31 忽略 */
+            PRINTF("[REMPRO] %s: index %u 超范围，忽略\r\n", name, idx);
+            continue;
+        }
+
+        items[n].ch  = (uint8_t)(idx + 1u);    /* 0-15 → ch1-16 */
+        items[n].val = (int8_t)val;
+        n++;
+    }
+
+    if (n == 0) { hdlc_response_set(cmd_id, false); return; }
+
+    /* App prog 0-3 → 7100 程序 1-4；ok = 会话已受理（异步） */
+    ok = set_fn((uint8_t)(prog + 1u), items, n);
+    PRINTF("[REMPRO] %s: dev=%u prog=%u n=%u started=%u\r\n",
+           name, dev_type, prog, n, ok);
+
+    hdlc_response_set(cmd_id, ok);
+}
+
+/* ID:6  SetGain — 增益 → LowLevelGain（Value 0-90 → -30~60） */
+static void cmd_setgain_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_setwdrc_7100(CMD_SETGAIN, "SetGain", data, len, -30, dsp_7100_set_low_level_gain);
+}
+
+/* ID:29 SetHighLevelGainData — 高水平增益 → HighLevelGain（Value 0-90 → -30~60） */
+static void cmd_sethighlevelgain_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_setwdrc_7100(CMD_SETHIGHLEVELGAINDATA, "SetHighLevelGain", data, len,
+                     -30, dsp_7100_set_high_level_gain);
+}
+
+/* ID:7  SetMPO — MPO 最大输出量 → OutputLimit（Value 0-60 → -60~0） */
+static void cmd_setmpo_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_setwdrc_7100(CMD_SETMPO, "SetMPO", data, len, -60, dsp_7100_set_output_limit);
+}
+
+/* ============================================================================
+ * ID:22 / 30 / 23 — WDRC 读回（GetGainData / GetHighLevelGainData / GetMPOData）
+ *
+ * 请求：{ Device_Type(1), Current_Number(1) }
+ * 应答：Flag(1) + Channel_Number(1) + { Index(1), Value(1) } × Channel_Number
+ *   Index 0 起（= 7100 通道号 - 1）
+ *   GetGainData          ：Value = LowLevelGain  + 30   （-30~60 → 0~90）
+ *   GetHighLevelGainData ：Value = HighLevelGain + 30   （-30~60 → 0~90）
+ *   GetMPOData           ：Value = OutputLimit   + 60   （-60~0  → 0~60）
+ *
+ * 数据取自读回缓存（dsp_7100_get_prog）；**读回尚未完成或该程序无效时回 Flag=1**，
+ * App 需等开机读回跑完（见 [7100] 读回日志）再取。
+ * 详见 docs/7100协议/瑞听设置指令.md、docs/7100协议/WDRC/7100_WDRC读取.md
+ * ========================================================================== */
+
+#define WDRC_RB_LL  0
+#define WDRC_RB_HL  1
+#define WDRC_RB_OL  2
+
+static void cmd_getwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *data,
+                             uint8_t len, uint8_t which, int16_t val_offset)
+{
+    const dsp_7100_prog_t *p;
+    uint8_t resp[1 + DSP7100_WDRC_CH * 2];
+    uint8_t prog;
+    uint8_t n = 0;
+    uint8_t ch;
+
+    if (len < 2) { hdlc_response(cmd_id, 1, NULL, 0); return; }
+
+    prog = data[1];                        /* data[0] = Device_Type，忽略 */
+    if (prog >= DSP7100_RB_PROGS) { hdlc_response(cmd_id, 1, NULL, 0); return; }
+
+    p = dsp_7100_get_prog(prog);           /* App prog 0-3 = 读回缓存索引 0-3 */
+    if (p == NULL) {
+        PRINTF("[REMPRO] %s: prog=%u 读回数据还不可用\r\n", name, prog);
+        hdlc_response(cmd_id, 1, NULL, 0);
+        return;
+    }
+
+    for (ch = 1; ch <= DSP7100_WDRC_CH; ch++) {
+        int16_t v;
+
+        if (which == WDRC_RB_LL)      v = p->wdrc_ll[ch - 1];
+        else if (which == WDRC_RB_HL) v = p->wdrc_hl[ch - 1];
+        else                          v = p->wdrc_ol[ch - 1];
+
+        v += val_offset;
+        if (v < 0)   { v = 0; }            /* 缓存异常时饱和，避免回绕 */
+        if (v > 255) { v = 255; }
+
+        resp[1 + n * 2]     = (uint8_t)(ch - 1);   /* Index/Channel 0 起 */
+        resp[1 + n * 2 + 1] = (uint8_t)v;
+        n++;
+    }
+
+    resp[0] = n;                           /* Channel_Number */
+
+    PRINTF("[REMPRO] %s: prog=%u n=%u\r\n", name, prog, n);
+    hdlc_response(cmd_id, 0, resp, (uint8_t)(1 + n * 2));
+}
+
+/* ID:22  GetGainData — 增益 ← LowLevelGain（+30） */
+static void cmd_getgaindata_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_getwdrc_7100(CMD_GETGAINDATA, "GetGainData", data, len, WDRC_RB_LL, 30);
+}
+
+/* ID:30  GetHighLevelGainData — 高水平增益 ← HighLevelGain（+30） */
+static void cmd_gethighlevelgain_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_getwdrc_7100(CMD_GETHIGHLEVELGAINDATA, "GetHighLevelGain", data, len,
+                     WDRC_RB_HL, 30);
+}
+
+/* ID:23  GetMPOData — MPO ← OutputLimit（+60） */
+static void cmd_getmpodata_7100(const uint8_t *data, uint8_t len)
+{
+    cmd_getwdrc_7100(CMD_GETMPODATA, "GetMPOData", data, len, WDRC_RB_OL, 60);
+}
+
+/* ============================================================================
+ * ID:21 SetMuteData — 静音开关
+ *
+ * 请求 { Device_Type(1), Mute(1) }：**Mute 非 0 = 静音**，0 = 取消静音。
+ * 应答 Flag + status。
+ *
+ * ⚠ 方向与 3 号 SetDeviceOnOff **相反**：3 号 data[1] 非 0 是"开"，
+ *   这里非 0 是"静音"—— 因为文档把该字段定义为 Mute 且标注"0:关 1:开"。
+ * 参考 remote_mic_rx_coex_1654/code/ble_rempro_cmd.c 的 cmd_setmutedata()；
+ * 1654 走 bs300_mute()/bs300_active()，这里改成 dsp_7100_set_mute()。
+ *
+ * ⚠ App 约每 6s 重发一次（实测），所以**只在状态变化时才动 I2C**，否则只回应答 ——
+ *   不然会不停打断 7100 的读回/写会话。
+ * ========================================================================== */
+
+static void cmd_setmutedata_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t mute;
+    uint8_t want;          /* 目标 s_device_on */
+    uint8_t changed;
+    bool    ok = true;
+
+    if (len < 2) { hdlc_response_set(CMD_SETMUTEDATA, false); return; }
+
+    dev_type = data[0];
+    mute     = data[1];
+    want     = mute ? 0u : 1u;
+    changed  = (want != s_device_on) ? 1u : 0u;
+
+    if (changed) {
+        ok = dsp_7100_set_mute(mute != 0u);
+        if (ok) s_device_on = want;
+    }
+
+    PRINTF("[REMPRO] SetMuteData: dev=%u mute=%u on=%u changed=%u ok=%u\r\n",
+           dev_type, mute, s_device_on, changed, ok);
+    hdlc_response_set(CMD_SETMUTEDATA, ok);
+}
+
+/* ============================================================================
+ * ID:40 SetAudiometryStatus — 进入/退出纯音测听
+ *
+ *   Fitting_Status = 0  进入测听：记下当前程序 → 切到程序 3 → `0x2E = 0x00` → 解除静音 → 推
+ *                       SYS_ID=1 CMD 6 {Device_Type, Initial_Status=2 初始化完成}
+ *   Fitting_Status = 1  退出测听：切回进入前的程序 → `0x2E = 0x58` → 解除静音 → 推
+ *                       SYS_ID=1 CMD 6 {Device_Type, Initial_Status=1}（"退出完成"）
+ *   2 / 3（协议文档里的"进入/退出试听"）暂未实现。
+ *
+ * 7100 侧序列按 `tonestar.txt` / `tonestop.txt` 抓包：
+ *   进：`A2 00 16 03` → `A2 00 2E 00` → `A7 01 00 00 00 26`
+ *   停：出音停帧 → `A2 00 2E 58` → `A7 01 00 00 00 26`
+ *   注意两次末尾**都有解除静音 `26` 却没有 `25`** —— 推测是 `0x2E` 那次模式切换本身会静音。
+ *
+ * 参考 remote_mic_rx_coex_1654/code/ble_rempro_cmd.c 的 cmd_setaudiometrystatus()。
+ * 1654 走 BS300（进测听时把降噪/AGCO/反馈抑制整组清零并写平坦通路，再靠 ITG 出纯音）；
+ * 1664 已无 BS300，改为**切程序 + 0x2E 模式寄存器**。
+ *
+ * 顺序（照 1654，也是实测要求）：
+ *   **先回 CMD 40 的应答 → 做 I2C → 延 1s 再推 SYS_ID=1 CMD 6**
+ *   推早了会抢在应答前面发出去（实测日志：push 先于 TX frame），App 会拿到没生效的状态。
+ * ========================================================================== */
+
+#define AUDIOMETRY_PROG   3
+
+static uint8_t s_audiometry_prev_prog;   /* 进入测听前的程序，退出时切回 */
+static bool    s_audiometry_active;
+
+static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
+{
+    uint8_t fitting_status;
+
+    if (len < 2) { hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, false); return; }
+
+    fitting_status = data[1];
+    PRINTF("[REMPRO] SetAudiometryStatus: status=%u active=%u\r\n",
+           fitting_status, s_audiometry_active);
+
+    /* 会话占着 I2C 时不能插阻塞的切程序调用 */
+    if (dsp_7100_cmd_busy()) {
+        PRINTF("[REMPRO] SetAudiometryStatus: 7100 会话进行中，忽略\r\n");
+        hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, false);
+        return;
+    }
+
+    /* 先回应答，再做活（切程序是阻塞调用，放后面不影响应答时序） */
+    hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, true);
+
+    switch (fitting_status) {
+    case 0:   /* 进入测听：切程序 → 0x2E=0x00 → 解除静音（照 tonestar.txt 抓包顺序）*/
+        if (s_audiometry_active) break;                  /* 已在测听，幂等 */
+        s_audiometry_prev_prog = dsp_7100_get_program();
+        if (!dsp_7100_switch_program(AUDIOMETRY_PROG)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 切入程序%u 失败\r\n", AUDIOMETRY_PROG);
+            break;
+        }
+        s_audiometry_active = true;
+        if (!dsp_7100_set_tone_mode(true)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 0x2E 置位失败\r\n");
+        }
+        dsp_7100_set_mute(false);                        /* 抓包末尾恒有 26（解除静音）*/
+        aud_push_schedule(AUD_PUSH_ENTER);               /* 1s 后推 Initial_Status = 2 */
+        break;
+
+    case 1:   /* 退出测听：切回原程序 → 0x2E=0x58 → 解除静音 */
+        if (!s_audiometry_active) break;                 /* 未在测听，幂等 */
+        if (!dsp_7100_switch_program(s_audiometry_prev_prog)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 切回程序%u 失败\r\n",
+                   s_audiometry_prev_prog);
+            break;
+        }
+        s_audiometry_active = false;
+        if (!dsp_7100_set_tone_mode(false)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 0x2E 复位失败\r\n");
+        }
+        dsp_7100_set_mute(false);                        /* 抓包末尾恒有 26（解除静音）*/
+        aud_push_schedule(AUD_PUSH_EXIT);                /* 1s 后推 Initial_Status = 1 */
+        break;
+
+    default:
+        PRINTF("[REMPRO] SetAudiometryStatus: status=%u 未支持\r\n", fitting_status);
+        break;
+    }
+
+    PRINTF("[REMPRO] SetAudiometryStatus: prog %u -> %u\r\n",
+           s_audiometry_prev_prog, dsp_7100_get_program());
+}
+
+/* ============================================================================
+ * ID:13 / 14 — 纯音测听（播放 / 停止）
+ *
+ *   SetPlayVoice (13) 请求 { Device_Type(1), Spectrum(1), Decibel(1) }
+ *       Spectrum 0-16 → 250/500/1000/…/8000 Hz（协议文档 Frequency Table）
+ *       Decibel 20-100（步进 5）
+ *   SetStopVoice (14) 请求 { Device_Type(1) }
+ *   应答：Flag + status
+ *
+ * ⚠ 7100 侧目前只标定了 6 个频点（500/1000/2000/3000/4000/6000），
+ *   其余频点会回 Flag=1（见 docs/7100协议/纯音测听.md）。
+ * 参考 remote_mic_rx_coex_1654/code/ble_rempro_cmd.c 的 cmd_setplayvoice()/cmd_setstopvoice()
+ * （1654 走 BS300 的 ITG，这里改成 dsp_7100_play_tone()）。
+ * ========================================================================== */
+
+static const uint16_t s_audiometry_freq[17] = {
+    250, 500, 1000, 1500, 2000, 2500, 3000, 3500,
+    4000, 4500, 5000, 5500, 6000, 6500, 7000, 7500, 8000
+};
+
+/* ID:13  SetPlayVoice — 播放指定频点与声压级的纯音 */
+static void cmd_setplayvoice_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t  spectrum;
+    uint8_t  decibel;
+    uint16_t freq_hz = 0;
+    bool     ok = false;
+
+    if (len < 3) { hdlc_response_set(CMD_SETPLAYVOICE, false); return; }
+
+    spectrum = data[1];
+    decibel  = data[2];
+
+    if (spectrum < 17) freq_hz = s_audiometry_freq[spectrum];
+
+    if (spectrum < 17 && decibel >= 20 && decibel <= 100) {
+        ok = dsp_7100_play_tone(freq_hz, decibel);
+    } else {
+        PRINTF("[REMPRO] SetPlayVoice: 参数越界 spec=%u dB=%u\r\n", spectrum, decibel);
+    }
+
+    PRINTF("[REMPRO] SetPlayVoice: spec=%u dB=%u freq=%u started=%u\r\n",
+           spectrum, decibel, freq_hz, ok);
+    hdlc_response_set(CMD_SETPLAYVOICE, ok);
+}
+
+/* ID:14  SetStopVoice — 停止纯音 */
+static void cmd_setstopvoice_7100(const uint8_t *data, uint8_t len)
+{
+    bool ok;
+
+    (void)data;
+    (void)len;
+
+    ok = dsp_7100_stop_tone();
+    PRINTF("[REMPRO] SetStopVoice: started=%u\r\n", ok);
+    hdlc_response_set(CMD_SETSTOPVOICE, ok);
 }
 
 /* ID:26  GetDeviceConfig */
@@ -477,14 +872,14 @@ static void cmd_getdeviceconfig(void)
 
     /* Left side */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
-    d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
+    d[pos++] = 21; d[pos++] = 0;                         /* Product_Type = 21 */
     d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
     /* Right side (same as left) */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
-    d[pos++] = 20; d[pos++] = 0;                         /* Product_Type = 20 */
+    d[pos++] = 21; d[pos++] = 0;                         /* Product_Type = 21 */
     d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
@@ -608,37 +1003,79 @@ void rempro_cmd_process(void)
         /* ---- 已接 7100 运行时命令（切模式/调音量）---- */
         case CMD_SETVOLUME:
             if (data) cmd_setvolume_7100(data, data_len);
-            else hdlc_response(CMD_SETVOLUME, 1, NULL, 0);
+            else hdlc_response_set(CMD_SETVOLUME, false);
             break;
         case CMD_SETCURRENTSCENE:
             if (data) cmd_setcurrentscene_7100(data, data_len);
-            else hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+            else hdlc_response_set(CMD_SETCURRENTSCENE, false);
             break;
         case CMD_SETDENOISE:
             if (data) cmd_setdenoise_7100(data, data_len);
-            else hdlc_response(CMD_SETDENOISE, 1, NULL, 0);
+            else hdlc_response_set(CMD_SETDENOISE, false);
             break;
         case CMD_SETFEEDBACKONOFF:
             if (data) cmd_setfeedbackonoff_7100(data, data_len);
-            else hdlc_response(CMD_SETFEEDBACKONOFF, 1, NULL, 0);
+            else hdlc_response_set(CMD_SETFEEDBACKONOFF, false);
             break;
         case CMD_SETEQUALIZER:
             if (data) cmd_setequalizer_7100(data, data_len);
-            else hdlc_response(CMD_SETEQUALIZER, 1, NULL, 0);
+            else hdlc_response_set(CMD_SETEQUALIZER, false);
+            break;
+        case CMD_SETGAIN:
+            if (data) cmd_setgain_7100(data, data_len);
+            else hdlc_response_set(CMD_SETGAIN, false);
+            break;
+        case CMD_SETHIGHLEVELGAINDATA:
+            if (data) cmd_sethighlevelgain_7100(data, data_len);
+            else hdlc_response_set(CMD_SETHIGHLEVELGAINDATA, false);
+            break;
+        case CMD_SETMPO:
+            if (data) cmd_setmpo_7100(data, data_len);
+            else hdlc_response_set(CMD_SETMPO, false);
+            break;
+        case CMD_GETGAINDATA:
+            if (data) cmd_getgaindata_7100(data, data_len);
+            else hdlc_response(CMD_GETGAINDATA, 1, NULL, 0);
+            break;
+        case CMD_GETHIGHLEVELGAINDATA:
+            if (data) cmd_gethighlevelgain_7100(data, data_len);
+            else hdlc_response(CMD_GETHIGHLEVELGAINDATA, 1, NULL, 0);
+            break;
+        case CMD_GETMPODATA:
+            if (data) cmd_getmpodata_7100(data, data_len);
+            else hdlc_response(CMD_GETMPODATA, 1, NULL, 0);
             break;
 
-        /* ---- 需 DSP 参数读写：阶段二实现，暂回 flag=1（不支持）---- */
+        case CMD_SETMUTEDATA:
+            if (data) cmd_setmutedata_7100(data, data_len);
+            else hdlc_response_set(CMD_SETMUTEDATA, false);
+            break;
+        case CMD_SETAUDIOMETRYSTATUS:
+            if (data) cmd_setaudiometrystatus(data, data_len);
+            else hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, false);
+            break;
+
+        case CMD_SETPLAYVOICE:
+            if (data) cmd_setplayvoice_7100(data, data_len);
+            else hdlc_response_set(CMD_SETPLAYVOICE, false);
+            break;
+        case CMD_SETSTOPVOICE:
+            if (data) cmd_setstopvoice_7100(data, data_len);
+            else hdlc_response_set(CMD_SETSTOPVOICE, false);
+            break;
+
+        /* ---- 设置类：待实现，回 Flag=1 + status=0（不支持）---- */
         case CMD_SETDEVICEONOFF:
+        case CMD_SETCOMPRESSRATIO:
+            PRINTF("[REMPRO] CMD=%u 待实现（7100 写路径）\r\n", cmd_id);
+            hdlc_response_set(cmd_id, false);
+            break;
+
+        /* ---- 读取类：待实现，回 Flag=1 ---- */
         case CMD_GETFEEDBACKONOFF:
         case CMD_GETCURRENTSCENE:
         case CMD_GETFITTINGDATA:
-        case CMD_SETGAIN:
-        case CMD_SETMPO:
-        case CMD_SETCOMPRESSRATIO:
-        case CMD_SETPLAYVOICE:
-        case CMD_SETSTOPVOICE:
-        case CMD_SETAUDIOMETRYSTATUS:
-            PRINTF("[REMPRO] CMD=%u 待阶段二（7100 写路径）\r\n", cmd_id);
+            PRINTF("[REMPRO] CMD=%u 待实现（7100 读路径）\r\n", cmd_id);
             hdlc_response(cmd_id, 1, NULL, 0);
             break;
 

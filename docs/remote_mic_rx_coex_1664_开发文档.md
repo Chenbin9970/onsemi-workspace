@@ -12,7 +12,9 @@
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
 > 原 BS300 子系统**（BS300 文件已删）。含上电握手、106 步引导、4 程序读回、flash 缓存、5s 心跳。
-> **阶段二（写路径 + Rempro 验配命令重映射）未开始**，详见 §17。
+> **阶段二（写路径 + Rempro 验配命令重映射）进行中**：写会话状态机、写后回写缓存、
+> 降噪 / DFBC / EQ / **WDRC（增益/MPO/HighLevel）** 及其读回、**纯音测听（CMD 40/13/14/21）** 均已实现。
+> **纯音测听已上板验证通过**（App 侧尚在完善）；**WDRC 与 EQ 尚未上板**，详见 §7.4.3 / §7.4.4 与 §17。
 > 引脚按「音频输出关闭 + I2C 用 DIO0/DIO1」定案（见 §5）。
 
 参考工程：`remote_mic_rx_coex_1654`（本工程直接来源）、`peripheral_server_sleep`（OD 输出路径
@@ -282,7 +284,7 @@ ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_read
 | code/dsp_7100_init_tables.c | 生成的引导步骤表（106 步，`scripts/gen_dsp_7100_init.py`） |
 | code/dsp_7100_rb_tables.c | 生成的读回命令表（28 条，`scripts/gen_dsp_7100_rb.py`） |
 | code/dsp_7100_storage.c / include/dsp_7100_storage.h | 读回结果 Main Flash 缓存 |
-| code/dsp_7100_cmd.c / include/dsp_7100_cmd.h | 运行时命令：切程序 / 音量（同步）+ 降噪 / DFBC（tick 异步），见 §7.4 |
+| code/dsp_7100_cmd.c / include/dsp_7100_cmd.h | 运行时命令：切程序 / 音量（同步）+ 降噪 / DFBC / EQ / WDRC（tick 异步），见 §7.4 |
 | app.c | 上电握手（DIO13/DIO11）+ `dsp_7100_boot_init()` + `dsp_7100_cache_try_load()`；主循环 `dsp_7100_process_deferred()` |
 | code/app_process.c | `APP_7100_HB_Handler`：200ms tick —— 会话中推会话，否则推读回 + 每 5s 心跳 `{0x88,0x01}` |
 | code/ble_std.c | GAPM_RESET 后挂 `APP_7100_HB_TIMER` |
@@ -373,7 +375,7 @@ App_Initialize()
 
 > ⚠ 握手 `while(DIO_DATA->ALIAS[13] == 1)` **无超时**（照 rx_coex）。板上无 7100 时卡在开机。
 
-### 7.4 运行时命令（切程序 / 音量 / 降噪 / DFBC）
+### 7.4 运行时命令（切程序 / 音量 / 降噪 / DFBC / WDRC / 纯音测听）
 
 移植自 `peripheral_server_sleep7160test` + `remote_mic_rx_coex` 已验证写法。
 
@@ -517,24 +519,162 @@ N = 2/3/11（低/中/高）→ **14 / 18 / 50 条**。
 **API 语义**：`dsp_7100_set_denoise/dfbc()` 返回 true = **已受理**（异步），不是已完成。
 完成后 `a7_session_finish()` 回写 RAM 参数并请求落盘，日志 `[7100] --- session done ok=? ---`。
 
-#### 7.4.3 Rempro 接线
+#### 7.4.3 WDRC 参数写 / 读（SetGain / SetMPO / SetHighLevelGainData）
+
+> **已实现，未上板验证。** 三条 Rempro 验配命令落到 7100 的 WDRC 参数，走 §7.4.2 同一套 tick 会话模型。
+
+| Rempro 命令 | → 7100 WDRC | 参数号 (ch N) | 值字段 |
+|---|---|---|---|
+| `SetGain` (6) | **LowLevelGain** | `0x15 + 0x11×(N−1)` | 1 字节，8bit 补码 |
+| `SetHighLevelGainData` (29) | **HighLevelGain** | `0x17 + 0x11×(N−1)` | 1 字节，8bit 补码 |
+| `SetMPO` (7) | **OutputLimit** | `0x18 + 0x11×(N−1)` | **4 字节**，见下 |
+
+**值换算**（App 档位 → 7100 dB，1 LSB = 1 dB，纯偏移）：
+
+| 命令 | App 值域 | 换算 | 7100 值域 |
+|---|---|---|---|
+| SetGain | 0-90 | `− 30` | −30 ~ 60 |
+| SetHighLevelGainData | 0-90 | `− 30` | −30 ~ 60 |
+| SetMPO | 0-60 | `− 60` | −60 ~ 0 |
+
+**索引**：payload 的 `Spectrum` / `Channel` 取 **0-15**，直接对应 7100 ch1-16（`idx + 1`）；16-31 忽略。
+
+**多通道共用一次会话**（关键）：
+
+```
+静音 → 选程序 → [选块 + 写值] × n → confirm → 解除静音 → 选回 → commit
+```
+
+公共帧只发一次，每通道只多两条命令。命令数 = `6 + 2n`，时长 ≈ `(6+2n) × 0.4s`：
+**n=1 → 3.2s；n=16 → 15.2s（全程静音）** —— 与 EQ 高音段 20s 同属已知取舍。
+
+**API**（`include/dsp_7100_cmd.h`）：
+
+```c
+typedef struct { uint8_t ch; int8_t val; } dsp_7100_wdrc_item_t;   /* val = 7100 dB 绝对值 */
+
+bool dsp_7100_set_low_level_gain (uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n);
+bool dsp_7100_set_high_level_gain(uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n);
+bool dsp_7100_set_output_limit   (uint8_t prog, const dsp_7100_wdrc_item_t *items, uint8_t n);
+```
+
+- `prog` 1-4，`n` 1-16；返回 true = **已受理**（异步，同 §7.4.2 的 API 语义）。
+- 值在进入会话时**就钳位**（LL/HL `−30..60`、OL `−60..0`），写入与收尾回写缓存共用同一份值。
+- items **拷贝进模块静态数组** —— 会话异步跑，调用方的 BLE 负载缓冲到收尾时可能已失效。
+- 成功后回写 `wdrc_ll/hl/ol[]` 并请求落盘（满足 §17 第 4 条）。
+- ⚠ 与 `set_eq` 的交互：本接口写**绝对值并直接覆盖缓存基准**，而 EQ 模型是"设备值 = 基准 + 该段 eq"。
+  若该段 eq 非 0，两边会差一个 eq 量（当前 EQ 默认 0，未处理，代码注释已标明）。
+
+**OutputLimit 的值字段是 4 字节**（LL/HL 只有 1 字节）：
+
+```
+A7 07 00 00 00 08 00 00 <b0> <b1> <b2> <b3>
+b0 = OL 本身（8bit 补码）
+b1 = OL + K_ch          K_ch 逐通道常量（−24…−13）
+b2 / b3 = 逐通道常量，与 OL 无关
+```
+
+`b1`~`b3` 取自默认表 `s_wdrc_ol_tail[16][3]`（OL = −6 状态抓包）。
+⚠ 该表只来自**一次**默认状态抓包 —— 若这些字节被其它工具改过即失准。
+16 通道表与抓包验证见 `docs/7100协议/WDRC/7100_WDRC设置.md` §3.2。
+
+**读回**（同批实现）：
+
+| 命令 | 应答（`Flag + Channel_Number + {Index, Value} × N`） |
+|---|---|
+| `GetGainData` (22) | `Value = LowLevelGain + 30` |
+| `GetHighLevelGainData` (30) | `Value = HighLevelGain + 30` |
+| `GetMPOData` (23) | `Value = OutputLimit + 60` |
+
+数据取读回缓存 `dsp_7100_get_prog()`；**读回未完成或程序无效时回 `Flag=1`**，App 需重试。
+（Get 类应答按协议文档**不带 status**，与设置类不同。）
+
+> 协议细节（payload 布局、SYS_ID 命名空间陷阱）：`docs/7100协议/瑞听设置指令.md`；
+> 7100 侧帧格式、参数号实测、OL 默认表：`docs/7100协议/WDRC/7100_WDRC设置.md`。
+
+#### 7.4.4 纯音测听 / 静音（CMD 40 / 13 / 14 / 21）
+
+> **已上板验证通过**（App 侧尚在完善中）。7100 侧帧格式与电平模型见 `7100协议/纯音测听.md`。
+
+**三条 7100 命令**：
+
+| 用途 | 帧 | 机制 |
+|------|-----|------|
+| 出纯音 | `A7 07 00 00 00 2E 01 <freq16-BE> <level24-BE>` | 单写帧 |
+| 停音 | `A7 07 00 00 00 2E 00 00 00 00 00 00` | 单写帧 |
+| 静音/解静音 | `A7 01 00 00 00 25` / `26` | 单写帧 |
+| 测听模式寄存器 | `A2 00 2E <00/58>` | `A2` 三帧序列 |
+
+电平 = `round(4.39902 × 10^((db + C(freq))/20))`，`C(f)` 逐频率整数修正。
+**已标定 6 个频点**：500/1000/2000/3000/4000/6000 Hz（其余 11 个返回 false → App 收 `Flag=1`）。
+
+**BLE → 7100 流程**
+
+```
+CMD 40 {DevType, 0} 进入测听     ← 先回应答，再做 I2C
+   ├ A2 00 16 03              切程序 3（dsp_7100_switch_program）
+   ├ A2 00 2E 00              测听模式开（dsp_7100_set_tone_mode(true)）
+   ├ A7 01 00 00 00 26        解除静音（dsp_7100_set_mute(false)）
+   └ 延 1s → 推 SYS_ID=1 CMD 6 {DevType, Initial_Status=2}
+
+CMD 13 {DevType, Spectrum, Decibel}      出音（Spectrum 0-16 → 250…8000 Hz，dB 20-100）
+CMD 14 {DevType}                         停音
+
+CMD 40 {DevType, 1} 退出测听
+   ├ A2 00 16 <原程序>          切回进入前的程序
+   ├ A2 00 2E 58              测听模式关
+   ├ A7 01 00 00 00 26        解除静音
+   └ 延 1s → 推 SYS_ID=1 CMD 6 {DevType, Initial_Status=1}
+
+CMD 21 {DevType, Mute} 静音开关   ← ⚠ 方向与 CMD 3 相反：Mute 非 0 = 静音
+```
+
+**实现要点**
+
+- CMD 40 的应答**必须抢在推送前面**：BLE TX 是**单槽**（`s_tx_frame`），顺序反了推送会顶掉应答（实测日志：`push` 先于 `TX frame`）
+- 推送用 `rempro_deferred_tick()`（在 `APP_7100_HB_Handler` 的 200ms tick 里计数，5 tick = 1s），**不引入新的 ke_timer**
+- CMD 21 被 App 约每 6s 轮询一次 → **只在状态变化时才动 I2C**，否则只回应答，避免打断读回/会话
+- 纯音/静音是**单命令会话**（2 tick ≈ 0.4s），不走公共帧；收尾**不落盘**（不改任何缓存参数，否则每播一个频点擦写一次 flash）
+
+> ⚠ **时序与抓包的偏差（未复刻，实测无影响）**：抓包里单写帧的「写→读」只有 1~8ms，
+> 而单命令会话走 200ms tick，实际是 200ms；命令间抓包约 44~49ms，我们几乎无间隔。
+> 上板验证功能正常，故未改。若后续测听点按感觉迟钝，可把纯音/静音改成阻塞形态（照
+> `dsp_7100_switch_program` 的写法，`写 → 5ms → 读 → 1ms → 82`），单次约 6ms。
+> 另：`tonestar.txt` 里切程序只用了 3 帧，本工程用的是 5 帧（§3.2），两者都可用。
+
+#### 7.4.5 Rempro 接线
 
 | 命令 ID | 处理 | 映射 |
 |---------|------|------|
 | `CMD_SETVOLUME` (2) | `cmd_setvolume_7100` | App vol 0-5 → 7100 档位 1-6（`+1`） |
 | `CMD_SETCURRENTSCENE` (16) | `cmd_setcurrentscene_7100` | App scene 0-3 → 7100 程序 1-4（`+1`） |
 | `CMD_SETDENOISE` (9) | `cmd_setdenoise_7100` | prog 0-3 → 程序 1-4；level 0-4（>4 钳位并告警） |
-| `CMD_SETFEEDBACKONOFF` (12) | `cmd_setfeedbackonoff_7100` | prog 0-3 → 程序 1-4；onoff 即 DFBC |
-| `CMD_SETEQUALIZER` (10) | `cmd_setequalizer_7100` | type 0低/1中/2高 → ch1,2 / ch6,7 / ch12,13 的 LL+HL（±dB） |
+| `CMD_SETFEEDBACKONOFF` (5) | `cmd_setfeedbackonoff_7100` | prog 0-3 → 程序 1-4；onoff 即 DFBC |
+| `CMD_SETEQUALIZER` (10) | `cmd_setequalizer_7100` | type 0低/1中/2高 → 该段通道的 LL+HL（±dB） |
+| `CMD_SETGAIN` (6) | `cmd_setgain_7100` | Spectrum 0-15 → ch1-16；`−30` → LL（§7.4.3） |
+| `CMD_SETHIGHLEVELGAINDATA` (29) | `cmd_sethighlevelgain_7100` | Channel 0-15 → ch1-16；`−30` → HL（§7.4.3） |
+| `CMD_SETMPO` (7) | `cmd_setmpo_7100` | Channel 0-15 → ch1-16；`−60` → OL（§7.4.3） |
+| `CMD_GETGAINDATA` (22) | `cmd_getgaindata_7100` | 读回缓存 → `+30`（§7.4.3） |
+| `CMD_GETHIGHLEVELGAINDATA` (30) | `cmd_gethighlevelgain_7100` | 读回缓存 → `+30`（§7.4.3） |
+| `CMD_GETMPODATA` (23) | `cmd_getmpodata_7100` | 读回缓存 → `+60`（§7.4.3） |
+| `CMD_SETMUTEDATA` (21) | `cmd_setmutedata_7100` | ⚠ **方向与 3 号相反**：`Mute` 非 0 = 静音（§7.4.4） |
+| `CMD_SETPLAYVOICE` (13) | `cmd_setplayvoice_7100` | Spectrum 0-16 → 250…8000 Hz；dB 20-100（§7.4.4） |
+| `CMD_SETSTOPVOICE` (14) | `cmd_setstopvoice_7100` | 停音（§7.4.4） |
+| `CMD_SETAUDIOMETRYSTATUS` (40) | `cmd_setaudiometrystatus` | 0=进测听 / 1=退测听（§7.4.4） |
 | `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | **固定回 100/100**（回 flag=1 会导致 App 连不上） |
 
 `GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
 
-> 其余 10 个 Rempro 命令（SetGain / SetMPO / GetFittingData / 听力计等）
-> 仍回 `flag=1`，待阶段二实现 7100 参数写路径。
-> `CMD_GETCURRENTSCENE` / `CMD_GETFEEDBACKONOFF` 未实现。
+> 其余 5 个 Rempro 命令（SetDeviceOnOff (3) / SetCompressRatio (8) / GetCurrentScene (15) /
+> GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`。
 
-#### 7.4.4 I2C 收发日志（四条链路统一）
+**应答格式统一（2026-09-15）**：所有**设置类**命令的应答统一为 `Flag(1) + status(1)`
+（协议文档规定；`hdlc_response_set()` 生成，成功 = `00 01`，失败/不支持 = `01 00`）。
+此前 SetDenoise / SetFeedbackOnOff / SetEqualizer 及各处兜底分支只回 `Flag`，本轮按文档补齐；
+**Flag 取值一律沿用原逻辑**，只补上缺失的 status 字节（SetVolume 成功分支字节不变）。
+Get 类命令的应答按文档**不带 status**。
+
+#### 7.4.6 I2C 收发日志（四条链路统一）
 
 ```c
 #define I2C_DUMP_CHUNK 32      /* ⚠ 每行最多 32 字节 */
@@ -642,9 +782,11 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 ## 12. 已知问题 / 待办
 
-1. **阶段二未开始**：剩余 10 个 Rempro 验配命令（SetGain / SetMPO / GetFittingData /
-   听力计等）仍需落到 7100 参数写路径，见 §17。
-   已完成：切程序 / 音量 / 降噪 / DFBC（已上板验证）、EQ（**未上板**，见 §7.4.2）。
+1. **阶段二进行中**：剩余 5 个 Rempro 命令（SetDeviceOnOff (3) / SetCompressRatio (8) /
+   GetCurrentScene (15) / GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`，见 §17。
+   已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音**（**均已上板验证**）、
+   EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）。
+   纯音的 App 侧仍在完善中。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
 3. `rempro_push_volume_change()` 无调用者（按键删除的副作用）。保留与否待定。
 4. **PCM 脚位待硬件确认**：按 7160test 定为 BCLK=DIO2 / FS=DIO3 / SERO=DIO14，需确认 1664 板
@@ -653,7 +795,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 6. OD 引脚 DIO0/1 让给 7100 I2C；音频出口已改 **PCM 从机**（`PCM_SLAVE_OUTPUT`）。
    恢复 OD 直驱需重新选脚位（如 7160test 的 DIO12 单端方案）。
 7. 读回缓存首次写入后即命中，**除非 0xFE 失效否则不会重读**；芯片侧参数变了需主动 0xFE。
-8. **I2C 打印必须分块**（§7.4.4）：pack `printf.c` 的 200B 静态缓冲 + `vsprintf` 无边界检查，
+8. **I2C 打印必须分块**（§7.4.6）：pack `printf.c` 的 200B 静态缓冲 + `vsprintf` 无边界检查，
    单次输出超长会死机（曾因 300B 写块一次打印而踩坑）。新增打印时务必遵守。
 9. 写会话期间读回与心跳被暂停（`dsp_7100_cmd_busy()`），期间手机多发命令会被拒绝
    （日志 `上一会话未完成，忽略本次设置`）。会话时长：降噪/DFBC ≈3.2s；
@@ -682,6 +824,30 @@ App_Initialize() → 打印 started → bs300_driver_init()
      **DIO14 每个 FS 周期移出 32 bit = 2 段 16-bit 连续采样**（无插零），有效 24k；
    - DIO12 打印 TX；DIO11 握手脉冲；DIO13 ready。
 8. 发 `0xFE`：应见 `[7100] 0xFE: invalidate cache + reset to reload`，重启后重新走读回。
+9. **WDRC 验配命令**（§7.4.3，**未上板**，需实测）：
+   - App 下发 `SetGain` / `SetMPO` / `SetHighLevelGainData` → 串口应依次出现
+     `[REMPRO] SetGain: dev=… prog=… n=… started=1` → `[7100] --- WDRC set … n=… ---`
+     → `[7100] --- session done ok=1 ---`。
+     **n=16 时约 15.2s，会话期间全程静音**（与 EQ 高音段同属已知取舍）。
+   - 逻辑分析仪按 §7.4.3 的帧形状核对：`A7 05 00 00 00 05 07 <P> <addr16-BE>` + 写值帧
+     （LL/HL 是 `A7 04 … <1B>`，**OL 是 `A7 07 … <4B>`**）。
+   - 写完下发 `GetGainData` / `GetMPOData` / `GetHighLevelGainData` 回读比对：
+     **回读值应等于写入值**（换算后：LL/HL `+30`、OL `+60`）。
+     ⚠ 开机读回未完成时这三个会回 `Flag=1`。
+   - 复用现成抓包做对照：`p0lowchannel2levelgainset-2`（LL = −2 → `FE`）、
+     `p0channel16set0`（ch16 OL = 0，地址 `0x117`）。
+10. **纯音测听 / 静音**（§7.4.4，**已上板验证通过**）：
+   - 进测听：App 发 CMD 40 `Fitting_Status=0` → 串口应依次出现
+     `SetAudiometryStatus: status=0` → `TX frame … 00 28 …`（**应答先出**）→
+     `[7100] W (4B): A2 00 16 03` → `A2 00 2E 00` → `A7 01 00 00 00 26`
+     → `audiometry push scheduled (1) in 1000 ms` → 约 1s 后 `push initial status done`
+     + `TX push … 01 06 …`。
+   - 出音：CMD 13 → `[7100] W (12B): A7 07 00 00 00 2E 01 <freq16> <level24>`，
+     例如 1000Hz 50dB → `… 03 E8 00 05 6F`（`00056F` = 1391）。
+   - 停音：CMD 14 → `A7 07 00 00 00 2E 00 00 00 00 00 00`。
+   - **不应出现** `[7100-cache] saved to flash` —— 纯音/静音不改缓存，不落盘（§7.4.4）。
+   - 静音：CMD 21 `Mute=0` 重复下发时只有第一次（状态变化）会打 `[7100] --- unmute ---`，
+     之后只回应答（`changed=0`）。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）
 
@@ -754,29 +920,44 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
 
 **阶段一已完成**（§7）：通讯层、读回、flash 缓存、心跳。
 
-**阶段二目标**：把 Rempro 的验配命令重新落到 7100 的 A7 参数块上，恢复被临时禁用的 15 个命令。
+**阶段二目标**：把 Rempro 的验配命令重新落到 7100 的 A7 参数块上。
 
-**待实现**
+**已完成（2026-09-15）**
 
-1. **动态 A7 写编码**：把「模块 + 通道 + 值」编码成 A7 写序列（选程序 → 选模块 → 准备 → 写值 →
-   confirm → unmute → commit）。参考 `scripts/gen_dsp_7100_set.py` 的会话骨架与
-   `docs/7100协议/` 下各模块文档。
-2. **写会话状态机**：mute → select → 写 ×N → confirm → unmute → commit，异步推进 + deferred。
-3. **Rempro 命令重映射**（`ble_rempro_cmd.c`，现均为 `flag=1`）：
+1. ~~动态 A7 写编码~~ → `a7_add_prep()` / `a7_add_wdrc_param()` / `a7_add_wdrc_ol()` /
+   `a7_add_noise_block()`（`dsp_7100_cmd.c`），按「块 + 参数号 + 值」现算 A7 写帧。
+2. ~~写会话状态机~~ → `a7_build_session()` + `dsp_7100_cmd_tick()`：
+   静音 → 选程序 → 写 ×N → confirm → 解除静音 → 选回 → commit，命令表 + 200ms tick 异步推进。
+   **多通道共用公共帧**（`6 + 2n` 条命令），见 §7.4.3。
+3. ~~写后回写缓存~~ → `a7_session_finish()` 成功后改写 RAM 参数并 `dsp_7100_cache_save_request()`。
+4. Rempro 命令重映射（`ble_rempro_cmd.c`）：
 
-   | 命令 | 需落到 7100 |
+   | 命令 | 状态 |
    |------|------|
-   | SetVolume | **已完成** — `dsp_7100_set_volume()`（§7.4） |
-   | SetEqualizer (EQ) | **已完成** — `dsp_7100_set_eq()`（§7.4.2，映射到 WDRC LL/HL） |
-   | SetGain / SetMPO / SetCompressRatio | WDRC bin_gain / lmt / kp（`docs/7100协议/WDRC/`） |
-   | SetDenoise | **已完成** — `dsp_7100_set_denoise()`（§7.4.2） |
-   | SetFeedbackOnOff | **已完成** — `dsp_7100_set_dfbc()`（§7.4.2） |
-   | SetCurrentScene | **已完成** — `dsp_7100_switch_program()`（§7.4） |
-   | GetCurrentScene | 选程序 `A7 02 …12 <P>` + 读回解析 |
-   | SetPlayVoice / SetStopVoice / SetAudiometryStatus | 需确认 7100 侧对应命令 |
-   | GetFittingData | 读回解析（缓存已就绪，见 §7.2） |
+   | SetVolume (2) / SetCurrentScene (16) | **已完成 + 已上板** — §7.4.1 |
+   | SetDenoise (9) / SetFeedbackOnOff (5) | **已完成 + 已上板** — §7.4.2 |
+   | SetEqualizer (10) | **已完成，未上板** — §7.4.2（映射到 WDRC LL/HL） |
+   | SetAudiometryStatus (40) / SetPlayVoice (13) / SetStopVoice (14) / SetMuteData (21) | **已完成 + 已上板** — §7.4.4（App 侧完善中）|
+   | SetGain (6) / SetMPO (7) / SetHighLevelGainData (29) | **已完成，未上板** — §7.4.3 |
+   | GetGainData (22) / GetMPOData (23) / GetHighLevelGainData (30) | **已完成，未上板** — §7.4.3 |
+   | GetCurrentScene (15) | 待实现：选程序 `A7 02 00 00 00 12 <P>` + 读回解析 |
+   | GetFittingData (17) | 待实现：读回解析（缓存已就绪，见 §7.2） |
+   | SetDeviceOnOff (3) / GetFeedbackOnOff (34) | 待实现 |
+   | SetCompressRatio (8) | **按需求不做** |
 
-4. **写后回写缓存**：写路径改完参数后应同步更新 flash 缓存，避免下次开机读回被旧值覆盖。
+**接下来**
+
+1. **上板验证 WDRC（§7.4.3）与 EQ（§7.4.2）** —— 两者目前都只做了离线比对（WDRC 已与
+   `p0lowchannel2levelgainset-2` / `p0channel16set0` 等抓包逐字节核对），未上板。
+2. **纯音只标定了 6/17 个频点**（§7.4.4）：500/1000/2000/3000/4000/6000 之外的 11 个
+   （250、1500、2500、3500、4500、5000、5500、6500、7000、7500、8000）会回 `Flag=1`。
+   补法：固定一个 dB，把这 11 个频点各抓一条，反解 `C(f)` 填表（`docs/7100协议/纯音测听.md` §2/§4）。
+   另：电平基常数 `K = 4.39902` 出处不明，**可能是整机校准值**，换机需重标。
+3. **OutputLimit 值字段的 `b2`/`b3` 语义未明**（§7.4.3）：默认表只来自一次默认状态抓包。
+4. **EQ 与直接 WDRC 写的交互**：两边对"缓存基准"的假设不一致，见 §7.4.3 的 ⚠。
+5. **Get 类命令依赖开机读回完成**：未完成时回 `Flag=1`，必要时加"读回完成后主动推一次"。
+6. `A7_WDRC_LL_MIN/MAX` 本轮由 `0/127` 改为 `-30/60`（真实范围）；`set_eq` 用同一对宏，
+   其钳位行为随之变化，需一并回归。
 
 **参考（rx_coex 侧，未移植的部分）**
 
@@ -786,4 +967,4 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
 | code/dsp_7100_parm_tables.c + scripts/gen_dsp_7100_parm.py | parm1604 命令表（105 条 A7） |
 | code/dsp_connect_replay.c + `_tables.c` | 连接回放（rx_coex 里也被 .cproject 排除，未接线） |
 
-> 阶段一已**剔除**上述死代码；阶段二按需重新引入。
+> 阶段一已**剔除**上述死代码；本次阶段二改为在 `dsp_7100_cmd.c` 内按公式现算，未重新引入大表。
