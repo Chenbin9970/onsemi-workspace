@@ -27,7 +27,7 @@ extern "C" {
 #define CMD_GETCURRENTSCENE     15
 #define CMD_SETCURRENTSCENE     16
 #define CMD_GETFITTINGDATA      17
-#define CMD_SETMUTEDATA         21   /* ID:21 SetMuteData：静音开关，实现同 3 号 SetDeviceOnOff */
+#define CMD_SETMUTEDATA         21   /* ID:21 SetMuteData：静音开关，data[1] 非 0=静音（方向与 3 号相反） */
 #define CMD_GETDEVICECONFIG     26
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34

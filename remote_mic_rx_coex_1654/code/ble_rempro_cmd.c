@@ -367,29 +367,28 @@ static void cmd_setdeviceonoff(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_SETDEVICEONOFF, 0, &status, 1);
 }
 
-/* ID:21  SetMuteData — 功能同 3 号 SetDeviceOnOff：data[1] 非 0 → bs300_active()，
- * 0 → bs300_mute()。
+/* ID:21  SetMuteData — 按接口文档的 Mute 语义：data[1] 非 0 → bs300_mute()（静音开），
+ * 0 → bs300_active()（取消静音）。
  *
- * ⚠ 方向说明：接口文档把该字段命名为 Mute 并标注「0:关 1:开」（即 1=静音，与这里相反）。
- * 产品要求与 3 号指令行为一致，故按 3 号的方向实现。若日后要改成文档语义，
- * 把下面 if (onoff) 的两个分支对调即可。 */
+ * ⚠ 方向与 3 号 SetDeviceOnOff **相反**：3 号 data[1] 非 0 是「开」，
+ * 而这里非 0 是「静音」—— 因为文档把该字段定义为 Mute 且标注「0:关 1:开」。 */
 static void cmd_setmutedata(const uint8_t *data, uint8_t len)
 {
     if (len < 2) { hdlc_response(CMD_SETMUTEDATA, 1, NULL, 0); return; }
     if (bs300_sync_is_busy()) { hdlc_response(CMD_SETMUTEDATA, 1, NULL, 0); return; }
 
     uint8_t dev_type = data[0];
-    uint8_t onoff    = data[1];
+    uint8_t mute     = data[1];
 
-    if (onoff) {
-        bs300_active();
-        s_device_on = 1;
-    } else {
+    if (mute) {
         bs300_mute();
         s_device_on = 0;
+    } else {
+        bs300_active();
+        s_device_on = 1;
     }
 
-    PRINTF("[REMPRO] SetMuteData: dev=%u mute=%u\r\n", dev_type, onoff);
+    PRINTF("[REMPRO] SetMuteData: dev=%u mute=%u\r\n", dev_type, mute);
     uint8_t status = 1;
     hdlc_response(CMD_SETMUTEDATA, 0, &status, 1);
 }
