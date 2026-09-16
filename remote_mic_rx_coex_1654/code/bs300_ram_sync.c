@@ -1447,7 +1447,10 @@ int bs300_audiometry_enter(void)
         bs300_advanced_write(0x8060B2, data);
     }
 
-    return bs300_active();
+    /* 进入测听**保持静音**：这里不发 ACTIVE（0x800010）。
+     * 测听期间由上位机控制发声，听音程序不应出声；退出时再由
+     * bs300_audiometry_exit() 恢复。 */
+    return 0;
 }
 
 int bs300_audiometry_exit(void)
@@ -1634,8 +1637,12 @@ void bs300_sync_timer_handler(void)
 {
     uint16_t delay;
 
-    /* Delayed push callback (non-I2C, e.g. audiometry init-done notify) */
-    if (g_bs300_sync.state == BS300_SYNC_IDLE && s_delayed_push_cb) {
+    /* Delayed push callback (non-I2C, e.g. audiometry init-done notify)
+     *
+     * 条件必须用 !bs300_sync_is_busy()，**不能**写成 state == BS300_SYNC_IDLE：
+     * 会话跑完 state 停在 DONE/ERROR（不回 IDLE），只判 IDLE 会让回调永远不触发
+     * —— 曾导致 SetAudiometryStatus(40) 进入测听后收不到 CMD=6 主动推送。 */
+    if (!bs300_sync_is_busy() && s_delayed_push_cb) {
         void (*cb)(void) = s_delayed_push_cb;
         s_delayed_push_cb = NULL;
         cb();
