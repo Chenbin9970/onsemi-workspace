@@ -52,7 +52,6 @@
 									<listOptionValue builtIn="false" value="CFG_EMB=1"/>
 									<listOptionValue builtIn="false" value="CFG_RF_ATLAS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths.147393674" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
@@ -99,7 +98,6 @@
 									<listOptionValue builtIn="false" value="CFG_EXT_DB"/>
 									<listOptionValue builtIn="false" value="CFG_PRF_BASS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths.1352740956" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/code}&quot;"/>
@@ -133,7 +131,6 @@
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.672222019" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.230193972" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.1068780672" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
@@ -173,8 +170,6 @@
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnano.1743777809" name="Use newlib-nano (--specs=nano.specs)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnano" value="true" valueType="boolean"/>
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnosys.1846974169" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnosys" value="false" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.otherobjs.1987411938" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.otherobjs" valueType="userObjs">
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libblelib.a&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libkelib.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/Release/libfota.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_profiles/Release/libbass.a&quot;"/>
 								</option>
@@ -186,8 +181,6 @@
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.linker.1785167562" name="Cross ARM C++ Linker" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.linker">
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.gcsections.1069374353" name="Remove unused sections (-Xlinker --gc-sections)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.gcsections" value="true" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.otherobjs.661501133" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.otherobjs" valueType="userObjs">
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libblelib.a&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libkelib.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/Release/libfota.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_profiles/Release/libbass.a&quot;"/>
 								</option>
@@ -210,7 +203,7 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="modules/rwip/src|ip|plf/refip/src/driver|plf/refip/src/arch|modules/ke|modules/h4tl|modules/ecc_p256|modules/dbg|modules/common|modules/app|ip/ble/profiles/dis|ip/ble/profiles/blp|ip/ble/profiles/htp|ip/ble/profiles/tip|plf/refip/src/driver/syscntl|plf/refip/src/driver/led|plf/refip/src/driver/coex|plf/refip/src/driver/intc|plf/refip/src/driver/emi|modules/common/src/co_buf.c|plf/refip/src/driver/uart2|ip/ble/profiles/scpp|ip/ble/profiles/rscp|ip/ble/profiles/prox|ip/ble/profiles/pasp|ip/ble/profiles/lan|ip/ble/profiles/hrp|ip/ble/profiles/hogp|ip/ble/profiles/glp|ip/ble/profiles/find|ip/ble/profiles/cscp|ip/ble/profiles/cpp|ip/ble/profiles/anp|plf/refip/src/driver/flash|plf/refip/src/driver/timer|plf/refip/src/arch/boot|modules/nvds|newlib|plf/refip/config|plf/refip/import" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
+						<entry excluding="RTE/Device/RSL10/rsl10_protocol.c|RTE/Device/RSL10/startup_rsl10_nofota.S|RTE/Device/RSL10/startup_rsl10_fota.S|RTE/Device/RSL10/sections_nofota.ld|RTE/Device/RSL10/sections_fota.ld|modules/rwip/src|ip|plf/refip/src/driver|plf/refip/src/arch|modules/ke|modules/h4tl|modules/ecc_p256|modules/dbg|modules/common|modules/app|ip/ble/profiles/dis|ip/ble/profiles/blp|ip/ble/profiles/htp|ip/ble/profiles/tip|plf/refip/src/driver/syscntl|plf/refip/src/driver/led|plf/refip/src/driver/coex|plf/refip/src/driver/intc|plf/refip/src/driver/emi|modules/common/src/co_buf.c|plf/refip/src/driver/uart2|ip/ble/profiles/scpp|ip/ble/profiles/rscp|ip/ble/profiles/prox|ip/ble/profiles/pasp|ip/ble/profiles/lan|ip/ble/profiles/hrp|ip/ble/profiles/hogp|ip/ble/profiles/glp|ip/ble/profiles/find|ip/ble/profiles/cscp|ip/ble/profiles/cpp|ip/ble/profiles/anp|plf/refip/src/driver/flash|plf/refip/src/driver/timer|plf/refip/src/arch/boot|modules/nvds|newlib|plf/refip/config|plf/refip/import" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name=""/>
 					</sourceEntries>
 				</configuration>
 			</storageModule>
@@ -269,7 +262,6 @@
 									<listOptionValue builtIn="false" value="CFG_EMB=1"/>
 									<listOptionValue builtIn="false" value="CFG_RF_ATLAS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths.129726162" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.assembler.include.paths" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
@@ -316,7 +308,6 @@
 									<listOptionValue builtIn="false" value="CFG_EXT_DB"/>
 									<listOptionValue builtIn="false" value="CFG_PRF_BASS=1"/>
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths.2028910007" name="Include paths (-I)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.compiler.include.paths" useByScannerDiscovery="false" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${workspace_loc:/${ProjName}/code}&quot;"/>
@@ -350,7 +341,6 @@
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler.998811892" name="Cross ARM C++ Compiler" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.compiler">
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs.1878090161" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.defs" useByScannerDiscovery="true" valueType="definedSymbols">
 									<listOptionValue builtIn="false" value="_RTE_"/>
-									<listOptionValue builtIn="false" value="CFG_FOTA=1"/>
 								</option>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths.1008622532" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.compiler.include.paths" useByScannerDiscovery="true" valueType="includePath">
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/include&quot;"/>
@@ -390,8 +380,6 @@
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnano.1367080081" name="Use newlib-nano (--specs=nano.specs)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnano" value="true" valueType="boolean"/>
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnosys.624835667" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.usenewlibnosys" useByScannerDiscovery="false" value="false" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.otherobjs.662125" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.c.linker.otherobjs" valueType="userObjs">
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libblelib.a&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libkelib.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/Release/libfota.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_profiles/Release/libbass.a&quot;"/>
 								</option>
@@ -403,8 +391,6 @@
 							<tool id="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.linker.2024351395" name="Cross ARM C++ Linker" superClass="ilg.gnuarmeclipse.managedbuild.cross.tool.cpp.linker">
 								<option id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.gcsections.744965064" name="Remove unused sections (-Xlinker --gc-sections)" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.gcsections" value="true" valueType="boolean"/>
 								<option IS_BUILTIN_EMPTY="false" IS_VALUE_EMPTY="false" id="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.otherobjs.2045552706" superClass="ilg.gnuarmeclipse.managedbuild.cross.option.cpp.linker.otherobjs" valueType="userObjs">
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libblelib.a&quot;"/>
-									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_core/Release/libkelib.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/Release/libfota.a&quot;"/>
 									<listOptionValue builtIn="false" value="&quot;${cmsis_pack_root}/ONSemiconductor/RSL10/3.9.1182/lib/ble_profiles/Release/libbass.a&quot;"/>
 								</option>
