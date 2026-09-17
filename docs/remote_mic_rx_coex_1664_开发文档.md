@@ -592,7 +592,7 @@ b2 / b3 = 逐通道常量，与 OL 无关
 > 协议细节（payload 布局、SYS_ID 命名空间陷阱）：`docs/7100协议/瑞听设置指令.md`；
 > 7100 侧帧格式、参数号实测、OL 默认表：`docs/7100协议/WDRC/7100_WDRC设置.md`。
 
-#### 7.4.4 纯音测听 / 静音（CMD 40 / 13 / 14 / 21）
+#### 7.4.4 纯音测听 / 静音 / 开关机（CMD 40 / 13 / 14 / 21 / 3）
 
 > **已上板验证通过**（App 侧尚在完善中）。7100 侧帧格式与电平模型见 `7100协议/纯音测听.md`。
 
@@ -627,13 +627,28 @@ CMD 40 {DevType, 1} 退出测听
    └ 延 1s → 推 SYS_ID=1 CMD 6 {DevType, Initial_Status=1}
 
 CMD 21 {DevType, Mute} 静音开关   ← ⚠ 方向与 CMD 3 相反：Mute 非 0 = 静音
+CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音；0 = 关机 → 静音
 ```
+
+**CMD 3 开关机**（2026-09-17 补实现）：请求 `{Device_Type, Device_OnOff}`，按接口文档 `Device_OnOff` 的
+`0: Off 1: On` —— **非 0 = 开机**。7100 侧没有独立的开关机指令，按 1654 的做法（`bs300_active`/`bs300_mute`）
+映射成解除静音/静音，复用上面那两条帧：
+
+| 请求 | 动作 | 7100 帧 |
+|------|------|---------|
+| `OnOff = 1` 开机 | `dsp_7100_set_mute(false)` | `A7 01 00 00 00 26` |
+| `OnOff = 0` 关机 | `dsp_7100_set_mute(true)` | `A7 01 00 00 00 25` |
+
+与 CMD 21 **共用 `s_device_on`**，所以两条指令交替下发不会互相打架；`GetDeviceOnOff`(33) 读的就是它。
+
+> **未上板验证**。
 
 **实现要点**
 
 - CMD 40 的应答**必须抢在推送前面**：BLE TX 是**单槽**（`s_tx_frame`），顺序反了推送会顶掉应答（实测日志：`push` 先于 `TX frame`）
 - 推送用 `rempro_deferred_tick()`（在 `APP_7100_HB_Handler` 的 200ms tick 里计数，5 tick = 1s），**不引入新的 ke_timer**
-- CMD 21 被 App 约每 6s 轮询一次 → **只在状态变化时才动 I2C**，否则只回应答，避免打断读回/会话
+- CMD 21 被 App 约每 6s 轮询一次 → **只在状态变化时才动 I2C**，否则只回应答，避免打断读回/会话；
+  **CMD 3 同理，且与 21 共用 `s_device_on`**，所以 03/21 交替下发不会互相打架
 - 纯音/静音是**单命令会话**（2 tick ≈ 0.4s），不走公共帧；收尾**不落盘**（不改任何缓存参数，否则每播一个频点擦写一次 flash）
 
 > ⚠ **时序与抓包的偏差（未复刻，实测无影响）**：抓包里单写帧的「写→读」只有 1~8ms，
@@ -657,6 +672,7 @@ CMD 21 {DevType, Mute} 静音开关   ← ⚠ 方向与 CMD 3 相反：Mute 非 
 | `CMD_GETGAINDATA` (22) | `cmd_getgaindata_7100` | 读回缓存 → `+30`（§7.4.3） |
 | `CMD_GETHIGHLEVELGAINDATA` (30) | `cmd_gethighlevelgain_7100` | 读回缓存 → `+30`（§7.4.3） |
 | `CMD_GETMPODATA` (23) | `cmd_getmpodata_7100` | 读回缓存 → `+60`（§7.4.3） |
+| `CMD_SETDEVICEONOFF` (3) | `cmd_setdeviceonoff_7100` | `OnOff` 非 0 = 开机；映射成 unmute/mute（§7.4.4） |
 | `CMD_SETMUTEDATA` (21) | `cmd_setmutedata_7100` | ⚠ **方向与 3 号相反**：`Mute` 非 0 = 静音（§7.4.4） |
 | `CMD_SETPLAYVOICE` (13) | `cmd_setplayvoice_7100` | Spectrum 0-16 → 250…8000 Hz；dB 20-100（§7.4.4） |
 | `CMD_SETSTOPVOICE` (14) | `cmd_setstopvoice_7100` | 停音（§7.4.4） |
@@ -665,7 +681,7 @@ CMD 21 {DevType, Mute} 静音开关   ← ⚠ 方向与 CMD 3 相反：Mute 非 
 
 `GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
 
-> 其余 5 个 Rempro 命令（SetDeviceOnOff (3) / SetCompressRatio (8) / GetCurrentScene (15) /
+> 其余 4 个 Rempro 命令（SetCompressRatio (8) / GetCurrentScene (15) /
 > GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`。
 
 **应答格式统一（2026-09-15）**：所有**设置类**命令的应答统一为 `Flag(1) + status(1)`
@@ -782,9 +798,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 ## 12. 已知问题 / 待办
 
-1. **阶段二进行中**：剩余 5 个 Rempro 命令（SetDeviceOnOff (3) / SetCompressRatio (8) /
+1. **阶段二进行中**：剩余 4 个 Rempro 命令（SetCompressRatio (8) /
    GetCurrentScene (15) / GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`，见 §17。
-   已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音**（**均已上板验证**）、
+   已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音 + 开关机**（**静音/测听已上板验证**、开关机未上板）、
    EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）。
    纯音的 App 侧仍在完善中。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
@@ -942,7 +958,8 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
    | GetGainData (22) / GetMPOData (23) / GetHighLevelGainData (30) | **已完成，未上板** — §7.4.3 |
    | GetCurrentScene (15) | 待实现：选程序 `A7 02 00 00 00 12 <P>` + 读回解析 |
    | GetFittingData (17) | 待实现：读回解析（缓存已就绪，见 §7.2） |
-   | SetDeviceOnOff (3) / GetFeedbackOnOff (34) | 待实现 |
+   | SetDeviceOnOff (3) | **已完成，未上板** — 映射到 unmute/mute，与 21 号共用 `s_device_on`（§7.4.4）|
+   | GetFeedbackOnOff (34) | 待实现 |
    | SetCompressRatio (8) | **按需求不做** |
 
 **接下来**

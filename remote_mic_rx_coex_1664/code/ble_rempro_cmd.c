@@ -713,6 +713,47 @@ static void cmd_setmutedata_7100(const uint8_t *data, uint8_t len)
 }
 
 /* ============================================================================
+ * ID:3 SetDeviceOnOff — 设置设备开关机
+ *
+ * 请求 { Device_Type(1), Device_OnOff(1) }：**OnOff 非 0 = 开机**，0 = 关机
+ * （接口文档 Device_OnOff 标注 "0: Off 1: On"）。
+ *
+ * 7100 侧没有独立的开关机指令，按 1654 的做法（bs300_active/bs300_mute）映射成
+ * 取消静音/静音：
+ *   开机 → dsp_7100_set_mute(false) → 发 A7 01 00 00 00 26
+ *   关机 → dsp_7100_set_mute(true)  → 发 A7 01 00 00 00 25
+ *
+ * ⚠ 方向与 21 号 SetMuteData **相反**：那边 data[1] 非 0 是「静音」，这边非 0 是「开机」。
+ * ⚠ 与 21 号**共用 s_device_on**，且只在状态变化时才动 I2C —— App 会重复下发，
+ *   每次都发会不停打断 7100 的读回/写会话（同 21 号的理由）。
+ * ========================================================================== */
+
+static void cmd_setdeviceonoff_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t onoff;
+    uint8_t want;          /* 目标 s_device_on */
+    uint8_t changed;
+    bool    ok = true;
+
+    if (len < 2) { hdlc_response_set(CMD_SETDEVICEONOFF, false); return; }
+
+    dev_type = data[0];
+    onoff    = data[1];
+    want     = onoff ? 1u : 0u;
+    changed  = (want != s_device_on) ? 1u : 0u;
+
+    if (changed) {
+        ok = dsp_7100_set_mute(onoff == 0u);
+        if (ok) s_device_on = want;
+    }
+
+    PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u on=%u changed=%u ok=%u\r\n",
+           dev_type, onoff, s_device_on, changed, ok);
+    hdlc_response_set(CMD_SETDEVICEONOFF, ok);
+}
+
+/* ============================================================================
  * ID:40 SetAudiometryStatus — 进入/退出纯音测听
  *
  *   Fitting_Status = 0  进入测听：记下当前程序 → 切到程序 3 → `0x2E = 0x00` → 解除静音 → 推
@@ -1064,8 +1105,12 @@ void rempro_cmd_process(void)
             else hdlc_response_set(CMD_SETSTOPVOICE, false);
             break;
 
-        /* ---- 设置类：待实现，回 Flag=1 + status=0（不支持）---- */
         case CMD_SETDEVICEONOFF:
+            if (data) cmd_setdeviceonoff_7100(data, data_len);
+            else hdlc_response_set(CMD_SETDEVICEONOFF, false);
+            break;
+
+        /* ---- 设置类：待实现，回 Flag=1 + status=0（不支持）---- */
         case CMD_SETCOMPRESSRATIO:
             PRINTF("[REMPRO] CMD=%u 待实现（7100 写路径）\r\n", cmd_id);
             hdlc_response_set(cmd_id, false);
