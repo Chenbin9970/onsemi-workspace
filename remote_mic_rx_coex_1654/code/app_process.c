@@ -122,6 +122,11 @@ int APP_Timer(ke_msg_id_t const msg_id,
         }
     }
 
+#ifdef BS300_ENABLE
+    /* RM 断开切回助听模式的过渡音量恢复倒计时（2s） */
+    rm_trans_volume_tick();
+#endif    /* ifdef BS300_ENABLE */
+
     return (KE_MSG_CONSUMED);
 }
 

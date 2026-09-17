@@ -23,7 +23,7 @@
 /* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
  * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
  * 见开发文档「FOTA」。 */
-//#define CFG_FOTA
+#define CFG_FOTA
 #ifdef CFG_FOTA
 #define VER_ID                  "Smart1654"
 #define VER_MAJOR               1
@@ -519,6 +519,11 @@ extern void APP_RM_Init(uint8_t side);
 extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
 
 extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
+
+#ifdef BS300_ENABLE
+/* RM 断开切回助听模式的过渡音量恢复倒计时，由 APP_Timer（200ms）驱动，见 rm_app.c */
+extern void rm_trans_volume_tick(void);
+#endif    /* ifdef BS300_ENABLE */
 
 #if (OUTPUT_DECODE_PATH)
 void Start_Dec_Lpdsp32(uint8_t *src_addr);

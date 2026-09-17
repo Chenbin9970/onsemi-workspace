@@ -100,7 +100,7 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
+    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));//f2
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;
@@ -251,6 +251,72 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
 /* RM 前程序记录：RM 断开后切回原程序并 active，避免停在程序3 静音（参照 sleep saved_prog_before_rm） */
 static uint8_t s_saved_prog_before_rm = 0xFF;
 
+/* RM 断开切回助听模式的过渡音量：切换**之前**先把目标程序音量压到 5（随切换会话下发），
+ * 切换完成 active() 之后起 2s 倒计时，再恢复到过渡前的用户设定值。
+ * 过渡只改 RAM 影子（s_volumes），到点原样写回，不改变用户设定。
+ *
+ * 倒计时挂在 APP_Timer（开机自启、自我重装的 200ms 周期定时器）上，不用
+ * bs300_schedule_delayed_push：那是与测听共用的单槽，且任何 BS300 会话重装
+ * BS300_SYNC_TIMER 都会把它的延时提前或让它搁浅。 */
+#define RM_TRANS_VOL_LEVEL         5U    /* 过渡音量档位 */
+#define RM_TRANS_VOL_RESTORE_TICKS 10U   /* 恢复倒计时，200ms/tick → 2s */
+
+static uint8_t  s_trans_vol_prog  = 0xFF; /* 过渡中的程序号，0xFF = 无过渡 */
+static uint8_t  s_trans_vol_saved;        /* 过渡前的用户设定值 */
+static uint16_t s_trans_vol_ticks;        /* 恢复倒计时，0 = 未启动 */
+
+/* 切回前调用：把 prog 的音量压成过渡值 5。
+ * 已在过渡中（同一个程序）就不重记设定值，否则会把过渡值 5 当成用户设定值，
+ * 恢复时就再也回不去了（RM 闪断会在 2s 窗口内重入）。 */
+static void rm_trans_volume_arm(uint8_t prog)
+{
+    s_trans_vol_ticks = 0;      /* 取消上一轮未到点的恢复 */
+
+    if (s_trans_vol_prog != prog)
+    {
+        s_trans_vol_saved = bs300_get_module_volume(prog);
+        s_trans_vol_prog  = prog;
+    }
+
+    if (s_trans_vol_saved == RM_TRANS_VOL_LEVEL)
+    {
+        s_trans_vol_prog = 0xFF;    /* 设定值本来就是 5，无需过渡 */
+        return;
+    }
+    bs300_set_prog_volume(prog, RM_TRANS_VOL_LEVEL);
+}
+
+/* 2s 后恢复过渡前的用户设定值。
+ * 期间若已经切走（RM 重连到程序3）或用户自己改过音量，就不动当前发声，
+ * 只把影子状态里的过渡值写回设定值，避免把用户设定冲成 5。 */
+static void rm_restore_volume_cb(void)
+{
+    uint8_t prog  = s_trans_vol_prog;
+    uint8_t saved = s_trans_vol_saved;
+
+    s_trans_vol_prog = 0xFF;
+    if (prog == 0xFF) return;
+    if (bs300_get_module_volume(prog) != RM_TRANS_VOL_LEVEL) return;
+
+    if (bs300_get_active_prog() == prog)
+    {
+        PRINTF("[RM] trans volume restore: prog=%u vol=%u\r\n", prog, saved);
+        bs300_set_volume_notone_async(saved, NULL);
+    }
+    else
+    {
+        bs300_set_prog_volume(prog, saved);
+    }
+}
+
+/* 由 APP_Timer 每 200ms 调用：倒计时到点则恢复设定值 */
+void rm_trans_volume_tick(void)
+{
+    if (s_trans_vol_prog == 0xFF || s_trans_vol_ticks == 0) return;
+    if (--s_trans_vol_ticks != 0) return;
+    rm_restore_volume_cb();
+}
+
 /* 程序切换完成回调：会话收敛后才 active()。
  *
  * 若期间又来了更新的切换请求，本次会话会被 abort 并留下排队的请求
@@ -261,6 +327,12 @@ static void rm_bs300_switch_done(void)
 {
     if (bs300_switch_pending()) return;
     bs300_active();
+
+    /* 音频已恢复，起 2s 倒计时回到用户设定值 */
+    if (s_trans_vol_prog != 0xFF)
+    {
+        s_trans_vol_ticks = RM_TRANS_VOL_RESTORE_TICKS;
+    }
 }
 #endif    /* ifdef BS300_ENABLE */
 
@@ -303,6 +375,9 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
                 {
                     if (s_saved_prog_before_rm != 3)
                     {
+                        /* 切换前把目标程序音量压到过渡值 5（随会话下发），
+                         * active 后 2s 再在 rm_restore_volume_cb 里恢复设定值 */
+                        rm_trans_volume_arm(s_saved_prog_before_rm);
                         bs300_switch_program_async(s_saved_prog_before_rm,
                                                    rm_bs300_switch_done);
                     }
