@@ -641,7 +641,7 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 
 与 CMD 21 **共用 `s_device_on`**，所以两条指令交替下发不会互相打架；`GetDeviceOnOff`(33) 读的就是它。
 
-> **未上板验证**。
+> **已上板验证通过**（2026-09-17）。
 
 **实现要点**
 
@@ -800,7 +800,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 1. **阶段二进行中**：剩余 4 个 Rempro 命令（SetCompressRatio (8) /
    GetCurrentScene (15) / GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`，见 §17。
-   已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音 + 开关机**（**静音/测听已上板验证**、开关机未上板）、
+   已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音 + 开关机**（**均已上板验证**）、
    EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）。
    纯音的 App 侧仍在完善中。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
@@ -958,7 +958,7 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
    | GetGainData (22) / GetMPOData (23) / GetHighLevelGainData (30) | **已完成，未上板** — §7.4.3 |
    | GetCurrentScene (15) | 待实现：选程序 `A7 02 00 00 00 12 <P>` + 读回解析 |
    | GetFittingData (17) | 待实现：读回解析（缓存已就绪，见 §7.2） |
-   | SetDeviceOnOff (3) | **已完成，未上板** — 映射到 unmute/mute，与 21 号共用 `s_device_on`（§7.4.4）|
+   | SetDeviceOnOff (3) | **已完成 + 已上板** — 映射到 unmute/mute，与 21 号共用 `s_device_on`（§7.4.4）|
    | GetFeedbackOnOff (34) | 待实现 |
    | SetCompressRatio (8) | **按需求不做** |
 
