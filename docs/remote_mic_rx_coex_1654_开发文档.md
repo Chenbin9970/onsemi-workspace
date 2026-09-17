@@ -47,7 +47,8 @@
 | **RM 期间 BLE 指令白名单** | app.c, code/ble_rempro_cmd.c | 只放行 26/4/15 查询类，其余静默丢弃（见 §18） |
 | **RM ↔ BS300 切换改异步 + 抢断续传** | code/rm_app.c, code/bs300_ram_sync.c, include/bs300_ram_sync.h | 新增 `bs300_switch_pending()`；修 BS300 卡死（见 §12.7、§19） |
 | 新增 Rempro SetMuteData(21) | include/ble_rempro_cmd.h, code/ble_rempro_cmd.c | 功能同 3 号 SetDeviceOnOff（见 §18） |
-| **RM 声道选择** | include/app.h | `APP_RM_AUDIO_CHANNEL` = `RM_LEFT`(左) / `RM_RIGHT`(右)，出固件时切 |
+| **RM 声道选择** | include/app.h | `APP_RM_AUDIO_CHANNEL` = `RM_LEFT`(左) / `RM_RIGHT`(右)，出固件时切（**当前：`RM_RIGHT` 右**，2026-09-17） |
+| **RM 断开过渡音量** | code/rm_app.c, code/app_process.c, include/app.h | 切回助听模式前先压到档位 5，2s 后回原设定值（见 §19.5） |
 
 ## 4. 构建与总开关
 
@@ -56,6 +57,7 @@
 - 总开关（include/app.h）：
   - `OUTPUT_INTRF = OD_OUTPUT`（解码直出 OD）；可选 `SPI_TX_CODED_OUTPUT` / `SPI_TX_RAW_OUTPUT`。
   - `BS300_ENABLE`：BS300 子系统总开关（定义即启用）。
+  - `CFG_FOTA`：FOTA 空中升级开关（**当前：ON**，2026-09-17，见 §16）。
   - `OUTPUT_INTERFACE`（在 pack 的 printf.h，未在本工程覆盖 → 默认 UART）：打印出口选择。
 
 ## 5. 引脚分配
@@ -298,7 +300,8 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 1. Eclipse 导入/编译 `remote_mic_rx_coex_1654` Debug，确认链接通过（bs300 新增文件自动入编）。
 2. 烧录后用 UART DIO5(115200) 观察：`started` → `[BS300] …` → `BS300_INIT_OK/FAIL`。
 3. 与已配对发射机建链：应听到 OD 输出音频；断链应静音；串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
-4. 手机/工具扫描应看到名为 **Smart1654** 的可连接广播；用主动扫描可读到 scan response 里的厂商段（含 MAC/耳侧）。
+4. 手机/工具扫描应看到名为 **Smart1654** 的可连接广播（FOTA ON 时为 `Smart1654FOTA`，见 §16）；
+   用主动扫描可读到 scan response 里的厂商段（含 MAC/耳侧，company data[10] = `0x01` 左 / `0x02` 右）。
 5. 示波器查 DIO0/DIO1（OD 差分）与 DIO8/DIO7（BS300 I2C）波形。
    **DIO7 上不应再出现采样钟**（已改到 DIO10）。
 6. **RM 重连回归测试（必测）**：建链 → 断开 → **反复重连 5~10 次**，每次音频都应正常，
@@ -308,6 +311,9 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
    串口应在**断链那一刻**出现 `[BS300] settings saved prog=N slot=M vol=[...]` →
    断电重启应出现 `[BS300] settings loaded from flash` / `settings restored prog=N` /
    `boot cache: prog=... vol=... denoise=...`，且听感与断电前一致。
+7. **RM 断开过渡音量（见 §19.5）**：建链播放 → 断开 → 切回助听模式应**先以档位 5 出声**，
+   约 2s 后自动回到该程序的原设定值，串口出现 `[RM] trans volume restore: prog=N vol=M`。
+   反例回归：切回后 2s 内 RM 重连、或短按按键改了音量，都**不应**回写旧值。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）
 
@@ -398,6 +404,10 @@ BLE 侧在 Rempro ROLE 写入收到首字节 `0xFD` 时 `Sys_Fota_StartDfu(1)` �
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
 FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `CFG_FOTA` 分支），方便扫描区分。
 
+> **当前状态：ON**（2026-09-17 切换）。`app.h` 的 `CFG_FOTA` 已放开，`startup_rsl10.S` /
+> `sections.ld` / `.rteconfig` 三个变体文件已换成 `_fota`，`.cproject` 为 FOTA 配置
+> （`CFG_FOTA=1` + 链接 `libfota.a` + post-build 出 `.fota`）。IDEA 编译已通过（见下「已验证」）。
+
 **文件**（remote_mic_rx_coex_1654/ 下）：
 - 代码：`code/fota_system.c`（SystemFotaInit→fota_init + weak Device_Param_Prepare）、
   `include/fota_system.h`；`ble_std.c` 里 `SYS_FOTA_VERSION(VER_ID,…)`（CFG_FOTA 时）生成版本符号；
@@ -421,11 +431,17 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 - OFF 构建不依赖 FOTA 库/头，行为与普通固件一致（fota_system.c 由 `--gc-sections` 剥掉）。
 
 **已验证**（FOTA ON 在 IDE 编译通过，0 错误）：链接 `libfota.a`（无 libblelib/libkelib）、post-build 产出
-`remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。默认状态 = **OFF**。
+`remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。
+**最近一次 ON 构建：2026-09-17 14:04**（`elf/fota/hex/map` 齐全，map 中 `SystemFotaInit` 落在
+`0x00136754` → 高于 `0x00130800`，重定位生效；链接库只有 `libbass.a` + `libfota.a`）。
 
-### 16.1 ⚠ 两个 `.cproject` 备份是旧的，直接 `cp` 会坏
+### 16.1 两个 `.cproject` 备份的坑（已于 2026-09-17 修好）
 
-`cp .cproject_fota .cproject`（或 `_nofota`）**不能直接用** —— 备份落后于活跃 `.cproject`，
+> **现状：两个备份已刷新为可用版本**，`cp .cproject_fota .cproject` / `cp .cproject_nofota .cproject`
+> 现在可以直接用。下面保留问题描述，用于识别**其它工程**（sleep / 1664 / 7160test 的备份同样可能是坏的：
+> sleep 与 1664 的 `.cproject_fota` 都含 `libfota`+`libblelib`+`libkelib` 三个库）和判断备份是否可信。
+
+`cp .cproject_fota .cproject`（或 `_nofota`）**曾经不能直接用** —— 备份落后于活跃 `.cproject`，
 有**两个**问题（2026-09-14 实测）：
 
 | 备份 | 问题 | 后果 |
@@ -451,7 +467,23 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
 | FOTA OFF | `libblelib.a` + `libkelib.a` + `libbass.a` |
 
 切换后自检：`grep -o "lib[a-z]*\.a" .cproject | sort -u`。
-**建议**：修好后把活跃 `.cproject` 回写到对应备份，免得每次切换都要手工补。
+
+**2026-09-17 的修法**（也适用于修其它工程）：**不要** `cp .cproject_fota`（它是坏的），
+而是以**当前活跃、且 exclude 完整的 `.cproject`** 为底，只打 FOTA 的三处差异：
+
+1. 两个配置（Debug / Release）的 `assembler.defs` / `c.compiler.defs` / `cpp.compiler.defs`
+   各加一条 `CFG_FOTA=1`（共 6 条）；
+2. `c.linker.otherobjs` / `cpp.linker.otherobjs` 里把 `libblelib.a` + `libkelib.a` 两行换成 `libfota.a`
+   （**换成，不是追加**；`libbass.a` 保留，共 4 处）；
+3. `<builder … postbuildStep="">` 填上 `objcopy -O binary … && mkfotaimg.py -o … .fota …`
+   （FOTA 版的 post-build；nofota 版为空串）。
+
+**判定备份可信的旁证**（比 diff 备份本身可靠）：
+- `Debug/objects.mk` 的 `USER_OBJS` —— 上次成功构建实际链的库；
+- 同族工程的活跃 `.cproject`（1664 的活跃配置就是干净的 FOTA 版：只有 `libbass.a` + `libfota.a`）。
+
+改完后把活跃 `.cproject` 回写到对应备份（本次已回写：`.cproject_fota` = 干净 FOTA、`.cproject_nofota` =
+切换前的 nofota 状态），免得下次切换再踩。
 
 ### 16.2 构建注意
 
@@ -592,3 +624,38 @@ static void rm_bs300_switch_done(void)
   ⚠ 若要移植：sleep 是按主循环迭代次数累加（`RM_DISC_DEBOUNCE_THRESHOLD = 500`），
   而 1654 主循环末尾有 `SYS_WAIT_FOR_EVENT`，迭代频率不固定，**照搬会算不准**；
   应改用已有的 200ms `APP_Timer` 计 tick。
+
+### 19.5 断开切回的过渡音量（先压到 5，2s 后回设定值）
+
+RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到该程序的原设定值**。
+仅作用于「跨程序」那条路径，且**只改 RAM 影子**，不动 Flash 里的用户设定。
+
+**时序**（`rm_app.c`，`RM_Callback_StatusUpdate` → `LINK_DISCONNECTED`）：
+
+| # | 动作 | 位置 |
+|---|---|---|
+| 1 | `bs300_mute()` 之后、发起异步切换**之前**：`rm_trans_volume_arm(saved)` 记下 `s_volumes[saved]` 到 `s_trans_vol_saved`，把该程序音量压成 `RM_TRANS_VOL_LEVEL`(5) | `rm_app.c` 断链分支 |
+| 2 | 异步切换把音量 5 一起下发（目标音量取自 `s_volumes[prog]`，见 §19.1） | `bs300_switch_program_async()` |
+| 3 | 切换完成回调里 `bs300_active()` 解除静音 —— 此时是 5 | `rm_bs300_switch_done()` |
+| 4 | 起 2s 倒计时（`s_trans_vol_ticks = RM_TRANS_VOL_RESTORE_TICKS`(10)，200ms/tick），到点 `rm_restore_volume_cb()` 用 `bs300_set_volume_notone_async()`（不带提示音）回到原设定值 | `rm_app.c` / `APP_Timer` |
+
+**为什么用 `APP_Timer` 而不是 `bs300_schedule_delayed_push`**：后者是与测听（§18）**共用的单槽**，
+且任何 BS300 会话重装 `BS300_SYNC_TIMER` 都会把它的延时提前（重装成 2 tick），或在会话结束时
+把它搁浅（会话结束那一路不再 re-arm 定时器）。`APP_Timer` 是开机自启、自我重装的 200ms 周期定时器
+（`app_process.c`），独立且稳，代价是精度 ±200ms。`app.h` 里 `rm_trans_volume_tick()` 原型按
+`#ifdef BS300_ENABLE` 声明。
+
+**守卫**（`rm_restore_volume_cb`）—— 只在「还停在这个程序」且「音量仍是过渡值 5」时才回写：
+
+- 2s 内 RM 重连（已切到程序3）或用户按键/手机改过音量 → **不覆盖当前发声**，
+  只把影子状态里的 5 改回设定值，避免把用户设定冲成 5（那会顺着 §15.1 的断链落盘写进 Flash）；
+- `rm_trans_volume_arm()` 对**同一程序重入不重记**设定值 —— RM 闪断会在 2s 窗口内重入，
+  若每次重记就会把过渡值 5 当成用户设定值，恢复后**再也回不去**。
+
+**范围 / 已知取舍**：
+
+- `s_saved_prog_before_rm == 3` 那条分支（RM 前就在程序3，只 `bs300_active()`、没有跨程序切换）
+  **不做**过渡音量；
+- 2s 过渡窗口内若 BLE 断链，`bs300_settings_persist()`（§15.1）会把当时的 5 落盘
+  → **该窗口内断链/掉电会丢原设定值**（窗口极短，暂未加保护）；
+- 不推 `CMD_PUSH_VOLUME`：手机 UI 看不到这次 5 → 设定值的变化（这是刻意的）。
