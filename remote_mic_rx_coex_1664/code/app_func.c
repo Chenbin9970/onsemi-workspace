@@ -552,15 +552,119 @@ void Asrc_in_dma_isr(void)
 
 #if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
 /* ----------------------------------------------------------------------------
+ * Function      : void pcm_ramp_block(uint32_t *buf, uint32_t words, uint8_t fade_in)
+ * ----------------------------------------------------------------------------
+ * Description   : 就地线性淡出/淡入一块 pcm_tx_buf（淡出末字、淡入首字为 0）。
+ *                 每个 32-bit 字按两个 int16 采样缩放，兼容 1/2 采样打包。
+ * Inputs        : buf - 待处理缓冲；words - 字数；fade_in - 0=淡出 1=淡入
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+static void pcm_ramp_block(uint32_t *buf, uint32_t words, uint8_t fade_in)
+{
+    uint32_t i;
+
+    for (i = 0; i < words; i++)
+    {
+        int32_t gain = fade_in ? (int32_t)(i + 1) : (int32_t)(words - i - 1);
+        int16_t lo   = (int16_t)(buf[i] & 0xFFFF);
+        int16_t hi   = (int16_t)(buf[i] >> 16);
+
+        lo = (int16_t)(((int32_t)lo * gain) / (int32_t)words);
+        hi = (int16_t)(((int32_t)hi * gain) / (int32_t)words);
+        buf[i] = ((uint32_t)(uint16_t)hi << 16) | (uint32_t)(uint16_t)lo;
+    }
+}
+
+/* 全 0 缓冲：静音期间由 ch5 反复流它，保证 PCM 移位器残留字也是 0 */
+static uint32_t pcm_zero_buf[PCM_FRAME_WORDS];
+volatile uint8_t pcm_break = 0;
+static volatile uint8_t pcm_fade_in = 0;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_Stream_Break(void)
+ * ----------------------------------------------------------------------------
+ * Description   : RM 流中断（TX 掉电/出范围）：立刻静音，不等 LINK_DISCONNECTED
+ *                 （那要丢满 200 包 ≈ 2s）。关键是不依赖 ch4/ASRC 还在产出 ——
+ *                 输入枯竭的 ASRC 会输出极限环杂音，正是要挡掉的东西。
+ *                 步骤：停采 ASRC → 就地淡出两块缓冲 → 直接改流全 0 缓冲。
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : ch5 由 7100 的 BCLK/FS 驱动，必然完成中断
+ * ------------------------------------------------------------------------- */
+void Pcm_Stream_Break(void)
+{
+    if (pcm_break)
+    {
+        return;
+    }
+    pcm_break = 1;
+
+    NVIC_DisableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+
+    /* 正在播的那块就地淡出，尾巴平滑收掉；残留字也随之变小 */
+    pcm_ramp_block(pcm_tx_buf[0], PCM_FRAME_WORDS, 0);
+    pcm_ramp_block(pcm_tx_buf[1], PCM_FRAME_WORDS, 0);
+
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+    Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&pcm_zero_buf[0],
+                          (uint32_t)&PCM->TX_DATA);
+    Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+    Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    pcm_ready   = 0xFF;
+    pcm_waiting = 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_Stream_Resume(void)
+ * ----------------------------------------------------------------------------
+ * Description   : 流恢复（短暂丢包后 GOODPKT 又来了）：重新采 ASRC 并回到双缓冲。
+ *                 下一块交给 ch5 前会淡入，避免从 0 直接跳到满幅。
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Pcm_Stream_Resume(void)
+{
+    if (!pcm_break)
+    {
+        return;
+    }
+    pcm_break = 0;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+    pcm_fill    = 0;
+    pcm_ready   = 0xFF;
+    pcm_waiting = 1;
+    pcm_fade_in = 1;
+}
+
+/* ----------------------------------------------------------------------------
  * Function      : void Pcm_asrc_out_dma_isr(void)
  * ----------------------------------------------------------------------------
  * Description   : ASRC 输出 DMA 完成。ch4 把 ASRC->OUT 采进 pcm_tx_buf[pcm_fill]；
  *                 换手后重武装 ch4；若 ch5 空闲则以新的 ready buf 启动 ch5。
+ *                 流恢复后的第一块在这里淡入。
  * ------------------------------------------------------------------------- */
 void Pcm_asrc_out_dma_isr(void)
 {
     pcm_ready = pcm_fill;
     pcm_fill  = 1 - pcm_fill;
+
+    if (pcm_fade_in)
+    {
+        pcm_fade_in = 0;
+        pcm_ramp_block(pcm_tx_buf[pcm_ready], PCM_FRAME_WORDS, 1);
+    }
 
     Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
                           (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
@@ -584,10 +688,19 @@ void Pcm_asrc_out_dma_isr(void)
  * ----------------------------------------------------------------------------
  * Description   : PCM TX DMA 完成。ch5 流完当前 buf；若 ch4 已有新 buf 则续流，
  *                 否则置 pcm_waiting 等 ch4 的完成中断来启动。
+ *                 流中断期间（pcm_break）只续流全 0 缓冲。
  * ------------------------------------------------------------------------- */
 void Pcm_tx_dma_isr(void)
 {
-    if (pcm_ready != 0xFF)
+    if (pcm_break)
+    {
+        Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
+                              (uint32_t)&pcm_zero_buf[0],
+                              (uint32_t)&PCM->TX_DATA);
+        Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
+        Sys_DMA_ChannelEnable(PCM_DMA_NUM);
+    }
+    else if (pcm_ready != 0xFF)
     {
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
                               (uint32_t)&pcm_tx_buf[pcm_ready][0],

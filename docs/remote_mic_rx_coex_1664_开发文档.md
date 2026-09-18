@@ -44,6 +44,7 @@
 | **删除电池 AD 采样** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h | 见 §5 |
 | **打印口 DIO5 → DIO12** | code/app_init.c、include/app.h | 见 §5、§10 |
 | **音频输出 → PCM 从机** | include/app.h、code/app_init.c、code/app_func.c、code/rm_app.c | `OUTPUT_INTRF = PCM_SLAVE_OUTPUT`；DIO0/DIO1 留给 7100 I2C，见 §3.4、§6 |
+| **RM 流中断静音 + PLC** | code/rm_app.c、code/app_func.c、include/app.h | 坏包/丢包重复上一帧好数据；连丢 2 包立即静音（不等 2s 后的 `LINK_DISCONNECTED`），见 §6.7 |
 | **关闭 RM 调试 IO** | code/rm_app.c、code/app_init.c、include/app.h | `debug_dio_num=0xff`，DIO11 让给 7100 握手，见 §3.5 |
 | **移除 Flash overlay + loop cache** | code/app_init.c | 否则 7100 I2C 读回全 0，见 §3.6 |
 | **移植 7100 通讯层、删除 BS300** | 新增 8 文件 / 删 19 文件 / 改 9 文件 | 见 §7、§7b |
@@ -220,28 +221,35 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
          → SERO(DIO14) → 7100
 ```
 
+> 包类型分发（`RM_Callback_TRX`）：GOODPKT 喂解码器并存入 `rm_last_good`；**坏包/丢包改喂
+> `rm_last_good` 做 PLC**（损坏 payload 绝不进解码器）；连续丢 2 包立即静音 —— 见 §6.7。
+
 ### 6.3 双缓冲握手（ch4 / ch5 ISR）
 
 `pcm_fill` = ch4 正在填的 buf；`pcm_ready` = ch5 待流的 buf（`0xFF` = 无）；`pcm_waiting` = ch5 空闲。
 
 ```
 初始化    pcm_fill=0, pcm_ready=0xFF, pcm_waiting=1；武装 ch4（填 buf0）；使能 ch4 ISR；ch5 只配不使能
-ch4 完成  pcm_ready=pcm_fill; pcm_fill=1-pcm_fill; 重武装 ch4（填新 buf）
+ch4 完成  pcm_ready=pcm_fill; pcm_fill=1-pcm_fill; if (pcm_fade_in) 该块就地淡入; 重武装 ch4（填新 buf）
           if (pcm_waiting) { pcm_waiting=0; 武装 ch5(pcm_ready); 使能 ch5; pcm_ready=0xFF; }
-ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_ready=0xFF; }
+ch5 完成  if (pcm_break) 续流 pcm_zero_buf（静音，§6.7）;
+          else if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_ready=0xFF; }
           else pcm_waiting = 1;        /* 等 ch4 完成中断来启动 */
 ```
 
 **ch5 不在初始化时使能**，必须由 ch4 完成中断在 `pcm_waiting` 时启动 —— 避免首帧竞争。
 
+`pcm_break`（流中断静音）/ `pcm_fade_in`（恢复淡入）是在这套握手上加的两个旁路，
+由 RM 丢包判定驱动，见 §6.7。
+
 ### 6.4 逐文件改动
 
 | 文件 | 改动 |
 |------|------|
-| include/app.h | 新增 `PCM_SLAVE_OUTPUT(6)` 并设为 `OUTPUT_INTRF`；`OUTPUT_DECODE_PATH` 并入该值；PCM 四脚宏改为 2/3/4/14；`PCM_CFG_TX`；`PCM_DMA_NUM(5)`、`PCM_FRAME_WORDS(3*FRAME_LENGTH/4=120)`、`PCM_DOUBLE_BUFFER`；`PCM_RX_DMA_ASRC_OUT` / `RX_DMA_PCM_STEREO`；`AUDIO_CONFIG_PCM`（去掉 `OD_ENABLE`）；`pcm_tx_buf` 与 `pcm_fill/ready/waiting` 的 extern |
-| code/app_init.c | `pcm_tx_buf[2][PCM_FRAME_WORDS]` 定义；`Initialize_Raw_PCM_Output_Type()`（`Sys_PCM_ConfigClk` + `Sys_PCM_Config` + ch5 DMA 配置）；`App_Initialize` 加 `#elif (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)` 分支 |
-| code/app_func.c | `pcm_fill/ready/waiting` 定义；`Asrc_reconfig` 加 PCM 分支（`INT_MODE` + 闭环 `2Ck`）；`Pcm_asrc_out_dma_isr()` / `Pcm_tx_dma_isr()`；`DMA4/DMA5_IRQHandler` 别名 |
-| code/rm_app.c | `LINK_DISCONNECTED` 停 ch4/ch5；`LINK_ESTABLISHED` 重武装 ch4/ch5 + `Sys_PCM_Enable()`（对应 7160test 的 `Audio_Resume`） |
+| include/app.h | 新增 `PCM_SLAVE_OUTPUT(6)` 并设为 `OUTPUT_INTRF`；`OUTPUT_DECODE_PATH` 并入该值；PCM 四脚宏改为 2/3/4/14；`PCM_CFG_TX`；`PCM_DMA_NUM(5)`、`PCM_FRAME_WORDS(3*FRAME_LENGTH/4=120)`、`PCM_DOUBLE_BUFFER`；`PCM_RX_DMA_ASRC_OUT` / `RX_DMA_PCM_STEREO`；`AUDIO_CONFIG_PCM`（去掉 `OD_ENABLE`）；`pcm_tx_buf` 与 `pcm_fill/ready/waiting` 的 extern；流中断静音的 `pcm_break` + `Pcm_Stream_Break/Resume` 声明（§6.7） |
+| code/app_init.c | `pcm_tx_buf[2][PCM_FRAME_WORDS]` 定义；`Initialize_Raw_PCM_Output_Type()`（`Sys_PCM_ConfigClk` + `Sys_PCM_Config` + ch5 DMA 配置）；`App_Initialize` 加 `#elif (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)` 分支；`BBIF->CTRL` 稳态改 `BB_DEEP_SLEEP`（§18） |
+| code/app_func.c | `pcm_fill/ready/waiting` 定义；`Asrc_reconfig` 加 PCM 分支（`INT_MODE` + 闭环 `2Ck`）；`Pcm_asrc_out_dma_isr()` / `Pcm_tx_dma_isr()`；`DMA4/DMA5_IRQHandler` 别名；流中断静音 `pcm_ramp_block` / `Pcm_Stream_Break` / `Pcm_Stream_Resume`（§6.7） |
+| code/rm_app.c | `LINK_ESTABLISHED` 重武装 ch4/ch5 + `Sys_PCM_Enable()`（对应 7160test 的 `Audio_Resume`）；`RM_Callback_TRX` 按 `type` 分发（`rm_last_good` + PLC + 连续丢包判定静音）；`LINK_DISCONNECTED` 兜底静音后再停 ch5（§6.7） |
 
 > DIO14 的 JTAG 释放在 `App_Initialize` 开头已有（`CM3_JTAG_DATA/TRST` DISABLED），无需新增。
 
@@ -263,6 +271,11 @@ ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_read
 - **`PCM_SER_DO` 绝不能用 DIO1** —— 那是 7100 I2C 的 SDA（原模板值恰为 1，已改 14）。
 - **DMA 用 LIN 不用 CIRC**：ch5 用 CIRC 会在回绕边界欠载。
 - **`AUDIO_CONFIG_PCM` 必须去掉 `OD_ENABLE`**，否则 OD 输出与 DIO0/DIO1 的 I2C 打架。
+- **音频收尾不能挂在 ch4 完成中断上**：ASRC 停/输入枯竭时 ch4 不再完成，挂在上面的淡出
+  **永远不会触发**；必须由 ch5（7100 外部时钟驱动，必然完成）来驱动，见 §6.7。
+- **坏包 payload 不能喂解码器，但也不能不管**：RM 库对 `BADCRCPKT`/`NOPKT` 也带**非 0** 的
+  `packet_length`，按 `*length == 0` 判「无包」永远不成立；损坏 payload 会被 G.722 解成爆音。
+  正确做法是**按 `type` 分发**：好帧存 `rm_last_good` 供 PLC，坏包/丢包重复它，见 §6.7。
 
 门控宏：`OUTPUT_DECODE_PATH = (OUTPUT_INTRF==SPI_TX_RAW_OUTPUT || ==OD_OUTPUT || ==PCM_SLAVE_OUTPUT)`，
 用于 app.h / app_init.c / app_func.c / rm_app.c 中所有「解码 + ASRC 初始化」的 `#if`。
@@ -270,6 +283,51 @@ ch5 完成  if (pcm_ready != 0xFF) { 武装 ch5(pcm_ready); 使能 ch5; pcm_read
 > **OD 直驱仍保留在代码里**（`#elif (OUTPUT_INTRF == OD_OUTPUT)`）：数据流为
 > ASRC(**DEC_MODE1**, 锁定 DIO7 采样钟) → ch4 → BufferOut(CIRC) → ch5 → `AUDIO->OD_DATA` → DIO0/DIO1。
 > 切回需 `OUTPUT_INTRF = OD_OUTPUT`，并重解 DIO0/DIO1 与 I2C 的冲突。
+
+### 6.7 RM 流中断静音（断开杂音修复，2026-09 已上板）
+
+**现象**：TX **持续推流中被硬断电**（掉电/出范围），RX 出一段 1~2 秒的断续杂音（听感「咔/啪」）。
+TX 端只是把音量调小（流没断）时不出现。
+
+**根因**：TX 消失后不再有新解码数据，但整条 PCM 流水照跑 —— ASRC 输入枯竭后输出极限环/残留
+（与 rawtest1 那个「静态蚊蚊」同源），被 ch4 → ch5 一路送到 7100；而停机挂在 `LINK_DISCONNECTED`
+上，RM 库要**丢满 `pktLostHighThrshld = 200` 包（≈2s）** 才判掉线，这 2 秒没人管。
+
+**机制**（触发点见 code/rm_app.c 的 `RM_Callback_TRX` / 两个状态回调）：
+
+| 触发 | 动作 |
+|------|------|
+| GOODPKT | 存 `rm_last_good`（供 PLC 用）→ 喂解码器 → `rm_stream_good()`：解除静音 + 下一块淡入 |
+| 坏包 / 丢包（BADCRC / NOPKT） | **PLC：重复 `rm_last_good`** → 喂解码器（已静音时不喂）；`rm_stream_loss()` 计数 |
+| 连续 `RM_STREAM_BREAK_LOSS_N`(=2) 个非好包 | `Pcm_Stream_Break()` 静音 |
+| `LINK_DISCONNECTED` | 兜底再 `Pcm_Stream_Break()`，然后停 ch5 |
+
+> PLC 取舍：**单包丢失用「重复最后一帧好数据」把听感接上**（即库注释 "repeat previous packet"
+> 的意图），所以只有连丢 ≥2 包才静音 —— 既避免单包丢失的顿挫，也避免长时间重复同一帧变成卡带音。
+> `rm_last_good` 长度为 `sizeof(outTempBuff)`（与既有的裸 `memcpy(..., *length)` 暴露面一致）。
+
+`Pcm_Stream_Break()`（app_func.c）：停采 ASRC（关 ch4 + 其 NVIC）→ 就地淡出两块 `pcm_tx_buf`
+（`pcm_ramp_block`）→ ch5 **直接改流全 0 的 `pcm_zero_buf`**。这样到 `LINK_DISCONNECTED` 停 ch5 时，
+移位器残留字已经是 0，不再留台阶。（`Pcm_Stream_Resume` 反向：重采 ASRC、回双缓冲、`pcm_fade_in`
+让恢复后的第一块淡入。）
+
+⚠ **为什么必须由 ch5 驱动，不能挂在 ch4 上**：ch4 的完成中断依赖 ASRC 还在产出。ASRC 一旦停/
+枯竭，ch4 就不再完成，任何挂在上面的淡出**永远不会触发**（本问题第一次尝试正是这么失败的：
+`LINK_DISCONNECTED` 里置标志、等 ch4 来淡出）。ch5 由 7100 的 BCLK/FS 外部驱动，只要 PCM
+使能就必然完成。
+
+⚠ **坏包 payload 绝不能直接喂解码器**：RM 库对 `RM_RX_TRANSFER_BADCRCPKT` 和 `NOPKT` 也带**非 0**
+的 `packet_length`（`rm_pkt_hdl.c:812-826` 三种类型都传 `&rm_env.packet_length`），所以
+`RM_Callback_TRX` 里 `if ((*length) == 0)` 那条「无包」分支**永远不会走** —— 损坏 payload 会被
+G.722 解成满量级爆音。现按 `type` 分发：好帧存进 `rm_last_good` 再喂；坏包/丢包改喂
+`rm_last_good`（PLC 重复），损坏数据一字节都不进解码器。
+
+**已知取舍**（可接受，出问题从这里查）：
+- `DMA_CTRL1[]` 只有**编程长度**、没有剩余传输计数 → **读不到 ch5 正播到缓冲哪个位置**，只能整块
+  先淡、再切 0。切换点恰在缓冲边界时，断开瞬间仍可能有**一声轻「咔」**。
+- **连续丢 2 包即静音**：弱信号下偶发连丢会带来一次「静音 → 淡入」的短暂下沉。**回归重点** ——
+  必须有 GOODPKT 把它拉回来，否则会永久静音。
+- 多占 **480B RAM**（`pcm_zero_buf`）。RAM 紧时可改成借用 `pcm_tx_buf` 某一块清 0，代价是淡出质量。
 
 ## 7. 7100 通讯子系统 & 读回缓存
 
@@ -762,6 +820,14 @@ App_Initialize() → 打印 started → bs300_driver_init()
 - `accessword = 0x00cde629 | (0xf2<<24)` = `0xf2cde629`（rm_app.c）
 - 其余 rm_param（interval 10000 / retrans 5000 / audio_rate 48 / radio_rate 2000 / scan 6500 /
   preamble 0x55 / renderDelay 200 / preFetch 1300(RM_APP_REQUEST) / pkt / 搜索阈值）与 sleep 一致。
+- **扫描驻留已改**：`waitCntGranularity` 200 → **400**（突发之间的驻留 = `retrans_time(5ms) × 该值`
+  = 1s → 2s，省电向）。
+  ⚠ **天花板低**：库在驻留期（`RM_READY`）照样会起一次 RX 窗口 —— `RM_ReceivePacket()`
+  （`rm_pkt_hdl.c:449-659`）的 switch 只算 timeout/定时器，**之后那段收尾代码无条件执行**
+  （`RF_SwitchToCPMode()` + `RF_Reg_WriteBurst(CENTER_FREQ,…)` + `FSM_MODE,0x3`）。
+  实测「有效果但不明显」。
+- ⚠ `scan_time = 6500` 是**死参数**：本版库 `rm_env.scan_time` 只赋值、全库无引用，改它无效。
+  （旧文档里「扫描超时 6.5ms」的说法源自它，属过时表述。）
 - ⚠ 这些是收发对端配对参数：发射机与 1664 接收机必须一致才能建链。
 - `APP_RM_AUDIO_CHANNEL = RM_RIGHT`（通道切右）。
 
@@ -819,6 +885,12 @@ App_Initialize() → 打印 started → bs300_driver_init()
 10. **EQ 的基准值污染风险**：EQ 写入后 7100 内实际值 = 基准 + offset，
     但 flash 缓存只存基准。若在此期间触发 `0xFE` 重读，读回值会被当成新基准 → 再次设 EQ 即累积。
     目前约定「设 EQ 后不重读」，未在代码中防护（§7.4.2 待验证表）。
+11. **音频侧本轮改动未完全上板**（§6.7）：`Pcm_Stream_Break/Resume` 的「TX 硬断电杂音消失」
+    已确认，但**弱信号（连续丢 2 包）后的恢复**、以及 **PLC（重复最后一帧）**的听感，仍需回归。
+    相关计数：`app_err1`（坏包/PLC 次数）、`app_err2`（帧号跳变）、`app_err3`（通道标志不符）。
+12. **`BBIF->CTRL` 稳态改 `BB_DEEP_SLEEP`（app_init.c:129）未上板验证**：对齐 sleep 工程稳态，
+    目的是不再永久强制唤醒基带；改动本身实测对搜索态电流**无影响**（见 §18），保留是为将来真加
+    深睡时的前提。
 
 ## 13. 验证步骤
 
@@ -864,6 +936,13 @@ App_Initialize() → 打印 started → bs300_driver_init()
    - **不应出现** `[7100-cache] saved to flash` —— 纯音/静音不改缓存，不落盘（§7.4.4）。
    - 静音：CMD 21 `Mute=0` 重复下发时只有第一次（状态变化）会打 `[7100] --- unmute ---`，
      之后只回应答（`changed=0`）。
+11. **RM 流中断静音 + PLC**（§6.7，**「TX 硬断电杂音消失」已上板确认**）：
+    - TX 持续推流中**硬断电**（不是把音量调小）→ 应 ~20~30ms 内静音，不再有 1~2 秒断续杂音；
+      断开瞬间若有**一声轻「咔」**属已知取舍（读不到 ch5 播放位置）。
+    - **单包丢失**（偶发）：应靠 PLC「重复最后一帧」接上，听感是轻微一顿，**不应有爆音/长静音**。
+    - **回归重点**：弱信号 / 偶发连丢 2 包 → 音频短暂下沉后**必须正常恢复出声**，不能永久静音
+      （走到远处或加遮挡实测）。
+    - 正常推流音质不受影响；`LINK_DISCONNECTED` 后彻底安静；重连正常。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）
 
@@ -985,3 +1064,27 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
 | code/dsp_connect_replay.c + `_tables.c` | 连接回放（rx_coex 里也被 .cproject 排除，未接线） |
 
 > 阶段一已**剔除**上述死代码；本次阶段二改为在 `dsp_7100_cmd.c` 内按公式现算，未重新引入大表。
+
+## 18. 功耗：RM 搜索态现状与结论（2026-09）
+
+**实测**（RM 开、无 TX、搜索中）：**RSL10 单独 ≈ 450µA / 整机 > 1mA**。
+7100 是**固定底座**（本轮明确不调整）。对照 `peripheral_server_sleep` 当年「RM 未连接 ~300µA」。
+
+**根因级结论：1664 这颗 RSL10 从不进低功耗模式。** 主循环只有 `SYS_WAIT_FOR_EVENT`
+（`rsl10_sys_cm3.h:45` = `wfe`，纯 CPU 停顿），**全工程没有 `BLE_Power_Mode_Enter`**。
+sleep 工程之所以能靠 `BB_DEEP_SLEEP` / 音频外设停机 / `DSS_LPDSP32_PAUSE` 省电，是因为它
+**真的调了深睡**，那些位/停机都是配套动作。
+
+**试过、实测无效的**：
+
+| 改动 | 结果 |
+|------|------|
+| `LINK_DISCONNECTED` 加 `DSS_LPDSP32_PAUSE` | **无效**（已回退）—— RSL10 头文件里**没有 LPDSP32 时钟门控位**，PAUSE 只 halt 核、时钟照跑 |
+| `BBIF->CTRL`：`BB_WAKEUP` → `BB_DEEP_SLEEP` | **无效**（改动保留，见 §12.12）—— 不进睡眠就没人门控基带时钟，该 wakeup request 位空转 |
+| `waitCntGranularity` 200 → 400 | 有效果但**不明显**（§9：驻留期照样起 RX 窗口） |
+
+**还能试的**：`searchTryCntThrshld` 20 → 8（直接砍 RF 窗口数，且能顺便量化「搜索占这 450µA 多少」）；
+深睡与「RM 常搜」互斥（RM 用 SLOWCLK 域 TIMER0/1，硬件定时器未必是 deep sleep 的唤醒源），
+赌注大，先别碰。
+
+> 结论：在「RM 必须常搜 + 7100 不动」下，450µA 基本是地板；继续调扫描占空比收益在几十 µA 量级。

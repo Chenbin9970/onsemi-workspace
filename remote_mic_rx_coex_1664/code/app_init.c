@@ -126,7 +126,9 @@ void App_Initialize(void)
                      USRCLK_PRESCALE_1);
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_12 | DCCLK_PRESCALE_4);
 
-    BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
+    /* 稳态不强制唤醒基带（对齐 sleep 工程：BB_WAKEUP 只作开机早期临时强制，
+       之后放掉）；强制常醒会白白多耗电流 */
+    BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
     /* Configuration of Audio Sink Clock Counters */
     Sys_Audiosink_ResetCounters();

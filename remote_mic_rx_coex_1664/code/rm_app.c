@@ -36,6 +36,8 @@ uint8_t inTempBuffRight[100] = {
     0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc
 };
 uint8_t outTempBuff[100];
+/* PLC 用：最后一帧好 payload。坏包/丢包时重复它（见 RM_Callback_TRX） */
+uint8_t rm_last_good[sizeof(outTempBuff)];
 uint16_t app_sendCntrRight = 0, app_sendCntrLeft = 0, app_receiveCntr = 0;
 uint32_t app_err1 = 0, app_err2 = 0, app_err3 = 0, app_err4 = 0, app_err5 = 0,
          app_err6 = 0, app_err7 = 0;
@@ -115,7 +117,8 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.pktLostLowThrshldSlow = 1;
 
     app_env.rm_param.searchTryCntThrshld   = 20;
-    app_env.rm_param.waitCntGranularity    = 200;
+    /* 扫描突发之间的驻留 = retrans_time(5ms) × 该值：200 → 1s，400 → 2s */
+    app_env.rm_param.waitCntGranularity    = 400;
 
     app_env.rm_param.stepSize = 1;
     app_env.rm_param.numChnlInHopList = 7;
@@ -142,6 +145,34 @@ void APP_RM_Init(uint8_t side)
 
 uint8_t ptr_right[ENCODED_FRAME_LENGTH];
 uint8_t cntr_enc_rm0 = 0, cntr_enc_rm1 = 0;
+
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+/* 流中断判定：连续 N 个非好包即静音。
+   TX 掉电后没有新解码数据，ASRC 输入枯竭但 PCM 流水照跑，会把极限环输出
+   送到 7100（听到 1~2 秒断续杂音）；不能等 LINK_DISCONNECTED —— 那要丢满
+   pktLostHighThrshld=200 包（≈2s）才到。GOODPKT 回来时解除并淡入。 */
+#define RM_STREAM_BREAK_LOSS_N   2
+static uint8_t rm_loss_cnt = 0;
+
+static void rm_stream_loss(void)
+{
+    if (rm_loss_cnt < RM_STREAM_BREAK_LOSS_N)
+    {
+        rm_loss_cnt++;
+    }
+    if (rm_loss_cnt >= RM_STREAM_BREAK_LOSS_N)
+    {
+        Pcm_Stream_Break();
+    }
+}
+
+static void rm_stream_good(void)
+{
+    rm_loss_cnt = 0;
+    Pcm_Stream_Resume();      /* 未静音时内部自判为空操作 */
+}
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
+
 uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
 {
     switch (type)
@@ -160,10 +191,16 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
         case RM_RX_TRANSFER_BADCRCPKT:
         case RM_RX_TRANSFER_NOPKT:
         {
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+            if (type == RM_RX_TRANSFER_GOODPKT)
+            {
+                rm_stream_good();     /* 流恢复：解除静音 + 下一块淡入 */
+            }
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
             if ((*length) == 0)
             {
-                /* PLC should be applied as tx hasn't sent data
-                 * for example: repeat previous packet, */
+                /* 防御分支：本版库三种类型都传非 0 的 packet_length
+                 * （rm_pkt_hdl.c:812-826），实际走不到；真到了也没帧可重复，按静音处理。 */
                 memset(outTempBuff, 0xaa, ((app_env.rm_param.audio_rate *
                                             app_env.rm_param.interval_time) /
                                            8000));
@@ -172,14 +209,41 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
             }
             else
             {
+                uint8_t *frame_src = ptr;
+                uint8_t  feed      = 1;
+
+                if (type == RM_RX_TRANSFER_GOODPKT)
+                {
+                    memcpy(rm_last_good, ptr, *length);   /* 好帧存下来供 PLC 用 */
+                }
+                else
+                {
+                    /* 坏包 / 无包统一走 PLC：重复最后一帧好数据 —— 单包丢失时听感连续
+                       （即库注释 "repeat previous packet" 的意图）；连丢 N 包由
+                       rm_stream_loss() → Pcm_Stream_Break() 静音兜住，避免同一帧
+                       循环播放变成卡带音。 */
+                    app_err1++;
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+                    rm_stream_loss();
+                    if (pcm_break)
+                    {
+                        feed = 0;     /* 已静音：不喂解码器，免得陈旧数据积在 ASRC 里 */
+                    }
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
+                    frame_src = rm_last_good;
+                }
+
+                memcpy(outTempBuff, frame_src, *length);
+
 #if (OUTPUT_DECODE_PATH)
-                memcpy(outTempBuff, ptr, *length);
-                Rendering_func(outTempBuff);
+                if (feed)
+                {
+                    Rendering_func(outTempBuff);
+                }
 #endif    /* if (OUTPUT_DECODE_PATH) */
 
 #if (OUTPUT_INTRF == SPI_TX_CODED_OUTPUT)
                 SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_1_BITBAND;
-                memcpy(outTempBuff, ptr, *length);
                 SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_0_BITBAND;
 #if 0
                 Sys_DMA_Set_ChannelDestAddress(TX_DMA_NUM, (uint32_t)ptr);
@@ -222,10 +286,6 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
                             app_err3++;
                         }
                     }
-                }
-                else
-                {
-                    app_err1++;
                 }
             }
         }
@@ -272,9 +332,11 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
 #if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
-            /* 停 PCM 流水：ch4 不再采 ASRC，ch5 不再流出（否则会一直吐旧缓冲） */
-            Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+            /* 兜底静音（正常路径早在连续丢包时就静音了）：先切全 0 缓冲再停 ch5，
+               残留字=0 → 不会留台阶。 */
+            Pcm_Stream_Break();
             Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+            NVIC_DisableIRQ(DMA_IRQn(PCM_DMA_NUM));
             pcm_ready   = 0xFF;
             pcm_waiting = 0;
 #endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
@@ -315,6 +377,9 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
 #if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
             /* 重武装 PCM 流水（对应 7160test 的 Audio_Resume）：
                ch4 重新采 ASRC->OUT，ch5 由 ch4 完成中断启动。 */
+            pcm_break = 0;
+
+
             Sys_DMA_ChannelDisable(PCM_DMA_NUM);
             Sys_PCM_Config(PCM_CFG_TX);
 

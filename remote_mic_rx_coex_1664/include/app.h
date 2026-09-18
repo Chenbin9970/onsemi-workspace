@@ -75,7 +75,7 @@ extern "C"
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
-#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
 
 #define OUTPUT_POWER_6DBM               0
 
@@ -530,6 +530,12 @@ extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
 extern volatile uint8_t pcm_fill;
 extern volatile uint8_t pcm_ready;
 extern volatile uint8_t pcm_waiting;
+
+/* 流中断静音：1 = ch5 只流全 0 缓冲（RM_Callback_TRX 判定连续丢包后置位，
+   GOODPKT 回来时清除）。不依赖 ch4/ASRC 继续产出，见 app_func.c。 */
+extern volatile uint8_t pcm_break;
+void Pcm_Stream_Break(void);
+void Pcm_Stream_Resume(void);
 #endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 
 #else    /* if (OUTPUT_DECODE_PATH) */

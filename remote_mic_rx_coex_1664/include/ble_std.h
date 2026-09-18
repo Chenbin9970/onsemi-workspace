@@ -50,10 +50,10 @@ extern "C"
 #define APP_ADV_CHMAP                   0x07
 
 /* Advertising minimum interval - 40ms (64*0.625ms) */
-#define APP_ADV_INT_MIN                 160
+#define APP_ADV_INT_MIN                 5000
 
 /* Advertising maximum interval - 40ms (64*0.625ms) */
-#define APP_ADV_INT_MAX                 160
+#define APP_ADV_INT_MAX                 5000
 
 #define BD_TYPE_PUBLIC                  0
 #define BD_TYPE_PRIVATE                 1
@@ -84,7 +84,7 @@ extern "C"
 #define APP_DEVICE_NAME_FLAG            '\x09'
 
 /* ON SEMICONDUCTOR Company ID */
-#define APP_COMPANY_ID_DATA             { 0x11, 0xff, 0x58, 0x29, 0x01, 0x63, 0x00, 0x14, 0x00, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }
+#define APP_COMPANY_ID_DATA             { 0x11, 0xff, 0x58, 0x29, 0x01, 0x63, 0x00, 0x15, 0x00, 0x00, 0x02, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }
 #define APP_COMPANY_ID_DATA_LEN         (0x11 + 1)
 
 /* Vendor specific scan response data (ON SEMICONDUCTOR Company ID) */
