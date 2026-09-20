@@ -43,13 +43,13 @@ bool dsp_7100_set_denoise(uint8_t prog, uint8_t level);
 /* DFBC 开关：prog 1-4，onoff 0/1。返回 true = 会话已启动。 */
 bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
 
-/* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = ±dB 调整量（1dB/LSB）。
- * 写入值 = 读回基准 + db，同时作用于该段通道的 LowLevelGain 与 HighLevelGain。
- * 通道映射：低音 ch1,ch2 ｜ 中音 ch3,ch4,ch5 ｜ 高音 ch6..ch16。
+/* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB，1dB/LSB）。
+ * 写入值 = 设备当前值 + (本次绝对值 − 上次保存的绝对值)，作用于该段通道的
+ * LowLevelGain 与 HighLevelGain；写入后的值落盘，下次据此算差值。
+ * 通道映射（数组下标）：低音 {1,2} ｜ 中音 {3,4} ｜ 高音 {6,7}。
  * db 超出 ±10 会被钳位。返回 true = 会话已启动。
- * ⚠ 会话时长（一条命令跨 2 个 tick = 400ms）：
- *   低音 14 命令 / 5.6s ｜ 中音 18 命令 / 7.2s ｜ 高音 50 命令 / 20s。
- *   全程静音（mute → 写 → 解除），高音段静音时间较长，属已知取舍。 */
+ * ⚠ 会话时长（一条命令跨 2 个 tick = 400ms）：每段 2 通道 = 14 命令 / 5.6s，
+ *   全程静音（mute → 写 → 解除），属已知取舍。 */
 bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db);
 
 /* 一个 WDRC 设置项：ch 1-16，val = **7100 侧 dB 绝对值** */

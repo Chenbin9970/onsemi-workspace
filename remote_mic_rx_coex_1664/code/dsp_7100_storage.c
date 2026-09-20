@@ -36,11 +36,11 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
  *   [0]      denoise_en
  *   [1]      denoise_lvl
  *   [2]      dfbc_en
- *   [3]      eq_low   (int8, ±dB)
+ *   [3]      eq_low   (int8, App 上次下发的绝对值 ±dB)
  *   [4]      eq_mid
  *   [5]      eq_high
- *   [6..21]  wdrc_ll[16]   基准
- *   [22..37] wdrc_hl[16]   基准
+ *   [6..21]  wdrc_ll[16]   设备当前值（含 EQ）
+ *   [22..37] wdrc_hl[16]   设备当前值（含 EQ）
  *   [38..53] wdrc_ol[16]
  *   [54..57] magic "D71P"
  *   [58]     version
@@ -67,7 +67,7 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
 #define CACHE_SLOT_WORDS   (CACHE_SLOT_BYTES / 4)     /* 16 */
 
 static const uint8_t CACHE_MAGIC[4] = { 'D', '7', '1', 'P' };
-#define CACHE_VERSION   4    /* v4: 增加三段 EQ 偏移（v3/v2 格式不兼容，自动失效重读） */
+#define CACHE_VERSION   5    /* v5: wdrc_ll/hl 语义由"不含 EQ 的基准"改为"设备当前值" */
 #define CACHE_VALID     0xA5
 
 /* ---- Main Flash unlock（HIGH region 0x00150000+，同 BS300）---- */

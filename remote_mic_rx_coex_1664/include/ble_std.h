@@ -50,10 +50,10 @@ extern "C"
 #define APP_ADV_CHMAP                   0x07
 
 /* Advertising minimum interval - 40ms (64*0.625ms) */
-#define APP_ADV_INT_MIN                 5000
+#define APP_ADV_INT_MIN                 160
 
 /* Advertising maximum interval - 40ms (64*0.625ms) */
-#define APP_ADV_INT_MAX                 5000
+#define APP_ADV_INT_MAX                 160
 
 #define BD_TYPE_PUBLIC                  0
 #define BD_TYPE_PRIVATE                 1

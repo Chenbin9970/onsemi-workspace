@@ -23,7 +23,7 @@
 /* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
  * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
  * 见开发文档「FOTA」。 */
-//#define CFG_FOTA
+#define CFG_FOTA
 #ifdef CFG_FOTA
 #define VER_ID                  "Smart1664"
 #define VER_MAJOR               1

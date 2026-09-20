@@ -154,8 +154,8 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
  *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
  * ========================================================================== */
 
-/* EQ 高音段最长：静音+选程序+11 通道×2 参数×2 命令+确认+解除+选回+提交 = 50 条
- * （命令缓冲 50×10B = 500B，取 640 留余量） */
+/* 最长会话 = WDRC 全通道单参数：静音+选程序+16 通道×2 命令+确认+解除+选回+提交 = 38 条
+ * （EQ 每段 2 通道 = 14 条；命令缓冲 38×10B = 380B，取 640 留余量） */
 #define A7_MAX_CMDS      56
 #define A7_CMD_BUF_SZ    640
 #define A7_RX_ACK        3      /* 应答固定 3B（46 00 00） */
@@ -189,14 +189,14 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 #define A7_WDRC_P_HL     1
 #define A7_WDRC_P_OL     2
 
-/* EQ 三段 → WDRC 通道（数组下标 = 通道号-1，即 1-based 通道号减一）
- *   低音 ch1,ch2  |  中音 ch3,ch4,ch5  |  高音 ch6..ch16 */
-static const uint8_t s_eq_ch_low[]  = { 0, 1 };
-static const uint8_t s_eq_ch_mid[]  = { 2, 3, 4 };
-static const uint8_t s_eq_ch_high[] = { 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+/* EQ 三段 → WDRC 通道（数组下标，非通道号）
+ *   低音 {1,2}  |  中音 {3,4}  |  高音 {6,7}   —— 下标 0、5 不参与 EQ */
+static const uint8_t s_eq_ch_low[]  = { 1, 2 };
+static const uint8_t s_eq_ch_mid[]  = { 3, 4 };
+static const uint8_t s_eq_ch_high[] = { 6, 7 };
 
 static const uint8_t *s_eq_ch[3]   = { s_eq_ch_low, s_eq_ch_mid, s_eq_ch_high };
-static const uint8_t  s_eq_ch_n[3] = { 2, 3, 11 };
+static const uint8_t  s_eq_ch_n[3] = { 2, 2, 2 };
 
 /* EQ 调整量上限（±dB），超出钳位并告警 */
 #define A7_EQ_MAX_DB     10
@@ -320,7 +320,8 @@ static uint16_t  s_cmd_used;
 static uint8_t   s_sess_prog;       /* 1-4 */
 static uint8_t   s_sess_kind;       /* A7_KIND_* */
 static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 / EQ 段 / WDRC 参数选择 */
-static int8_t    s_sess_db;         /* EQ 调整量 ±dB */
+static int8_t    s_sess_db;         /* EQ 段本次下发的绝对值（±dB） */
+static int16_t   s_eq_delta;        /* EQ 本次相对上次的差值 = 本次绝对值 − 上次保存值 */
 /* WDRC 会话的待写项。**必须拷一份**：会话是异步跑的，
  * 调用方的数组（BLE 负载缓冲）到收尾回写缓存时可能已经失效。 */
 static dsp_7100_wdrc_item_t s_wdrc_items[DSP7100_WDRC_CH];
@@ -496,6 +497,14 @@ static uint8_t *a7_add_noise_block(uint8_t level)
     return p;
 }
 
+/* 取该段上次下发的 EQ 绝对值（band 0=低音 1=中音 2=高音） */
+static int8_t a7_eq_prev(const dsp_7100_prog_t *p, uint8_t band)
+{
+    if (band == 0) return p->eq_low;
+    if (band == 1) return p->eq_mid;
+    return p->eq_high;
+}
+
 /* 会话骨架：静音 → 选程序 → [写块] → confirm → 解除静音 →
  * 选回程序0 → commit。写块由 kind 决定。 */
 static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
@@ -551,11 +560,14 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
         if (bp == NULL) return false;       /* 无基准值 → 先做读回 */
         if (val > 2) return false;
 
+        /* 缓存里的 LL/HL 就是设备当前值，本次只加"与上次 EQ 的差值" */
+        s_eq_delta = (int16_t)s_sess_db - (int16_t)a7_eq_prev(bp, val);
+
         n = s_eq_ch_n[val];
         for (i = 0; i < n; i++) {
             uint8_t  ch  = s_eq_ch[val][i];             /* 0-based */
-            int32_t  ll  = (int32_t)bp->wdrc_ll[ch] + s_sess_db;
-            int32_t  hl  = (int32_t)bp->wdrc_hl[ch] + s_sess_db;
+            int32_t  ll  = (int32_t)bp->wdrc_ll[ch] + s_eq_delta;
+            int32_t  hl  = (int32_t)bp->wdrc_hl[ch] + s_eq_delta;
 
             if (ll < A7_WDRC_LL_MIN) ll = A7_WDRC_LL_MIN;
             if (ll > A7_WDRC_LL_MAX) ll = A7_WDRC_LL_MAX;
@@ -609,8 +621,25 @@ static void a7_session_finish(bool ok)
          * 否则会走下面的 cache_save_request()，把整份读回缓存（4 个程序）重写一遍 flash ——
          * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。 */
         return;
-    } else {                   /* EQ：只存偏移量，基准值不动（避免多次设置累积） */
+    } else {                   /* EQ：把本次写入的 LL/HL 与 EQ 绝对值一起落到缓存 */
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
+        uint8_t n = s_eq_ch_n[s_sess_val];
+        uint8_t i;
+
+        for (i = 0; i < n; i++) {
+            uint8_t  ch = s_eq_ch[s_sess_val][i];
+            int32_t  ll = (int32_t)p->wdrc_ll[ch] + s_eq_delta;
+            int32_t  hl = (int32_t)p->wdrc_hl[ch] + s_eq_delta;
+
+            if (ll < A7_WDRC_LL_MIN) ll = A7_WDRC_LL_MIN;
+            if (ll > A7_WDRC_LL_MAX) ll = A7_WDRC_LL_MAX;
+            if (hl < A7_WDRC_HL_MIN) hl = A7_WDRC_HL_MIN;
+            if (hl > A7_WDRC_HL_MAX) hl = A7_WDRC_HL_MAX;
+
+            p->wdrc_ll[ch] = (int8_t)ll;
+            p->wdrc_hl[ch] = (int8_t)hl;
+        }
+
         if (s_sess_val == 0)      p->eq_low  = s_sess_db;
         else if (s_sess_val == 1) p->eq_mid  = s_sess_db;
         else                      p->eq_high = s_sess_db;
@@ -699,8 +728,9 @@ bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff)
     return a7_session_start(A7_KIND_DFBC, prog, onoff ? 1 : 0);
 }
 
-/* 三段均衡器：band 0=低音 1=中音 2=高音，db 为 ±dB 调整量。
- * 基准取读回值，写入 基准+db 到该段的 2 个通道（LL 与 HL 同时平移）。 */
+/* 三段均衡器：band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB）。
+ * 实际写入 = 设备当前值 + (本次绝对值 − 上次保存的绝对值)，LL 与 HL 同时平移。
+ * 缓存里的 LL/HL 与 EQ 绝对值都是设备实际值，掉电保存在 flash。 */
 bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db)
 {
     if (prog < 1 || prog > 4 || band > 2) return false;

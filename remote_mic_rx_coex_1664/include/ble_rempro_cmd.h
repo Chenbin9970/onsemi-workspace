@@ -62,6 +62,10 @@ void rempro_reasm_reset(void);
 /* 由 APP_7100_HB_Handler 每 200ms 调：推进延时推送（测听进入/退出完成） */
 void rempro_deferred_tick(void);
 
+/* 7100 写会话结束时调（I2C 跑完）：启动下一条缓存的设置命令。
+ * 设置命令在 I2C 忙时按类型合并缓存（见 ble_rempro_cmd.c）；无缓存则空操作。 */
+void rempro_pending_start_next(void);
+
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);
 void rempro_push_volume_change(uint8_t prog, uint8_t volume);

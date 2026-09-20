@@ -339,6 +339,73 @@ static void aud_push_schedule(uint8_t what)
            what, AUD_PUSH_TICKS * 200u);
 }
 
+/* ---- I2C 忙时的命令缓存 ----
+ * 7100 写会话要跑 3.2~5.6s（均衡器最长），期间来的设置命令不丢弃：按命令类型合并
+ * （同类型只留最新一条 —— 均衡器/降噪/DFBC 都是**绝对值**语义，丢中间帧不影响终态），
+ * 会话结束再依次执行。命令一律**立即应答**，Flag=0 仅表示"已受理"，不代表已写入。 */
+#define PEND_MAX   3
+#define PEND_NONE  0
+
+typedef struct
+{
+    uint16_t cmd_id;          /* PEND_NONE = 空槽 */
+    uint8_t  prog;            /* 7100 程序 1-4 */
+    uint8_t  arg;             /* 降噪档位 / DFBC 开关 / 均衡器段 */
+    int8_t   db;              /* 均衡器 ±dB；其余命令为 0 */
+} rempro_pend_t;
+
+static rempro_pend_t s_pend[PEND_MAX];
+
+/* 入队：同 cmd_id 覆盖旧值，否则占空槽 */
+static void pend_put(uint16_t cmd_id, uint8_t prog, uint8_t arg, int8_t db)
+{
+    uint8_t i;
+
+    for (i = 0; i < PEND_MAX; i++) {
+        if (s_pend[i].cmd_id == cmd_id) break;          /* 同类型 → 覆盖 */
+    }
+    if (i == PEND_MAX) {
+        for (i = 0; i < PEND_MAX; i++) {
+            if (s_pend[i].cmd_id == PEND_NONE) break;   /* 空槽 */
+        }
+    }
+    if (i == PEND_MAX) i = 0;                           /* 只有 3 种命令，正常走不到 */
+
+    s_pend[i].cmd_id = cmd_id;
+    s_pend[i].prog   = prog;
+    s_pend[i].arg    = arg;
+    s_pend[i].db     = db;
+}
+
+/* 会话结束后由 APP_7100_HB_Handler 调：启动下一条缓存的命令（无缓存则空操作） */
+void rempro_pending_start_next(void)
+{
+    uint8_t i;
+
+    for (i = 0; i < PEND_MAX; i++) {
+        uint16_t cmd_id;
+        uint8_t  prog;
+        uint8_t  arg;
+        int8_t   db;
+        bool     ok;
+
+        if (s_pend[i].cmd_id == PEND_NONE) continue;
+
+        cmd_id = s_pend[i].cmd_id;
+        prog   = s_pend[i].prog;
+        arg    = s_pend[i].arg;
+        db     = s_pend[i].db;
+        s_pend[i].cmd_id = PEND_NONE;
+
+        if (cmd_id == CMD_SETDENOISE)            ok = dsp_7100_set_denoise(prog, arg);
+        else if (cmd_id == CMD_SETFEEDBACKONOFF) ok = dsp_7100_set_dfbc(prog, arg);
+        else                                     ok = dsp_7100_set_eq(prog, arg, db);
+
+        PRINTF("[REMPRO] 缓存命令下发 cmd=%u prog=%u started=%u\r\n", cmd_id, prog, ok);
+        return;
+    }
+}
+
 /* ================================================================
  * Command Handlers
  * ================================================================ */
@@ -447,12 +514,16 @@ static void cmd_setdenoise_7100(const uint8_t *data, uint8_t len)
         level = 4;
     }
 
-    ok = dsp_7100_set_denoise((uint8_t)(prog + 1), level);
+    if (dsp_7100_cmd_busy()) {
+        pend_put(CMD_SETDENOISE, (uint8_t)(prog + 1), level, 0);   /* I2C 忙 → 缓存 */
+        ok = true;
+    } else {
+        ok = dsp_7100_set_denoise((uint8_t)(prog + 1), level);
+    }
     PRINTF("[REMPRO] SetDenoise7100: dev=%u prog=%u level=%u started=%u\r\n",
            dev_type, prog, level, ok);
 
-    /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
-    hdlc_response_set(CMD_SETDENOISE, ok);
+    hdlc_response_set(CMD_SETDENOISE, ok);      /* 立即应答：Flag=0 = 已受理 */
 }
 
 /* ID:12  SetFeedbackOnOff — App prog 0-3 → 7100 程序 1-4，onoff 0/1（= DFBC） */
@@ -471,12 +542,16 @@ static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
 
     if (prog >= 4) { hdlc_response_set(CMD_SETFEEDBACKONOFF, false); return; }
 
-    ok = dsp_7100_set_dfbc((uint8_t)(prog + 1), onoff ? 1 : 0);
+    if (dsp_7100_cmd_busy()) {
+        pend_put(CMD_SETFEEDBACKONOFF, (uint8_t)(prog + 1), onoff ? 1 : 0, 0);
+        ok = true;                                                 /* I2C 忙 → 缓存 */
+    } else {
+        ok = dsp_7100_set_dfbc((uint8_t)(prog + 1), onoff ? 1 : 0);
+    }
     PRINTF("[REMPRO] SetFeedbackOnOff7100: dev=%u prog=%u onoff=%u started=%u\r\n",
            dev_type, prog, onoff, ok);
 
-    /* 异步会话：ok = 已受理。完成情况见 [7100] session done 日志 */
-    hdlc_response_set(CMD_SETFEEDBACKONOFF, ok);
+    hdlc_response_set(CMD_SETFEEDBACKONOFF, ok);   /* 立即应答：Flag=0 = 已受理 */
 }
 
 /* ID:10  SetEqualizer — App: {Device_Type, Equalizer_Type 0低/1中/2高, Value}
@@ -502,11 +577,16 @@ static void cmd_setequalizer_7100(const uint8_t *data, uint8_t len)
     prog = (uint8_t)(dsp_7100_get_program() - 1);
     if (prog > 3) prog = 0;
 
-    ok = dsp_7100_set_eq((uint8_t)(prog + 1), eq_type, (int8_t)db);
+    if (dsp_7100_cmd_busy()) {
+        pend_put(CMD_SETEQUALIZER, (uint8_t)(prog + 1), eq_type, (int8_t)db);
+        ok = true;                                                 /* I2C 忙 → 缓存 */
+    } else {
+        ok = dsp_7100_set_eq((uint8_t)(prog + 1), eq_type, (int8_t)db);
+    }
     PRINTF("[REMPRO] SetEqualizer7100: dev=%u type=%u db=%d prog=%u started=%u\r\n",
            dev_type, eq_type, (int)db, prog, ok);
 
-    hdlc_response_set(CMD_SETEQUALIZER, ok);
+    hdlc_response_set(CMD_SETEQUALIZER, ok);       /* 立即应答：Flag=0 = 已受理 */
 }
 
 /* ============================================================================

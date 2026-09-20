@@ -61,6 +61,10 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
     /* 降噪/DFBC 写会话进行中：只推进它，不读回不发心跳 */
     if (dsp_7100_cmd_busy()) {
         dsp_7100_cmd_tick();
+        /* 本 tick 刚跑完 ⇒ 启动下一条缓存的设置命令（无缓存则空操作） */
+        if (!dsp_7100_cmd_busy()) {
+            rempro_pending_start_next();
+        }
         return (KE_MSG_CONSUMED);
     }
 

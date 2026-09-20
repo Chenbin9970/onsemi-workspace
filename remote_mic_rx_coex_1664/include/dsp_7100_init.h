@@ -69,19 +69,19 @@ void dsp_7100_rb_seq_tick(void);
  *   OutputLimit   @ +22 8bit 有符号
  * 见 docs/7100协议/WDRC/7100_WDRC读取.md
  *
- * wdrc_ll/hl 保存的是**读回基准值**（不含 EQ）；eq_* 是三段均衡器的 ±dB 调整量。
- * 实际写入 7100 的值 = 基准 + eq（见 dsp_7100_cmd.c），
- * 分开存是为了多次设置 EQ 时不累积。 */
+ * wdrc_ll/hl 保存的是**设备当前值**（含 EQ）；eq_* 保存 App 上次下发的 EQ 绝对值。
+ * 设 EQ 时用 本次值 − 上次值 得到差值，加到 wdrc_ll/hl 上，两者一起落盘
+ * （见 dsp_7100_cmd.c a7_build_session / a7_session_finish）。 */
 typedef struct
 {
     uint8_t denoise_en;                   /* 降噪使能（0xAE payload[0] bit7） */
     uint8_t denoise_lvl;                  /* 降噪档位 0..4 */
     uint8_t dfbc_en;                      /* DFBC 开关（0x32 payload[0] bit7） */
-    int8_t  eq_low;                       /* 均衡器低音 ±dB（App 值，1dB/LSB） */
-    int8_t  eq_mid;                       /* 均衡器中音 ±dB */
-    int8_t  eq_high;                      /* 均衡器高音 ±dB */
-    int8_t  wdrc_ll[DSP7100_WDRC_CH];     /* LowLevelGain  基准 */
-    int8_t  wdrc_hl[DSP7100_WDRC_CH];     /* HighLevelGain 基准 */
+    int8_t  eq_low;                       /* 均衡器低音：App 上次下发的绝对值（±dB） */
+    int8_t  eq_mid;                       /* 均衡器中音：同上 */
+    int8_t  eq_high;                      /* 均衡器高音：同上 */
+    int8_t  wdrc_ll[DSP7100_WDRC_CH];     /* LowLevelGain  **设备当前值**（含 EQ） */
+    int8_t  wdrc_hl[DSP7100_WDRC_CH];     /* HighLevelGain **设备当前值**（含 EQ） */
     int8_t  wdrc_ol[DSP7100_WDRC_CH];     /* OutputLimit   */
 } dsp_7100_prog_t;
 
