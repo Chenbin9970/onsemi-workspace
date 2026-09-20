@@ -40,6 +40,8 @@ uint8_t inTempBuffRight[100] = {
     0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc, 0xbc
 };
 uint8_t outTempBuff[100];
+/* PLC 用：最后一帧好 payload。坏包/丢包时重复它（见 RM_Callback_TRX） */
+uint8_t rm_last_good[sizeof(outTempBuff)];
 uint16_t app_sendCntrRight = 0, app_sendCntrLeft = 0, app_receiveCntr = 0;
 uint32_t app_err1 = 0, app_err2 = 0, app_err3 = 0, app_err4 = 0, app_err5 = 0,
          app_err6 = 0, app_err7 = 0;
@@ -144,6 +146,33 @@ void APP_RM_Init(uint8_t side)
 
 uint8_t ptr_right[ENCODED_FRAME_LENGTH];
 uint8_t cntr_enc_rm0 = 0, cntr_enc_rm1 = 0;
+
+#if (OUTPUT_INTRF == OD_OUTPUT)
+/* 流中断判定：连续 N 个非好包即静音。TX 掉电后没有新解码数据，但 ASRC 输入枯竭
+ * 仍输出极限环/残留，经 ch4 → BufferOut → ch5 送到 OD（听感「滋」，持续 1~2 秒）；
+ * 不能等 LINK_DISCONNECTED —— 那要丢满 pktLostHighThrshld=200 包（≈2s）。 */
+#define RM_STREAM_BREAK_LOSS_N   2
+static uint8_t rm_loss_cnt = 0;
+
+static void rm_stream_loss(void)
+{
+    if (rm_loss_cnt < RM_STREAM_BREAK_LOSS_N)
+    {
+        rm_loss_cnt++;
+    }
+    if (rm_loss_cnt >= RM_STREAM_BREAK_LOSS_N)
+    {
+        Od_Stream_Break();
+    }
+}
+
+static void rm_stream_good(void)
+{
+    rm_loss_cnt = 0;
+    Od_Stream_Resume();      /* 未静音时内部自判为空操作 */
+}
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+
 uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
 {
     switch (type)
@@ -165,7 +194,9 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
             if ((*length) == 0)
             {
                 /* PLC should be applied as tx hasn't sent data
-                 * for example: repeat previous packet, */
+                 * for example: repeat previous packet,
+                 * 防御分支：库实际不会传 0（见下面 else 的说明），真到了也没好帧
+                 * 可重复，按静音填充处理。 */
                 memset(outTempBuff, 0xaa, ((app_env.rm_param.audio_rate *
                                             app_env.rm_param.interval_time) /
                                            8000));
@@ -174,14 +205,49 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
             }
             else
             {
+                uint8_t *frame_src = ptr;
 #if (OUTPUT_DECODE_PATH)
-                memcpy(outTempBuff, ptr, *length);
-                Rendering_func(outTempBuff);
+                uint8_t  feed      = 1;
+#endif    /* if (OUTPUT_DECODE_PATH) */
+
+                if (type == RM_RX_TRANSFER_GOODPKT)
+                {
+                    memcpy(rm_last_good, ptr, *length);   /* 好帧存下来供 PLC 用 */
+#if (OUTPUT_INTRF == OD_OUTPUT)
+                    rm_stream_good();     /* 流恢复：解除静音 */
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+                }
+                else
+                {
+                    /* 坏包 / 无包统一走 PLC：重复最后一帧好数据 —— 单包丢失时听感
+                     * 连续（即库注释 "repeat previous packet" 的意图）；连丢 N 包
+                     * 由 rm_stream_loss() 静音兜住，避免同一帧循环播放变成卡带音。
+                     * 库对三种类型都传非 0 的 packet_length（rm_pkt_hdl.c:812-826，
+                     * 该字段在 rm_event.c:75 按音频配置算一次、从不归零），所以
+                     * ((*length) == 0) 那条「无包」分支永远走不到，损坏 payload
+                     * 会被解码成满量级爆音 —— 一字节都不能进解码器。 */
+                    app_err1++;
+#if (OUTPUT_INTRF == OD_OUTPUT)
+                    rm_stream_loss();
+                    if (od_break)
+                    {
+                        feed = 0;     /* 已静音：不喂解码器，免得陈旧数据积在 ASRC 里 */
+                    }
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+                    frame_src = rm_last_good;
+                }
+
+                memcpy(outTempBuff, frame_src, *length);
+
+#if (OUTPUT_DECODE_PATH)
+                if (feed)
+                {
+                    Rendering_func(outTempBuff);
+                }
 #endif    /* if (OUTPUT_DECODE_PATH) */
 
 #if (OUTPUT_INTRF == SPI_TX_CODED_OUTPUT)
                 SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_1_BITBAND;
-                memcpy(outTempBuff, ptr, *length);
                 SPI0_CTRL1->SPI0_CS_ALIAS = SPI0_CS_0_BITBAND;
 #if 0
                 Sys_DMA_Set_ChannelDestAddress(TX_DMA_NUM, (uint32_t)ptr);
@@ -224,10 +290,6 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
                             app_err3++;
                         }
                     }
-                }
-                else
-                {
-                    app_err1++;
                 }
             }
         }
@@ -359,6 +421,9 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             NVIC_DisableIRQ(TIMER_IRQn(TIMER_REGUL));
             Sys_Timers_Stop(1 << TIMER_REGUL);
 #if (OUTPUT_INTRF == OD_OUTPUT)
+            /* 兜底静音（正常路径早在连续丢包时就静音了）：先停采 ASRC 并清零
+               BufferOut，再停 ch5。 */
+            Od_Stream_Break();
             /* 停 OD DMA → OD 下溢保护静音 */
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
 #endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
@@ -417,6 +482,10 @@ uint8_t RM_Callback_StatusUpdate(uint8_t status)
             Sys_ASRC_Reset();
 
 #if (OUTPUT_INTRF == OD_OUTPUT)
+            /* 恢复 ch4 采样（清 od_break + 丢包计数）；未静音时空操作 */
+            rm_loss_cnt = 0;
+            Od_Stream_Resume();
+
             /* 重启 OD DMA（BufferOut → OD_DATA） */
             Sys_DMA_ChannelDisable(OD_DMA_NUM);
             Sys_DMA_ChannelConfig(OD_DMA_NUM, RX_DMA_OD, 16, 0,

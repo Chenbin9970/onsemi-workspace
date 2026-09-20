@@ -49,6 +49,7 @@
 | 新增 Rempro SetMuteData(21) | include/ble_rempro_cmd.h, code/ble_rempro_cmd.c | 功能同 3 号 SetDeviceOnOff（见 §18） |
 | **RM 声道选择** | include/app.h | `APP_RM_AUDIO_CHANNEL` = `RM_LEFT`(左) / `RM_RIGHT`(右)，出固件时切（**当前：`RM_RIGHT` 右**，2026-09-17） |
 | **RM 断开过渡音量** | code/rm_app.c, code/app_process.c, include/app.h | 切回助听模式前先压到档位 5，2s 后回原设定值（见 §19.5） |
+| **RM 流中断静音（坏包 PLC + 断开静音）** | code/rm_app.c, code/app_func.c, include/app.h | 修 TX 硬断电 1~2 秒「滋」声；新增 `Od_Stream_Break/Resume`（见 §6.1） |
 
 ## 4. 构建与总开关
 
@@ -98,6 +99,69 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 
 门控宏：`OUTPUT_DECODE_PATH = (OUTPUT_INTRF==SPI_TX_RAW_OUTPUT || ==OD_OUTPUT)`，
 用于 app.h/app_init.c/app_func.c/rm_app.c 中所有“解码+ASRC 初始化”的 `#if`。
+
+### 6.1 流中断处理：坏包 PLC + 断开静音（远端 TX 硬断电杂音修复，2026-09 已上板）
+
+**现象**：远端麦克风（TX）**持续推流中被硬断电**（掉电/出范围），RX 侧出现 1~2 秒的
+「滋」声，之后才安静。TX 只是把音量调小（流没断）时不出现。
+
+对齐 `remote_mic_rx_coex_1664` 的同名修复（其 §6.7，已上板），分**两条独立通路**处理 ——
+只做其中一条解决不了问题，这是本工程第一次修复失败的教训。
+
+#### (一) 坏包 / 丢包处理 —— PLC（`code/rm_app.c` 的 `RM_Callback_TRX`）
+
+**根因**：RM 库对 `RM_RX_TRANSFER_BADCRCPKT` / `NOPKT` 也传**非 0** 的 `packet_length`：
+`rm_pkt_hdl.c:812-826` 三种类型都把 `&rm_env.packet_length` 交给回调，而该字段只在
+`rm_event.c:75` 按音频配置算一次、**从不归零**。所以回调里 `if ((*length) == 0)` 这条
+「按无包处理」的分支**永远走不到**，损坏 payload 会一路喂进 `Rendering_func()` 被解成
+满量级爆音。
+
+**做法**：好帧存进 `rm_last_good[]`；坏包/丢包时**重复 `rm_last_good`** 喂解码器（即库
+注释 `repeat previous packet` 的本意），损坏数据**一字节都不进解码器**。
+
+#### (二) 断开 / 流中断处理 —— 立刻静音（`code/app_func.c` 的 `Od_Stream_Break/Resume`）
+
+**根因（这才是「滋」声的来源）**：TX 消失后不再有新解码数据，但整条流水照跑 ——
+**ASRC 输入枯竭后并不输出 0，而是输出极限环/残留**，经 ch4 → `BufferOut` → ch5 一路送到
+OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThrshld = 200` 包（≈2s）**
+才判掉线，这 2 秒没人管。
+
+> ⚠ **「把 0 喂进解码器」解决不了这个问题**（本工程第一次修复就是这么失败的）：0 进了
+> 解码器，下游 ASRC 该出极限环还是出。必须**停采 ASRC** 才能切断噪声源。
+
+**做法**：
+
+| 触发 | 动作 |
+|------|------|
+| GOODPKT | 存 `rm_last_good` → 喂解码器 → `rm_stream_good()`：计数归零 + `Od_Stream_Resume()` |
+| 坏包 / 丢包 | PLC 重复 `rm_last_good` → 喂解码器（**已静音时不喂**）；`rm_stream_loss()` 计数 |
+| 连续 `RM_STREAM_BREAK_LOSS_N`(=2) 个非好包 | `Od_Stream_Break()` |
+| `LINK_DISCONNECTED` | 兜底再 `Od_Stream_Break()`，然后停 ch5 |
+| `LINK_ESTABLISHED` | 计数归零 + `Od_Stream_Resume()`，再重配 ch5 |
+
+`Od_Stream_Break()`：`Sys_DMA_ChannelDisable(ASRC_OUT_IDX)` **停采 ASRC** → 清零
+`BufferOut`。**ch5 不动**（继续循环全 0），所以没有 OD 下溢状态切换；「OD 输入恒 0」正是
+`LINK_DISCONNECTED` 之后已验证干净的那个状态。`Od_Stream_Resume()` 反向：重配 ch4 回
+`ASRC->OUT → BufferOut`。未静音时 `Resume` 自判为空操作，所以 GOODPKT 可以无条件调它。
+
+> ⚠ **`BufferOut` 必须清零，不能只淡出**：ch5 是循环 DMA（`DMA_ADDR_CIRC`），会反复重播
+> **整块** `BufferOut`。只做淡出的话，被循环的仍是一段有内容的波形，依然是嗡声。
+
+**上板结论**（2026-09）：TX 硬断电后不再有 1~2 秒「滋」声。踩坑记录见下 ——
+**第一次修复只做了 (一)**（给解码器喂全 0 帧），实测「滋」声依旧；补上 (二) 才解决。
+所以这两条通路是**并列必需**的，改这一块时别只改一条。
+
+**已知取舍**（可接受，出问题从这里查）：
+- **无淡出/淡入**：1664 的淡出挂在 ch5「由 7100 BCLK/FS 外部驱动、必然完成」的中断上；
+  本工程 OD 通路的 ch4(`ASRC_OUT_IDX`) / ch5(`OD_DMA_NUM`) **都不带完成中断**
+  （`RX_DMA_OD` / `OD_RX_DMA_ASRC_OUT` 均 `DMA_COMPLETE_INT_DISABLE`，别名表
+  `app_func.c:229-244` 里也没有 DMA4/DMA5 handler），没有可挂的中断，所以断开/恢复
+  瞬间可能有极短促的「咔」；当前上板听感可接受，未做淡入淡出。若以后要优化，可用
+  `Ascc_phase_isr`（音频相位中断，独立于 RM）做分块淡入淡出。
+- **连续丢 2 包即静音**：弱信号下偶发连丢会带来一次「静音 → 恢复」的短暂下沉。
+  **回归重点** —— 必须有 GOODPKT 把它拉回来，否则会永久静音。
+- **为什么不调 `bs300_mute()`**：那是阻塞 I2C 命令（`bs300_ram_sync.c:1487`），在收包回调
+  里执行会饿死 RM 音频包投递（见 §12.6 的 DIO7 教训）。所以走纯软件路径，不碰 I2C。
 
 ## 7. BS300 子系统
 
@@ -295,6 +359,28 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
    > ⚠ 这是 BS300 移植时带来的**既有** bug；但 §19 把 RM↔BS300 切换改成异步后，
    > 会话跑得频繁、state 停在 `DONE` 的机会大增，该问题从「偶发」变成「几乎必现」。
 
+9. **【已修复】远端 TX 硬断电时的「滋」声（2026-09 已上板）**
+
+   **现象**：远端麦克风（TX）**持续推流中被硬断电**（掉电/出范围），RX 侧出现 1~2 秒
+   「滋」声才安静。TX 只是把音量调小（流没断）时不出现。
+
+   **根因（两条独立通路，缺一不可）**：
+   1. 坏包被当有效数据解码 —— 库对 `BADCRCPKT`/`NOPKT` 也传非 0 `packet_length`，
+      损坏 payload 被解成满量级爆音；
+   2. **噪声源在下游** —— ASRC 输入枯竭后不输出 0 而是输出极限环/残留，经
+      ch4 → `BufferOut` → ch5 送到 OD，而停机挂在 `LINK_DISCONNECTED`（要丢满 200 包
+      ≈2s）上，这 2 秒没人管。
+
+   **修复**：见 §6.1。(一) 坏包 PLC（重复 `rm_last_good`，损坏数据不进解码器）；
+   (二) 连丢 2 包即 `Od_Stream_Break()`（停采 ASRC + 清零 `BufferOut`），
+   `LINK_DISCONNECTED` 兜底，`LINK_ESTABLISHED`/GOODPKT 恢复。
+
+   **弯路（勿重复）**：第一次只做了 (一)、把全 0 帧喂进**解码器**，实测「滋」声依旧 ——
+   0 进了解码器，下游 ASRC 该出极限环还是出，必须**停采 ASRC** 才能切断噪声源。
+
+   **回归重点**：必须有 GOODPKT 把静音拉回来，否则会**永久静音**（弱信号偶发连丢时
+   会出现一次「静音 → 恢复」的短暂下沉，属预期）。
+
 ## 13. 验证步骤
 
 1. Eclipse 导入/编译 `remote_mic_rx_coex_1654` Debug，确认链接通过（bs300 新增文件自动入编）。
@@ -314,6 +400,12 @@ RM 射频包 → RM_Callback_TRX(RM_RX_TRANSFER_GOODPKT)
 7. **RM 断开过渡音量（见 §19.5）**：建链播放 → 断开 → 切回助听模式应**先以档位 5 出声**，
    约 2s 后自动回到该程序的原设定值，串口出现 `[RM] trans volume restore: prog=N vol=M`。
    反例回归：切回后 2s 内 RM 重连、或短按按键改了音量，都**不应**回写旧值。
+8. **RM 流中断静音（见 §6.1，必测）**：
+   - **TX 硬断电**（拔电/关机）→ RX 侧**不应**有 1~2 秒「滋」声，应立即安静；
+   - **TX 只是调小音量**（流没断）→ 不应触发静音；
+   - **弱信号反复丢包** → 听感应平滑（单包丢失被 PLC 接上，不出现「咔」）；连丢触发
+     静音后**必须能被 GOODPKT 拉回来**，不能永久静音（这是本改动最需要盯的回归点）；
+   - 靠近 / 重新上电恢复时不应有爆音。
 
 ## 14. BLE 配置（参考 sleep：单设备连接）
 

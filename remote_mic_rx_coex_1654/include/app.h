@@ -23,7 +23,7 @@
 /* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
  * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
  * 见开发文档「FOTA」。 */
-#define CFG_FOTA
+//#define CFG_FOTA
 #ifdef CFG_FOTA
 #define VER_ID                  "Smart1654"
 #define VER_MAJOR               1
@@ -557,6 +557,14 @@ void Rendering_func(uint8_t *src_addr);
 void Simulation_timer_isr(void);
 
 void Asrc_reconfig(void);
+
+#if (OUTPUT_INTRF == OD_OUTPUT)
+/* OD 流中断静音（RM TX 硬断电杂音修复，见 app_func.c）：
+   od_break=1 时已停采 ASRC 且 BufferOut 被清零，ch5 继续循环全 0 → OD 输入恒 0。 */
+extern volatile uint8_t od_break;
+void Od_Stream_Break(void);
+void Od_Stream_Resume(void);
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
 
 #endif    /* if (OUTPUT_DECODE_PATH) */
 

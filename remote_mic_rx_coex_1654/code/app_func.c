@@ -469,6 +469,64 @@ void Ascc_period_isr(void)
     AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
 }
 
+#if (OUTPUT_INTRF == OD_OUTPUT)
+volatile uint8_t od_break = 0;
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Od_Stream_Break(void)
+ * ----------------------------------------------------------------------------
+ * Description   : RM 流中断（TX 硬断电/出范围）立刻静音，不等 LINK_DISCONNECTED
+ *                 （那要丢满 pktLostHighThrshld=200 包 ≈2s，这 2 秒没人管）。
+ *                 关键动作是**停采 ASRC**（关 ch4）：ASRC 输入枯竭后并不输出 0，
+ *                 而是输出极限环/残留，经 ch4 写进 BufferOut、被循环的 ch5 一路
+ *                 送到 OD —— 这正是那 1~2 秒「滋」声的来源。只把 0 喂进解码器
+ *                 没用，噪声是下游 ASRC 产生的。
+ *                 停掉 ch4 后再清零 BufferOut：ch5 是循环 DMA，会反复重播整块
+ *                 BufferOut，只淡出不清零的话被循环的仍是有内容的波形。
+ *                 方案参照 remote_mic_rx_coex_1664 的 Pcm_Stream_Break（OD 版）。
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : ch5(OD_DMA_NUM) 不予改动，故无 OD 下溢状态切换；OD 输入恒 0
+ *                 是 LINK_DISCONNECTED 后已验证的干净态
+ * ------------------------------------------------------------------------- */
+void Od_Stream_Break(void)
+{
+    if (od_break)
+    {
+        return;
+    }
+    od_break = 1;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    memset(BufferOut, 0, 2 * FRAME_LENGTH * sizeof(int16_t));
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Od_Stream_Resume(void)
+ * ----------------------------------------------------------------------------
+ * Description   : 流恢复（短暂丢包后 GOODPKT 又来了）：重新采 ASRC 回 BufferOut。
+ *                 未静音时为空操作，所以 GOODPKT 可以无条件调它。
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Od_Stream_Resume(void)
+{
+    if (!od_break)
+    {
+        return;
+    }
+    od_break = 0;
+
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, OD_RX_DMA_ASRC_OUT,
+                          2 * FRAME_LENGTH, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)BufferOut);
+    Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
+    Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+}
+#endif    /* if (OUTPUT_INTRF == OD_OUTPUT) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void Rendering_func(uint8_t * src_addr)
  * ----------------------------------------------------------------------------
