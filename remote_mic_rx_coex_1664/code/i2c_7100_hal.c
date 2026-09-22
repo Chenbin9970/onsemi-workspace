@@ -30,11 +30,10 @@ static volatile bool  s_rx_active;
 
 static bool           s_hw_init_done;
 
-static void hw_ensure_init(void)
+/* I2C 硬件配置（引脚 + 控制器 + 速度 + 中断）。除首次初始化外，
+ * DIO0 分时复用采样结束后也要整体重配一遍（见 i2c_7100_pin_restore_after_adc）。 */
+static void hw_apply_config(void)
 {
-    if (s_hw_init_done) return;
-    s_hw_init_done = true;
-
     /* 引脚: SCL=DIO0, SDA=DIO1。强上拉 + 6x 驱动 + 使能滤波 */
     Sys_I2C_DIOConfig(DIO_6X_DRIVE | DIO_LPF_ENABLE | DIO_STRONG_PULL_UP,
                       I2C_7100_SCL_DIO, I2C_7100_SDA_DIO);
@@ -52,6 +51,14 @@ static void hw_ensure_init(void)
     NVIC_SetPriority(I2C_IRQn, 4);
     NVIC_ClearPendingIRQ(I2C_IRQn);
     NVIC_EnableIRQ(I2C_IRQn);
+}
+
+static void hw_ensure_init(void)
+{
+    if (s_hw_init_done) return;
+    s_hw_init_done = true;
+
+    hw_apply_config();
 }
 
 /* I2C 中断：master 写/读，每字节事件推进（参考样例 I2C_IRQHandler + CMSIS 驱动） */
@@ -116,6 +123,32 @@ bool i2c_7100_hal_init(void)
 {
     hw_ensure_init();
     return true;
+}
+
+/* ---- DIO0 分时复用：电池 AD 采样 ----
+ * 1664 板上电池分压与 I2C SCL 同在 DIO0。采样前把该脚从 I2C 释放：
+ * ① Reset 让 I2C 状态机停手；② DIO_NO_PULL 关掉内部强上拉 —— 否则上拉会把
+ * 1M+360k 的弱分压拉满，ADC 只会读到 ≈VDD。
+ * 调用方须保证当前没有 I2C 传输在跑（本 HAL 的读写都是阻塞式，同一任务上下文
+ * 里调用即天然满足）。 */
+void i2c_7100_pin_release_for_adc(void)
+{
+    Sys_I2C_Reset();
+
+    /* 清掉可能残留的传输标志，避免下次读写空等超时 */
+    s_tx_active = false;
+    s_rx_active = false;
+    s_tx_done   = true;
+    s_rx_done   = true;
+
+    Sys_DIO_Config(I2C_7100_SCL_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
+                   DIO_LPF_DISABLE);
+}
+
+/* 采样结束：DIO0/DIO1 交还 I2C（引脚 + 控制器配置整体重配）。 */
+void i2c_7100_pin_restore_after_adc(void)
+{
+    hw_apply_config();
 }
 
 bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint16_t len)

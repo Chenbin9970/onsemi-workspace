@@ -33,6 +33,11 @@ extern "C" {
  * Returns true on success. */
 bool i2c_7100_hal_init(void);
 
+/* DIO0 分时复用（电池 AD 采样）：采样前把 SCL 脚释放给 ADC，采样后交还 I2C。
+ * 必须成对调用，且期间不得有 I2C 传输在进行。 */
+void i2c_7100_pin_release_for_adc(void);
+void i2c_7100_pin_restore_after_adc(void);
+
 /* Write len bytes to I2C slave. Returns true on success. */
 bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint16_t len);
 

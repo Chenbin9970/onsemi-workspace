@@ -7,8 +7,8 @@
 占用 DIO0/DIO1，**已改为 PCM 从机输出**（`OUTPUT_INTRF = PCM_SLAVE_OUTPUT`）：7100 做时钟主机
 提供 BCLK/FS，RSL10 从机在 SERO 移位输出，见 §3.4 与 §6。
 
-与 1654 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**删除电池 AD 采样**、
-**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
+与 1654 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
+（与 7100 I2C 分时复用，§3.2）**、**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
 > 原 BS300 子系统**（BS300 文件已删）。含上电握手、106 步引导、4 程序读回、flash 缓存、5s 心跳。
@@ -41,7 +41,7 @@
 | 设备名 `Smart1654` → `Smart1664`（含 FOTA 变体） | include/ble_std.h、include/app.h（`VER_ID`） | 广播名区分机型 |
 | 工程名 / rteconfig / .cproject 改名 | .project、.cproject*、*.rteconfig、RTE/RTE_Components.h | 工程标识 |
 | **删除按键** | app.c、code/app_init.c、include/app.h | 见 §5 |
-| **删除电池 AD 采样** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h | 见 §5 |
+| ~~**删除电池 AD 采样**~~ → **改为 DIO0 分时复用** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h、code/i2c_7100_hal.c/.h | 见 §3.2、§5 |
 | **打印口 DIO5 → DIO12** | code/app_init.c、include/app.h | 见 §5、§10 |
 | **音频输出 → PCM 从机** | include/app.h、code/app_init.c、code/app_func.c、code/rm_app.c | `OUTPUT_INTRF = PCM_SLAVE_OUTPUT`；DIO0/DIO1 留给 7100 I2C，见 §3.4、§6 |
 | **RM 流中断静音 + PLC** | code/rm_app.c、code/app_func.c、include/app.h | 坏包/丢包重复上一帧好数据；连丢 2 包立即静音（不等 2s 后的 `LINK_DISCONNECTED`），见 §6.7 |
@@ -63,21 +63,32 @@
 副作用：`rempro_push_volume_change()` 失去唯一调用者（API 与声明保留，与 sleep verbatim 一致）。
 `rempro_push_scene_change()` 原用于 RM 场景上报，**随 BS300 删除一并移除**（RM 流窗口的 DSP 侧动作待阶段二接 7100）。
 
-### 3.2 删除电池 AD 采样（DIO3）
+### 3.2 电池 AD 采样：DIO3 版已删 → 改为 DIO0 分时复用（2026-09-21）
 
-| 删除内容 | 位置 |
-|----------|------|
-| DIO3 电池 ADC 初始化（`ADC_NORMAL \| ADC_PRESCALE_1280H`、`ADC_POS_INPUT_DIO3`） | code/app_init.c |
-| `APP_Timer` 内 200ms 周期采样 + 16 次平均 → `app_env.batt_lvl` | code/app_process.c |
-| `read_battery_raw()`（每次读前重配 ADC）与 `cmd_getbatteryinfo()` | code/ble_rempro_cmd.c |
-| `BAT_ADC_DIO` / `BAT_ADC_CHANNEL` / `BAT_ADC_MIN` / `BAT_ADC_MAX` / `BAT_LVL_MAX` 宏 | include/app.h |
-| `app_env` 的 `batt_lvl` / `sum_batt_lvl` / `num_batt_read` / `send_batt_ntf` 字段 | include/app.h |
+**历史**：1664 复制自 1654 时删掉了 1654 的 **DIO3** 电池 AD 采样（`ADC_POS_INPUT_DIO3`、
+`APP_Timer` 内 200ms 采样 + 16 次平均、`read_battery_raw()`、`BAT_ADC_*` 宏、`app_env.batt_lvl`
+等字段），`GetBatteryInfo` 一度**固定回 `100/100`**。
+**原因**：1664 的 DIO3 被 PCM FS 占用（§5），不能再做 ADC 输入 —— **不能照搬 1654 的 DIO3 方案**。
+
+**现状（已实现，未标定）**：电池采样改到 **DIO0**，与 7100 I2C 的 SCL **分时复用**。
+
+| 内容 | 位置 |
+|------|------|
+| `BAT_ADC_ENABLE`（0=关/1=开）、`BAT_ADC_CHANNEL/MIN/MAX`、`BAT_LVL_MAX` | include/app.h |
+| `read_battery_raw()`：交接引脚 → 重配 ADC → 读 `DATA_TRIM_CH` → 交还 I2C | code/ble_rempro_cmd.c |
 | `read_battery_raw()` 声明 | include/ble_rempro_cmd.h |
+| `i2c_7100_pin_release_for_adc()` / `_restore_after_adc()`（DIO0 交接；`hw_apply_config()` 拆出） | code/i2c_7100_hal.c/.h |
+| 低电量提示 **TODO**（1664 无 BS300，待定 7100 提示音命令） | code/app_process.c `APP_Timer` |
 
-**Rempro `GetBatteryInfo`（ID:4）行为变化**：1654 为「读取实测百分比，最低报 1%」；
-1664 无 ADC 采样，现**固定回 `100/100`（flag=0）** —— 回 `flag=1` 会导致 App 连不上。
+**`GetBatteryInfo`（ID:4）**：`BAT_ADC_ENABLE=1` 时**实采 DIO0**（低于阈值最低报 1%，不再固定 100%）；
+`=0` 时维持固定 `100/100`（flag=0 —— 回 `flag=1` 会导致 App 连不上）。
 
-随之失效并被清理的 include：`code/app_process.c` 的 `ble_rempro_cmd.h` 与 `<printf.h>`。
+**交接的两个关键点**：采样前 `Sys_I2C_Reset()` + `DIO_NO_PULL` 关掉 **RSL10 内部强上拉** ——
+否则上拉把 1M+360k 的弱分压拉满，ADC 只会读到 ≈VDD；采完 `hw_apply_config()` 整体重配回 I2C
+（引脚 + CTRL0 + 中断）。上层调用保证采样时无 I2C 传输在跑（HAL 读写都是阻塞式，同一任务上下文）。
+
+> ⚠ **当前实测不可用（见 §12.15）**：1664 板上 DIO0 还挂着 **7100 侧内置的 10k I2C 上拉**，
+> 而 1M+360k 分压的戴维南等效只有 265 kΩ，被 10k 上拉压住 —— 实测 raw 与电池电压不成比例。
 
 ### 3.3 打印口改到 DIO12
 
@@ -101,7 +112,8 @@ Sys_DIO_Config(5, DIO_MODE_DISABLE);              /* 释放 DIO5 */
 
 1664 的 OD 直驱占用 **DIO0(OD_P) / DIO1(OD_N)**，与 7100 I2C（DIO0=SCL / DIO1=SDA）冲突。
 定案：**音频出口改走 PCM 从机**（参照 `peripheral_server_sleep7160test` 已验证实现）——
-7100 做时钟主机提供 BCLK/FS，RSL10 只在 SERO 移位输出，因此**用不到 DIO0/DIO1**，I2C 独占之。
+7100 做时钟主机提供 BCLK/FS，RSL10 只在 SERO 移位输出，因此**用不到 DIO0/DIO1**，I2C 独占之
+（2026-09 起 DIO0 另与电池 AD 采样分时复用，见 §3.2）。
 
 改动（include/app.h）：
 
@@ -125,7 +137,8 @@ Sys_DIO_Config(5, DIO_MODE_DISABLE);              /* 释放 DIO5 */
 
 **验证**（编译级，已做）：工程自带 makefile 全量构建通过（0 错误，告警数与改动前一致）；
 预处理核对 `App_Initialize` 中 `Sys_PCM_ConfigClk(SLAVE,…)` 的参数为 2/3/4/14、
-ch4/ch5 长度为 `PCM_FRAME_WORDS(120)`、**DIO0/DIO1 上无任何配置**（I2C 独占）。
+ch4/ch5 长度为 `PCM_FRAME_WORDS(120)`、**DIO0/DIO1 上无任何配置**（I2C 独占；DIO0 另有电池
+AD 采样分时复用，见 §3.2）。
 
 **回退方法**：把 `OUTPUT_INTRF` 改回 `OD_OUTPUT` 即可（OD 相关代码全在，仅被宏关掉）。
 注意届时需重新解决 DIO0/DIO1 与 7100 I2C 的冲突（改 OD 脚位或改 I2C 脚位）。
@@ -170,6 +183,7 @@ SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 | 功能 | 引脚 | 说明 |
 |------|------|------|
 | 7100 I2C SCL / SDA（addr 0x02） | **DIO0 / DIO1** | 原 OD_P / OD_N；音频改走 PCM 后腾出（§3.4）。见 [i2c_7100_hal.h:28-29](remote_mic_rx_coex_1664/include/i2c_7100_hal.h#L28-L29) |
+| **电池 AD 采样（与上面 DIO0 分时复用）** | **DIO0** | `BAT_ADC_ENABLE` 控制；采样瞬间切成 ADC 输入，读完交还 I2C。⚠ DIO0 上另有 7100 侧 10k 上拉，当前读数不可用（§3.2、§12.15） |
 | 7100 ready 输入（握手） | **DIO13** | 7100 上电拉低 → RSL10 等低 → DIO11 低脉冲 → 等高。见 [app.c](remote_mic_rx_coex_1664/app.c) |
 | 7100 握手输出 | **DIO11** | RSL10 → 7100 应答脉冲（原 `DEBUG_DIO_SECOND`，已让出） |
 | 7100 观察输入 | DIO9 / DIO10 | 仅置输入打印电平变化 |
@@ -770,7 +784,7 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 | `CMD_SETPLAYVOICE` (13) | `cmd_setplayvoice_7100` | Spectrum 0-16 → 250…8000 Hz；dB 20-100（§7.4.4） |
 | `CMD_SETSTOPVOICE` (14) | `cmd_setstopvoice_7100` | 停音（§7.4.4） |
 | `CMD_SETAUDIOMETRYSTATUS` (40) | `cmd_setaudiometrystatus` | 0=进测听 / 1=退测听（§7.4.4） |
-| `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | **固定回 100/100**（回 flag=1 会导致 App 连不上） |
+| `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | `BAT_ADC_ENABLE=1` → **实采 DIO0**（§3.2）；`=0` → 固定回 100/100（回 flag=1 会导致 App 连不上） |
 
 `GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
 
@@ -930,6 +944,22 @@ App_Initialize() → 打印 started → bs300_driver_init()
 14. **`BBIF->CTRL` 稳态改 `BB_DEEP_SLEEP`（app_init.c:129）未上板验证**：对齐 sleep 工程稳态，
     目的是不再永久强制唤醒基带；改动本身实测对搜索态电流**无影响**（见 §18），保留是为将来真加
     深睡时的前提。
+15. **电池 AD 采样（DIO0）当前实测不可用，且量程未标定**（§3.2）：
+    - `BAT_ADC_MIN/MAX` 仍是 **1654 的占位值**（6950/9374），从未按 1664 实测标定。
+    - **根因**：DIO0 上挂着 **7100 侧内置的 10k I2C 上拉**，而 1M+360k 分压的戴维南等效只有
+      265 kΩ —— 电池只占节点电压约 **3.6%**。2026-09-21 实测：电池 3.2V→raw **9816**、
+      4.4V→**10334**，折算节点电压 1.233V→1.312V，**与分压关系不符**（电池 1.2V 变化只对应
+      节点 ~0.01V）；且 13 个采样点呈单调爬升，更像漂移。
+    - **出路**：① **关掉 7100 的内置上拉**（RSL10 侧本来就用 `DIO_STRONG_PULL_UP` 撑着 I2C，
+      不依赖它）—— 关掉后预期 raw **3.2V≈7296 / 4.4V≈9374**，可直接沿用 1654 常量；
+      ② 若关不掉则须改硬件，把分压挪到未被 I2C 占用的脚（DIO5 已释放 / DIO15 空闲）。
+    - **判定办法**：万用表直接量 DIO0 直流电压 —— 随电池成比例（3.2V≈0.85V / 4.4V≈1.17V）
+      是 ADC 配置问题；基本不变（≈1.2V）即上拉主导。
+16. **ADC 块启动后不会关**（§3.2）：`Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H)`
+    只**使能** ADC，代码里没有 `ADC_DISABLE` 收尾 —— 开过一次即长期上电。
+    **测功耗前必须把 `BAT_ADC_ENABLE` 置 0**（SDK 有 `ADC_DISABLE` 可加收尾，待做）。
+17. **低电量提示未实现**（§3.2）：1664 无 BS300，播不了 `0xFD12F2`。待确认 7100 有无可用
+    提示音命令；位置已留在 `code/app_process.c` 的 `APP_Timer`（有 TODO 注释）。
 
 ## 13. 验证步骤
 
@@ -944,7 +974,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 4. 主循环应见 DIO9/10/13 电平变化打印：`[IO] D9=… D10=… D13=…`（照 rx_coex）。
 5. 与已配对发射机建链：串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
    **建链后开始有 PCM 音频输出**；断链应静音，重连应恢复出声（验证 `rm_app.c` 的重武装）。
-6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo` 回 **100%**。
+6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo`：`BAT_ADC_ENABLE=1` 时回**实测值**
+   （串口同步打 `[REMPRO] GetBatteryInfo: raw=… pct=…%`，标定用），`=0` 时回 **100%**（§3.2）。
 7. 示波器：
    - **DIO0/DIO1 应有 I2C 波形**（SCL/SDA），不受 PCM 影响；
    - **DIO2 = BCLK 输入 384 kHz、DIO3 = FS 输入 12 kHz**（7100 提供）；
@@ -992,6 +1023,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
 - **地址配置**：`BD_ADDRESS_TYPE = BD_TYPE_PUBLIC`；`PRIVATE_BDADDR`、`APP_PUBLIC_BDADDR`、
   `RADIO_CLOCK_ACCURACY(500)` 照 sleep。
 - **广播**：ADV 放设备名，可发现模式 `GAP_GEN_DISCOVERABLE`，广播间隔 160×0.625ms≈100ms；
+  > ⚠ **当前工作区被临时改成 5000（≈3.1s）**：`ble_std.h` 的 `APP_ADV_INT_MIN/MAX`
+  > 由 160 改为 `5000//160`（原值以注释保留），是为**功耗测试**临时放宽广播间隔。
+  > 正式版本应改回 **160**。
   公司厂商段 18B 用 sleep 的 `APP_COMPANY_ID_DATA`，把「耳侧 + 设备 MAC」编入 company data。
   因名字 Smart1664 为 9 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放 **scan response**。
 - **bdaddr 修正**（code/ble_std.c）：PUBLIC 分支读到公共地址后不再被 `PRIVATE_BDADDR` 覆盖，
@@ -1003,8 +1037,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 - `SERVICE_ADD_FUNCTION_LIST` 只剩 `RemproService_ServiceAdd`；`SERVICE_ENABLE_FUNCTION_LIST` 为 NULL。
 - Rempro 的 ATT 读写路由复用 `ble_custom.c` 的 GATTC 处理器（按 `rempro_env.start_hdl` 区间分流）。
-- **1664 起电池相关已全部移除**（Battery 不注册、无 ADC 采样）；
-  Rempro `GetBatteryInfo` 固定回 100%（回不支持会让 App 连不上）。
+- **Battery 服务不注册**（§3.2）；Rempro `GetBatteryInfo` 在 `BAT_ADC_ENABLE=1` 时**实采 DIO0**，
+  `=0` 时固定回 100%（回不支持会让 App 连不上）。
 
 | 项 | UUID |
 |---|---|
@@ -1045,10 +1079,32 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG
   cp remote_mic_rx_coex_1664_fota.rteconfig remote_mic_rx_coex_1664.rteconfig
   cp .cproject_fota .cproject
   # app.h 取消注释 #define CFG_FOTA
+  # .project 的 <link> 改回 libfota.a（见下）
   ```
-- FOTA OFF：把上面 4 个文件换回 `_nofota`（或 git 还原），并注释 `CFG_FOTA`。
+- FOTA OFF：把上面 4 个文件换回 `_nofota`（或 git 还原），并注释 `CFG_FOTA`；`.project` 见下。
 - OFF 构建不依赖 FOTA 库/头，行为与普通固件一致（fota_system.c 由 `--gc-sections` 剥掉）。
-- **默认状态 = OFF**。
+- **默认状态 = OFF**（当前工作区即为 OFF）。
+
+**⚠ `cp` 之外的三个坑（2026-09-21 两次切换实测）**
+
+1. **`.project` 也要跟着切**。它的 `<link>` 列表里 FOTA 版是 `RTE/Device/RSL10/libfota.a`，
+   nofota 版是 `libblelib.a` + `libkelib.a`（与 `.cproject` 的链接库一一对应）。
+   上面那 4 个 `cp` **覆盖不到它**，需手工改（或让 IDE 重建）。判据：
+   `grep -o "lib[a-z]*\.a" .project` 应与 `.cproject` 的库组合一致。
+2. **两份 `.cproject` 备份的 Release 配置都缺变体 exclude**。`_fota` / `_nofota` 都只在
+   **Debug** 的 `sourceEntries` 里配了 `RTE/Device/RSL10/startup_rsl10_{fota,nofota}.S` /
+   `sections_{fota,nofota}.ld` 的 `excluding`，**Release 没配** → 直接 `cp` 后编 Release 会因为
+   `startup_rsl10.S` / `_fota.S` / `_nofota.S` 三个同时入编而 **`Reset_Handler` 重复定义，链接失败**。
+   **cp 之后务必给 Release 的 `sourceEntries` 也补上前缀**。两个配置的正确状态都是：
+   `startup_rsl10.S` / `sections.ld` 入编，**四个变体文件全部排除**。自检：
+   ```
+   grep -o 'startup_rsl10_[a-z]*\.S\|sections_[a-z]*\.ld' .cproject | sort | uniq -c   # 应各为 2
+   ```
+3. **`rsl10_protocol.c` 的取舍两版相反**：FOTA 版**必须排除**（`Device_Param_Read` /
+   `BLE_DeviceParam_Set_*` 这些符号由 `libfota.a` 的 `fota_sym.o` 以绝对地址转发到 bootloader），
+   nofota 版**必须保留**（它链接的 `libblelib.a` / `libkelib.a` 不提供这些符号）。
+   自检：`grep -o 'excluding="[^"]*' .cproject | grep -c rsl10_protocol.c` —— FOTA 版应为 2
+   （Debug/Release 各一），nofota 版应为 0。
 
 ### 16.1 ⚠ 当前 FOTA 版装不下（2026-09-20 实测）
 

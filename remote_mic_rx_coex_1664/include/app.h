@@ -23,7 +23,7 @@
 /* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
  * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
  * 见开发文档「FOTA」。 */
-#define CFG_FOTA
+//#define CFG_FOTA
 #ifdef CFG_FOTA
 #define VER_ID                  "Smart1664"
 #define VER_MAJOR               1
@@ -432,6 +432,20 @@ extern "C"
 /* Minimum and maximum VBAT measurements */
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
+
+/* 电池 AD 采样总开关：0=关，1=开。
+ * 关闭时不碰 DIO0、不使能 ADC 块、不做 I2C 引脚交接（供功耗基线测量），
+ * GetBatteryInfo 固定回 100%（同改动前的行为）。 */
+#define BAT_ADC_ENABLE                  1
+
+/* 电池 AD 采样量程。采样脚为 DIO0（= I2C_7100_SCL_DIO，与 7100 I2C SCL 分时复用，
+ * 引脚归属见 i2c_7100_hal.c）。
+ * TODO: MIN/MAX 沿用 1654 分压（1M+360k）的实测值占位 —— 1664 板上 DIO0 挂着
+ *       I2C 网络，分压比未必相同，上板实测 raw 后按实测修正。 */
+#define BAT_ADC_CHANNEL                 0
+#define BAT_ADC_MIN                     6950    /* 占位：≈3.0V → 1% */
+#define BAT_ADC_MAX                     9374    /* 占位：≈4.4V → 100% */
+#define BAT_LVL_MAX                     100
 
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \

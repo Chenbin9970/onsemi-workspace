@@ -49,6 +49,10 @@ extern "C" {
 
 void rempro_cmd_process(void);
 
+/* 电池 DIO0(IO) AD 原始值（分时复用 7100 I2C 的 SCL 脚，每次读前重配 ADC）。
+ * 供 GetBatteryInfo 及后续低电量检测使用。 */
+uint32_t read_battery_raw(void);
+
 /* Call from Main_Loop: advance chunked rempro TX once the previous
  * notification completed. No ke_timer — low-power safe. */
 void rempro_tx_poll(void);

@@ -129,6 +129,10 @@ int APP_Timer(ke_msg_id_t const msg_id,
     /* 重启 200ms 定时器（供内核周期性唤醒） */
     ke_timer_set(APP_TEST_TIMER, TASK_APP, TIMER_200MS_SETTING);
 
+    /* TODO: 低电量提示。1664 无 BS300，播不了 0xFD12F2 提示音 —— 待确认 7100 可用
+     * 提示音命令后再加；届时用 read_battery_raw() 在此周期检测（DIO0 与 7100 I2C
+     * 分时复用，采样频率不宜高）。 */
+
     return (KE_MSG_CONSUMED);
 }
 

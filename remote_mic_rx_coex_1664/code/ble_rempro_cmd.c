@@ -3,6 +3,7 @@
 #include "ble_rempro_cmd.h"
 #include "dsp_7100_cmd.h"
 #include "dsp_7100_init.h"   /* DSP7100_WDRC_CH */
+#include "i2c_7100_hal.h"    /* DIO0 分时复用（电池 AD 采样） */
 
 #include <printf.h>   /* Rempro 收发日志跟随 OUTPUT_INTERFACE */
 #ifndef PRINTF
@@ -433,13 +434,58 @@ static void cmd_getdeviceonoff(void)
     hdlc_response(CMD_GETDEVICEONOFF, 0, resp, 2);
 }
 
-/* ID:4  GetBatteryInfo — 1664 无电池 AD 采样，固定回 100%（回 flag=1 会导致 App 连不上） */
+/* 电池 DIO0(IO) 采样。DIO0 与 7100 I2C SCL 分时复用：采样前后成对交接引脚。
+ * 每次读前重配 ADC，否则 DATA_TRIM_CH 读到的是旧值（见开发文档）。
+ * BAT_ADC_ENABLE=0 时整体停用（不碰 DIO0/ADC，供功耗基线测量）。 */
+uint32_t read_battery_raw(void)
+{
+#if BAT_ADC_ENABLE
+    uint32_t raw;
+
+    i2c_7100_pin_release_for_adc();
+
+    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
+    Sys_ADC_InputSelectConfig(BAT_ADC_CHANNEL, (ADC_NEG_INPUT_GND |
+                                                ADC_POS_INPUT_DIO0));
+    raw = ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
+
+    i2c_7100_pin_restore_after_adc();
+
+    return raw;
+#else
+    return 0;   /* AD 采样关闭 */
+#endif
+}
+
+/* ID:4  GetBatteryInfo */
 static void cmd_getbatteryinfo_7100(void)
 {
     uint8_t resp_data[2];
-    resp_data[0] = 100;   /* Left_Battery */
-    resp_data[1] = 100;   /* Right_Battery (single device) */
+
+#if BAT_ADC_ENABLE
+    /* 电池经 DIO0 进 ADC 实采（量程见 app.h 的 BAT_ADC_*） */
+    uint32_t raw;
+    uint32_t pct;
+
+    raw = read_battery_raw();
+
+    if (raw <= BAT_ADC_MIN) {
+        pct = 1;                              /* 保护：最低报 1%，不报 0 */
+    } else if (raw >= BAT_ADC_MAX) {
+        pct = BAT_LVL_MAX;
+    } else {
+        pct = (raw - BAT_ADC_MIN) * BAT_LVL_MAX
+              / (BAT_ADC_MAX - BAT_ADC_MIN);
+    }
+
+    resp_data[0] = (uint8_t)pct;   /* Left_Battery: measured */
+    PRINTF("[REMPRO] GetBatteryInfo: raw=%u pct=%u%%\r\n", raw, pct);
+#else
+    resp_data[0] = 100;   /* AD 采样关闭：固定回 100%（回 flag=1 会导致 App 连不上） */
     PRINTF("[REMPRO] GetBatteryInfo: 100%%\r\n");
+#endif
+
+    resp_data[1] = 100;   /* Right_Battery (single device) */
     hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
 }
 
