@@ -227,6 +227,9 @@ static void dsp_state_apply(uint32_t cmd, const bs300_prog_struct_t *src,
 #define BS300_TONE_MODE_3    0xFDB2F2
 #define BS300_TONE_VOL_0     0xFD12F2
 #define BS300_TONE_VOL_OTHER 0xFCD2F2
+/* 低电量告警音。手册 §2.10 只有 Battery low warning 的 *配置*命令 0x8012F2，
+ * 没有这条播放命令的出处 —— 0xFC12F2 为开发指定值，2026-09-20 上板实测可正常播报。 */
+#define BS300_TONE_LOW_BATT  0xFC12F2
 
 static uint32_t bs300_tone_for_program(uint8_t program)
 {
@@ -2084,5 +2087,5 @@ void bs300_play_low_batt_tone(void)
     if (bs300_sync_is_busy()) return;
 
     memset(data, 0, sizeof(data));
-    raw_write_packet(BS300_TONE_VOL_0, data);
+    raw_write_packet(BS300_TONE_LOW_BATT, data);
 }

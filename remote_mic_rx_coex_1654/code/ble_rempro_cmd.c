@@ -473,7 +473,9 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
 }
 
 /* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
- * DIO3(IO) 电池采样（参考 peripheral_server_sleep），每次读前重配 ADC。 */
+ * DIO3(IO) 电池采样（参考 peripheral_server_sleep），每次读前重配 ADC。
+ * 勿读完 disable：会让 ADC 处于「刚使能、尚未转换」的窗口，读回满量程 → 一直报 100%，
+ * 见开发文档 §17.3。 */
 uint32_t read_battery_raw(void)
 {
     Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
@@ -909,6 +911,72 @@ static void cmd_setstopvoice(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_SETSTOPVOICE, 0, &status, 1);
 }
 
+/* ================================================================
+ * 验配 / 测听期间的 RM 挂起
+ *
+ * RM 流期间 App 发不了 37/40（白名单只放行 26/4/15），所以进这两个流程时
+ * app_env.audio_streaming 必为 0，无需做断开收尾。这里关的是"已使能、正在搜索"
+ * 的 RM，防止它在验配过程中突然连上、切程序 3 把 DSP 配置搅乱。
+ * 开关序列照抄 ble_custom.c 的 Rempro ONOFF 实现。
+ * ================================================================ */
+static uint8_t s_rm_held_off = 0;   /* 1 = 本次验配/测听把 RM 关了，退出时要开回来 */
+
+static void fitting_rm_disable(void)
+{
+    if (s_rm_held_off) return;
+
+    s_rm_held_off = 1;
+    BBIF_COEX_CTRL->RX_ALIAS = 0;
+    BBIF_COEX_CTRL->TX_ALIAS = 0;
+    RM_Disable();
+    RF_SwitchToBLEMode();
+    PRINTF("[REMPRO] RM disabled for fitting/audiometry\r\n");
+}
+
+static void fitting_rm_enable(void)
+{
+    struct rm_callback callback;
+
+    if (!s_rm_held_off) return;
+
+    s_rm_held_off = 0;
+    callback.trx_event     = RM_Callback_TRX;
+    callback.status_update = RM_Callback_StatusUpdate;
+    RM_Configure(&app_env.rm_param, callback);
+    RF_SwitchToCPMode();
+    RM_Enable(1000);
+    PRINTF("[REMPRO] RM re-enabled after fitting/audiometry\r\n");
+}
+
+/* ID:37  SetFittingStatus — 只回 ACK，不做其他操作；按状态挂起/恢复 RM。
+ * 请求 = Device_Type + Fitting_Status(2B)；响应 = Flag(=0) + status(≠0=成功)。 */
+static void cmd_setfittingstatus(const uint8_t *data, uint8_t len)
+{
+    uint8_t ack = 1;
+
+    if (len < 2) { hdlc_response(CMD_SETFITTINGSTATUS, 1, NULL, 0); return; }
+
+    PRINTF("[REMPRO] SetFittingStatus: dev=%u status=%u (ack only)\r\n",
+           data[0], data[1]);
+    hdlc_response(CMD_SETFITTINGSTATUS, 0, &ack, 1);
+
+    /* 0 开始验配 / 2 开始OTA升级 / 3 门店端开始验配 → 关 RM
+     * 1 验配完成 / 4 门店端结束验配             → 开 RM */
+    switch (data[1]) {
+    case 0:
+    case 2:
+    case 3:
+        fitting_rm_disable();
+        break;
+    case 1:
+    case 4:
+        fitting_rm_enable();
+        break;
+    default:
+        break;
+    }
+}
+
 /* ID:40  SetAudiometryStatus — enter/exit audiometry */
 static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
 {
@@ -928,14 +996,21 @@ static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
     /* Then do the work; push initial-status-done after enter completes */
     switch (fitting_status) {
     case 0:  /* Enter audiometry */
+        /* 先进测听前把 RM 挂起：enter 是一长串阻塞 I2C，期间 RM 若连上会切程序 3 搅乱 DSP */
+        fitting_rm_disable();
         if (bs300_audiometry_enter() == 0) {
             bs300_set_audiometry_state(BS300_AUDIOMETRY_TEST);
             /* Notify app after 2s DSP stabilization, non-blocking */
             bs300_schedule_delayed_push(rempro_push_initial_status_done, 200);
+        } else {
+            /* 进不去就把 RM 恢复，别把设备撂在"没有 RM"的状态 */
+            fitting_rm_enable();
         }
         break;
     case 1:  /* Exit audiometry */
         bs300_audiometry_exit();
+        /* 测听退出、DSP 恢复完再放 RM 回来（否则 RM 可能在建链时就抢 DSP） */
+        fitting_rm_enable();
         bs300_schedule_delayed_push(rempro_push_audiometry_exit, 200);
         break;
     default:
@@ -1118,6 +1193,10 @@ void rempro_cmd_process(void)
         case CMD_SETSTOPVOICE:
             if (data) cmd_setstopvoice(data, data_len);
             else hdlc_response(CMD_SETSTOPVOICE, 1, NULL, 0);
+            break;
+        case CMD_SETFITTINGSTATUS:
+            if (data) cmd_setfittingstatus(data, data_len);
+            else hdlc_response(CMD_SETFITTINGSTATUS, 1, NULL, 0);
             break;
         case CMD_SETAUDIOMETRYSTATUS:
             if (data) cmd_setaudiometrystatus(data, data_len);

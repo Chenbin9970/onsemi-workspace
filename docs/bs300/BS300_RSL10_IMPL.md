@@ -216,6 +216,11 @@ input_selection 改变
 | 切到 Program 3 | `0xFDB2F2` | session[0] |
 | 音量=0 | `0xFD12F2` | session[0]，后跟 `0x8060B2` bin_gain |
 | 音量≠0 | `0xFCD2F2` | session[0]，后跟 `0x8060B2` bin_gain |
+| 低电量告警 | `0xFC12F2` | 独立发送（不排 session），48B 全 0 |
+
+> **`0xFC12F2` 是实测得到的**（2026-09-20 上板验证可正常播报）：协议手册 §2.10 Tune Alerts 只有
+> Battery low warning 的**配置**命令 `0x8012F2`（读 `0x8002F2`），没有这条播放命令的出处。
+> 与 `0xFD12F2` 只差 bit16。发送前需过 `bs300_sync_is_busy()` 门禁。
 
 不再使用 `voice_prompt_input_switch/restore` 切 Telecoil 的复杂流程，直接用 DSP 内置提示音命令。
 

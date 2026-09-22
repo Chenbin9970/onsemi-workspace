@@ -50,6 +50,10 @@
 | **RM 声道选择** | include/app.h | `APP_RM_AUDIO_CHANNEL` = `RM_LEFT`(左) / `RM_RIGHT`(右)，出固件时切（**当前：`RM_RIGHT` 右**，2026-09-17） |
 | **RM 断开过渡音量** | code/rm_app.c, code/app_process.c, include/app.h | 切回助听模式前先压到档位 5，2s 后回原设定值（见 §19.5） |
 | **RM 流中断静音（坏包 PLC + 断开静音）** | code/rm_app.c, code/app_func.c, include/app.h | 修 TX 硬断电 1~2 秒「滋」声；新增 `Od_Stream_Break/Resume`（见 §6.1） |
+| **电池量程重标定 + 采样改 60s** | include/app.h, code/app_process.c | 锚点 6950/9374 → 7273/9174；200ms×16 平均 → 每 60s 直出，`__BATT` 带 raw（见 §17、§17.2） |
+| **低电量告警音** | code/app_process.c, code/bs300_ram_sync.c, include/app.h | 跌破 20% 立即播、之后每 4min 重播；提示音 `0xFC12F2`（见 §17.1） |
+| **新增 Rempro 37 SetFittingStatus** | include/ble_rempro_cmd.h, code/ble_rempro_cmd.c | 只回 ACK，按 `Fitting_Status` 挂起/恢复 RM（见 §18） |
+| **验配/测听期间挂起 RM** | code/ble_rempro_cmd.c | 37/40 进出时关/开 RM，防 RM 建链切程序 3 搅乱 DSP（见 §18.1） |
 
 ## 4. 构建与总开关
 
@@ -496,9 +500,17 @@ BLE 侧在 Rempro ROLE 写入收到首字节 `0xFD` 时 `Sys_Fota_StartDfu(1)` �
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
 FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `CFG_FOTA` 分支），方便扫描区分。
 
-> **当前状态：ON**（2026-09-17 切换）。`app.h` 的 `CFG_FOTA` 已放开，`startup_rsl10.S` /
-> `sections.ld` / `.rteconfig` 三个变体文件已换成 `_fota`，`.cproject` 为 FOTA 配置
-> （`CFG_FOTA=1` + 链接 `libfota.a` + post-build 出 `.fota`）。IDEA 编译已通过（见下「已验证」）。
+> **当前状态：ON**（2026-09-21 切回；2026-09-20 当天曾切 OFF 做普通固件验证，同日又切 ON 过一次）。
+> `app.h` 的 `CFG_FOTA` 已放开，`startup_rsl10.S` / `sections.ld` / `.rteconfig` 三个变体文件
+> 已换成 `_fota`，`.cproject` 为 FOTA 配置（`CFG_FOTA=1` + 链接 `libfota.a` + post-build 出 `.fota`）。
+>
+> ⚠ **2026-09-20 补充：`.cproject_fota` 还漏了一处 exclude —— `rsl10_protocol.c`**（见 §16.1 第 7 项）。
+> 已修好备份；现在 `cp .cproject_fota .cproject` 才是完整可用的 FOTA 配置。
+>
+> ⚠ **`.cproject` 会被 Eclipse 覆盖回去**：2026-09-21 发现，用 `cp` 从 IDE 外部改过 `.cproject` 后，
+> Eclipse 若开着该工程，之后再保存/刷新会**按它内存里的旧模型重写**，把外部改动抹掉（实测退回成
+> 缺 `CFG_FOTA=1` + 缺 `mkfotaimg.py|fota.bin` 排除的旧版，而 rteconfig/startup/sections 没被动）。
+> 所以：切换后**先关 Eclipse 工程或切换完再开**；编译后按 §16.1 的自检命令复查一遍 `.cproject`。
 
 **文件**（remote_mic_rx_coex_1654/ 下）：
 - 代码：`code/fota_system.c`（SystemFotaInit→fota_init + weak Device_Param_Prepare）、
@@ -527,11 +539,22 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 **最近一次 ON 构建：2026-09-17 14:04**（`elf/fota/hex/map` 齐全，map 中 `SystemFotaInit` 落在
 `0x00136754` → 高于 `0x00130800`，重定位生效；链接库只有 `libbass.a` + `libfota.a`）。
 
-### 16.1 两个 `.cproject` 备份的坑（已于 2026-09-17 修好）
+**2026-09-20 重开 FOTA**：按上面步骤切回 ON，静态自检全部通过（`SystemFotaInit`=1、`__rom_start` 3 处、
+`Csub="Fota"`=1、库只有 `libbass.a`+`libfota.a`、`rsl10_protocol.c` 两个配置都已排除）。
+**待 IDE 重新编译确认**（未代编）。
+
+> ⚠ **FOTA ON 下的已知告警（既有，非本次引入）**：`ble_std.c` 的 `SYS_FOTA_VERSION(VER_ID,…)` 会报
+> `initializer-string for array of 'char' is too long` —— `Sys_Boot_app_id_t` 是 **`char[6]`**，而
+> `VER_ID = "Smart1654"` 有 10 字节，被截断（无 NUL）。参考工程 sleep 用的是 `"BS300"`（正好 6 字节）。
+> 1664 同样如此（`"Smart1664"`）。两个工程都只在 FOTA 模式下暴露。是否影响 bootloader 的版本校验
+> **未定**（镜像与比较用同一串被截断的常量时通常自洽）—— 若 FOTA 升级出问题，从这里先查。
+
+### 16.1 两个 `.cproject` 备份的坑（2026-09-17 修好，2026-09-20 补第 7 项）
 
 > **现状：两个备份已刷新为可用版本**，`cp .cproject_fota .cproject` / `cp .cproject_nofota .cproject`
-> 现在可以直接用。下面保留问题描述，用于识别**其它工程**（sleep / 1664 / 7160test 的备份同样可能是坏的：
-> sleep 与 1664 的 `.cproject_fota` 都含 `libfota`+`libblelib`+`libkelib` 三个库）和判断备份是否可信。
+> 现在可以直接用（2026-09-20 补上了第 7 项，见下）。下面保留问题描述，用于识别**其它工程**
+> （sleep / 1664 / 7160test 的备份同样可能是坏的：sleep 与 1664 的 `.cproject_fota` 都含
+> `libfota`+`libblelib`+`libkelib` 三个库；它们的备份也**没有**第 7 项）和判断备份是否可信。
 
 `cp .cproject_fota .cproject`（或 `_nofota`）**曾经不能直接用** —— 备份落后于活跃 `.cproject`，
 有**两个**问题（2026-09-14 实测）：
@@ -551,6 +574,32 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
 
 （正确状态是：`startup_rsl10.S` / `sections.ld` 入编，四个变体文件全部排除。）
 
+**第 7 项：`rsl10_protocol.c`（2026-09-20 新增，上面那份清单漏了）**
+
+FOTA 版**还要排除** `RTE/Device/RSL10/rsl10_protocol.c`，nofota 版**必须保留**（即 `_fota` / `_nofota`
+在这一项上不同）。Debug + Release 两个配置都要加。它得加在 `excluding="…"` 串的**最前面**。
+
+**为什么**（不是「多排一个更安全」，是语义必需）：`libfota.a` 里有个 `fota_sym.o`，是**符号转发对象** ——
+它把整个 BLE 栈以 **absolute 地址**代理到 bootloader 区，实测包含
+
+```
+001023fd A BLE_DeviceParam_Set_ADV_IFS     00102265 A Device_Param_Read
+00102409 A BLE_DeviceParam_Set_ClockAccuracy  001058e5 A BLE_EVENT_IRQHandler …
+```
+
+而 `rsl10_protocol.c` 定义的正是 `Device_Param_Read` / `BLE_DeviceParam_Set_*` 这几个**真实函数**
+（源文件在 `pack/source/firmware/syslib/code/`）。FOTA 模式下它们必须走 bootloader 的副本 →
+不排除就是**重复定义**。反过来 nofota 版链接的 `libblelib.a` / `libkelib.a` **都不提供**这些符号
+（`arm-none-eabi-nm` 实测为空），所以才必须编 `rsl10_protocol.c`。
+
+> 判定方法：`arm-none-eabi-nm --defined-only …/lib/Release/libfota.a | grep Device_Param_Read`
+> → 命中 `fota_sym.o`，即 FOTA 版要排除；对 `libblelib.a`/`libkelib.a` 做同样查询为空，即 nofota 版要保留。
+
+自检（切换后应各为 2，Debug/Release 各一处）：
+```
+grep -o 'excluding="[^"]*' .cproject | grep -c rsl10_protocol.c
+```
+
 **正确的库组合**（`libfota` 与 `libblelib`/`libkelib` **互斥**，FOTA 是替换整个 BLE 栈而非叠加）：
 
 | 配置 | 库 |
@@ -561,14 +610,17 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
 切换后自检：`grep -o "lib[a-z]*\.a" .cproject | sort -u`。
 
 **2026-09-17 的修法**（也适用于修其它工程）：**不要** `cp .cproject_fota`（它是坏的），
-而是以**当前活跃、且 exclude 完整的 `.cproject`** 为底，只打 FOTA 的三处差异：
+而是以**当前活跃、且 exclude 完整的 `.cproject`** 为底，只打 FOTA 的四处差异：
 
 1. 两个配置（Debug / Release）的 `assembler.defs` / `c.compiler.defs` / `cpp.compiler.defs`
    各加一条 `CFG_FOTA=1`（共 6 条）；
 2. `c.linker.otherobjs` / `cpp.linker.otherobjs` 里把 `libblelib.a` + `libkelib.a` 两行换成 `libfota.a`
    （**换成，不是追加**；`libbass.a` 保留，共 4 处）；
 3. `<builder … postbuildStep="">` 填上 `objcopy -O binary … && mkfotaimg.py -o … .fota …`
-   （FOTA 版的 post-build；nofota 版为空串）。
+   （FOTA 版的 post-build；nofota 版为空串）；
+4. **两个配置的 `sourceEntries` 各把 `RTE/Device/RSL10/rsl10_protocol.c|` 加到 `excluding` 串最前面**
+   （见上面「第 7 项」；2026-09-17 那次漏了这条 —— 那一版活跃 `.cproject` 其实只在 Debug 配了、
+   Release 没配，属漏配）。
 
 **判定备份可信的旁证**（比 diff 备份本身可靠）：
 - `Debug/objects.mk` 的 `USER_OBJS` —— 上次成功构建实际链的库；
@@ -595,12 +647,109 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
 
 - **采样方式**（参考 peripheral_server_sleep）：电池经 **DIO3** 进 ADC，每读前重配
   `ADC_NORMAL | ADC_PRESCALE_1280H`、输入 `ADC_POS_INPUT_DIO3`（channel 0）。
-- **量程**（app.h）：`BAT_ADC_DIO=3`、`BAT_ADC_MIN=6950`(≈3.0V)、`BAT_ADC_MAX=9374`(≈4.4V)、`BAT_LVL_MAX=100`。
-- **周期采样**：`APP_Timer`(200ms) 经 `read_battery_raw()` 采样，16 次平均 → `app_env.batt_lvl`，
-  每 ~3.2s 打 `__BATT n%`（暂无 BLE 上报，供后续使用）。
+- **量程**（app.h）：`BAT_ADC_DIO=3`、`BAT_ADC_MIN=7273`(≈3.19V)、`BAT_ADC_MAX=9174`(≈4.29V)、`BAT_LVL_MAX=100`。
+  两个锚点都是 2026-09-20 实测重标定的结果（不是原来那对 6950/9374），见 §17.2。
+- **周期采样**：`battery_sample_tick()`（app_process.c）挂在 200ms 的 `APP_Timer` 上，按
+  `BAT_SAMPLE_TICKS=300` 分频 → **每 60s 读一次 ADC 直接出值**（不做多次平均，原 200ms×16 次
+  平均已取消）→ 更新 `app_env.batt_lvl`，每分钟打一行 `__BATT n% raw=<raw>`
+  （raw = 该次采样的 ADC 原值，供放电曲线标定用；暂无 BLE 上报）。
 - **按需读取**：Rempro `GetBatteryInfo` 命令走同一 `read_battery_raw()`。
 - **保护**：`cmd_getbatteryinfo` 算完百分比后 `if (pct==0) pct=1;` —— 低于阈值/取整到 0 时**最低报 1%**，不回 0。
 - 注：假定板子电池分压接 DIO3（同 sleep）；脚位/分压不同则改 `BAT_ADC_DIO` 与量程。
+
+### 17.1 低电量告警音
+
+- **触发条件**：`app_env.batt_lvl < LOW_BATT_PCT`（app.h，=20%）。
+- **时机**：每次电池采样后调 `low_batt_check()`（app_process.c），即**每 60s 判定一次**——
+  - 首次跌破 20% → **立即**播一次；
+  - 之后仍低于 20% → 每 `LOW_BATT_CHECK_MS`（app.h，=240000ms=4min）重复一次
+    （累加步长 = `BAT_SAMPLE_TICKS × 200` = 60s，即每第 4 次判定播一次）；
+  - 回到 ≥20% → `seen`/`elapsed_ms` 复位，下次跌破重新立即播。
+  - 跟随电池采样（而不是独立挂在 `Main_Loop`）的两个原因：① 1654 的 `APP_Timer` 无条件每
+    200ms re-arm，不像 sleep 要按 RM/BLE 状态分别累加时间；② `app_env.batt_lvl` 开机是 0
+    （`App_Initialize` memset），挂在「首次采样之后」天然避开开机误报。
+- **提示音命令**：`bs300_play_low_batt_tone()`（bs300_ram_sync.c）→ 直接 I2C 写 **`0xFC12F2`**，
+  `bs300_sync_is_busy()` 为真（BS300 session 进行中）时跳过。调用点包在 `#ifdef BS300_ENABLE`。
+  ✅ **2026-09-20 上板实测：能正常播报**。
+- 注：**`0xFC12F2` 在协议手册里查不到出处**——手册 §2.10 Tune Alerts 只列了 Battery low warning
+  的**配置**命令 `0x8012F2`（读 `0x8002F2`），没有这条播放命令的推导规则。代码里另两个播报命令
+  是 `0xFD12F2`（音量=0）和 `0xFCD2F2`（音量≠0），sleep 的低电提示音用的是 `0xFD12F2`。
+  本工程的 `0xFC12F2` 属**实测获得**，已回填 `docs/bs300/BS300_RSL10_IMPL.md` §6 提示音表。
+- **粒度**：阈值用的是单次采样（无平均），所以「实际跌破」到「响第一声」**最多差 60s**；
+  代价是阈值附近单次采样噪声可能让 `batt_lvl` 在 19↔20 之间抖动，从而反复触发「首次跌破立即播」。
+  若实测发现告警抖动，再给 `LOW_BATT_PCT` 加迟滞（如跌破 19 播、回到 21 才复位）。
+
+### 17.2 百分比曲线重标定（0% 锚点 6950 → 7273，100% 锚点 9374 → 9174）
+
+**起因**：实测发现旧百分比偏乐观——**报 40% 时只剩 1 小时，报 20% 时只剩 15min**。
+
+**0% 锚点（7273）**：设旧显示 `p_old`、新显示 `p_new = a·p_old + b`。剩余时间比
+`t(40)/t(20) = 60/15 = 4` 且 `t(p) ∝ p_new` → `(40a+b)/(20a+b) = 4`，解得
+`a=1.15385`、`b=−15.3846`，反解 `p_new = 0` 落在 `p_old = 13.33%` —— 即旧的 0% 锚点
+（raw 6950 ≈3.0V）**不是真正的关机点**，真正的关机点在 raw 7273。
+
+> 注：`t(40)/t(20)=4` 这个比值约束单独就定出了 `p_new = 0` 的位置（raw 7273），与 100% 锚点取值无关。
+
+**100% 锚点（9174）**：取**满电实测 raw**。原 9374 是满电之上的外推值，实测满电 raw 只有 9174
+（先后下调共 200）。原锚点下满电只能显示 91%，设备永远够不到 100%。
+
+```
+pct = (raw - 7273) * 100 / (9174 - 7273)      /* 跨度 1901（旧 6950~9374 跨度 2424） */
+```
+
+| raw | 电压≈ | 旧 % | 新 % |
+|---|---|---|---|
+| 9374 | 4.40V | 100 | 100（夹断，≥9174 一律 100） |
+| 9174 | 4.29V | 91 | **100** ← 满电实测 raw ✅ 2026-09-20 上板确认满电报 100% |
+| 8500 | 3.90V | 63 | 64 |
+| 8000 | 3.61V | 43 | 38 |
+| **7653** | 3.41V | 29 | **19** ← 低电告警新触发点（`pct < 20`） |
+| 7435 | 3.28V | 20 | 8 |
+| 7273 | 3.19V | 13 | 0（`cmd_getbatteryinfo` 夹到 1%） |
+
+电压列按 `6950↔3.0V`、`9374↔4.4V` 线性推算，仅供直觉，非实测。
+
+**副作用（预期内）**：
+
+- 低电告警提前：阈值仍是 20%，但 20%（截断后为 19）现在对应 raw ≤7653（≈3.41V），
+  按模型剩约 **35min**（原 15min）。
+- `GetBatteryInfo`（App 看到的电量）与周期 `__BATT` 打印都走同一组宏，自动同步。
+- 越接近空档越保守：raw 落在 6950~7273（≈3.0~3.19V）时一律报 1%。
+
+**可证伪的预测**：按两点线性外推，**满电到关机 ≈176min ≈2.9 小时**。若实测满电续航与之
+相差很大（说明真实放电曲线是弯的、不是直线），则 2 个点不足以定曲线，必须补中间采样点
+（`(raw, 已用时间)` 若干组）再重标定。
+
+> 已验证部分：2026-09-20 上板确认**满电时 `__BATT` 报 100%**（即 9174 锚点正确）。
+> 上面那条总续航预测**尚未验证**——跑一次完整放电、把 `__BATT ... raw=` 记下来即可判定。
+
+### 17.3 读完 disable ADC —— 已试并回退（2026-09-20）
+
+**试过**：`read_battery_raw()` 读完加一行 `Sys_ADC_Set_Config(ADC_DISABLE)`
+（`ADC_DISABLE` = `ADC_CFG.FREQ` 字段写 0），想省掉 ADC 本体和内部 VBAT/2 分压的常开电流。
+
+**结果**：功耗**确有下降**，但**采样值全错——一直报 100%**，已回退。**不要再加。**
+
+**原因**：`ADC_NORMAL` 模式下 8 个通道靠序列轮询刷新 `DATA_TRIM_CH[]`，配置完**立刻**读时
+序列还没扫到 ch0。以前不暴露，是因为 ADC 一直开着、序列一直在刷，读到的总是上一轮的合法值；
+加了 disable 之后 ADC 真的处在「刚使能、尚未完成转换」的窗口，`DATA_TRIM_CH[0]` 是非法值
+（读回接近满量程 `0x3FFF`=16383）→ `raw ≥ BAT_ADC_MAX` → 夹到 100%。
+**所以真正的病根是「配置后立刻读」，disable 只是让它显形。**
+
+**要真想省这点电**，必须改成**两阶段采样**：本次 tick 只配置+使能，隔一个 200ms tick 再读再关。
+`SLOWCLK = 2 MHz`（`app_init.c` `SLOWCLK_PRESCALE_8`）、`PRESCALE_1280H` 下扫完 8 通道约
+**5.1ms**，200ms 有约 39 倍余量，不需要猜任何延时常数。代价：`GetBatteryInfo` 不能再同步读，
+得改用周期缓存值（`app_env.batt_lvl`）。
+
+**为什么 SDK 能这么干**：`Sys_RFFE_SetTXPower()`（`rsl10_sys_rffe.c`）也是量完就 disable，
+但它在配置和读之间插了 `Sys_Delay_ProgramROM(ADC_MEASUREMENT_DELAY)`（10000 个**系统时钟周期**，
+`Sys_Delay_ProgramROM` 的参数单位是 cycles），且用的是 `ADC_PRESCALE_200`（比 1280H 快 6.4 倍）。
+照抄到 1280H 至少要 25 万周期 ≈ 6ms 阻塞，RM 流期间有拖死音频的风险，不可取。
+
+> 附带收获：**§2.1「每次读前必须重配 ADC」的真正原因是 RF 驱动**——`Sys_RFFE_SetTXPower()`
+> 会把 ch0 输入从 DIO3 改成 `ADC_POS_INPUT_AOUT`（量 VDDRF），再 `Sys_ADC_Set_Config(... |
+> ADC_DISABLE)` 收尾。我们的重配不是防御性编程，是必需的。
+> 省不掉的固定开销：板上 `1MΩ+360kΩ` 外部分压直接跨电池，`4.4V/1.36MΩ ≈ 3.2µA` 恒定流着。
 
 ## 18. RM 与 BLE/按键互斥 + 特殊 Rempro 命令
 
@@ -654,6 +803,47 @@ RTE/Device/RSL10/mkfotaimg.py | RTE/Device/RSL10/fota.bin
   `2`=初始化完成（进入测听），`1`=未初始化（退出测听）。
 - ⚠ 这两个推送依赖 `bs300_schedule_delayed_push()`，曾因触发条件 bug 完全不工作，见 §12.8。
 - `len<2` / `bs300_sync_is_busy()` 时回 `Flag=1`，不做事。
+- **进入时挂起 RM、退出时恢复**（见 §18.1）。
+
+**SetFittingStatus(ID:37)**（ble_rempro_cmd.h/c）
+- 请求 `data[0]`=Device_Type、`data[1]`=Fitting_Status；响应 `Flag=0` + `status=1`。
+- **只回 ACK，不做其他验配动作**，但按 `Fitting_Status` 挂起/恢复 RM（见 §18.1）：
+  `0` 开始验配 / `2` 开始OTA升级 / `3` 门店端开始验配 → 关 RM；
+  `1` 验配完成 / `4` 门店端结束验配 → 开 RM。
+- `len<2` 时回 `Flag=1`。
+
+### 18.1 验配 / 测听期间挂起 RM
+
+**为什么**：RM 处于「已使能、正在搜索」时若在验配过程中突然建链，`LINK_ESTABLISHED` 会
+`bs300_mute()` + 切到程序 3，把测听/验配刚写进 DSP 的配置搅乱。所以进这两个流程时先把 RM 关掉。
+
+**不需要做断开收尾**：RM 流期间 `app_env.audio_streaming=1`，白名单只放行 26/4/15，
+**37/40 会被静默丢弃** —— 也就是说收到 37/40 时 `audio_streaming` 必为 0。这也是
+「RM 流期间 App 无法进入测听」的原因（同样也无法在流期间退出测听）。
+
+**实现**：`ble_rempro_cmd.c` 的 `fitting_rm_disable()` / `fitting_rm_enable()`，
+开关序列照抄 `ble_custom.c` Rempro ONOFF 的现成写法：
+
+```c
+/* 关 */ BBIF_COEX_CTRL->RX_ALIAS = 0; BBIF_COEX_CTRL->TX_ALIAS = 0;
+        RM_Disable(); RF_SwitchToBLEMode();
+/* 开 */ RM_Configure(&app_env.rm_param, callback);   /* callback = RM_Callback_TRX/StatusUpdate */
+        RF_SwitchToCPMode(); RM_Enable(1000);
+```
+
+用静态 `s_rm_held_off` 保证**幂等**：37(0) 后又来 40(0) 只关一次；退出时只把**我们关掉的**
+那次开回来（否则重复 `RM_Enable` 会重置 RM 搜索状态）。
+
+`app_env.RM_on_off`（App 侧 ONOFF 偏好位）**不动** —— 即验配期间 App 若去读 ONOFF，
+读到的仍是它自己上次写的值，与「RM 实际被挂起」不符。这是**已知的小失真**，因为该标志
+只用于「App 写 ONOFF 时决定开/关」，恒读取不参与逻辑；若要让 App 也看到真实状态，需
+在 `fitting_rm_disable/enable()` 里同步改它（当前未做）。
+
+- 测听：`40/status=0` **在 `bs300_audiometry_enter()` 之前**关（enter 是一长串阻塞 I2C，
+  窗口很长）；enter 失败则立刻恢复 RM，不把设备撂在「没有 RM」的状态。`40/status=1`
+  在 `bs300_audiometry_exit()` 之后开（DSP 恢复完再放 RM 回来）。
+- `RM_Disable()` **不会回调 `status_update`**（RM 库只在其事件处理里回调），所以不能靠它
+  触发断开收尾 —— 好在上面已论证该场景不存在。
 
 ## 19. RM ↔ BS300 程序切换（异步 + 抢断续传）
 

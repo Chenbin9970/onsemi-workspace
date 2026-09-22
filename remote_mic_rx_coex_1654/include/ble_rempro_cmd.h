@@ -31,6 +31,7 @@ extern "C" {
 #define CMD_GETDEVICECONFIG     26
 #define CMD_GETDEVICEONOFF      33
 #define CMD_GETFEEDBACKONOFF    34
+#define CMD_SETFITTINGSTATUS    37   /* ID:37 SetFittingStatus：只回成功 ACK；按状态挂起/恢复 RM */
 #define CMD_SETAUDIOMETRYSTATUS  40
 #define CMD_IICDATACOMMUNITY    78
 #define CMD_FOTA_STATUS         87   /* ID:87 SetFOTAStatus：进入 FOTA 状态 */

@@ -23,7 +23,7 @@
 /* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
  * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
  * 见开发文档「FOTA」。 */
-//#define CFG_FOTA
+#define CFG_FOTA
 #ifdef CFG_FOTA
 #define VER_ID                  "Smart1654"
 #define VER_MAJOR               1
@@ -374,12 +374,24 @@ extern "C"
 #define VBAT_1p1V_MEASURED              0x1200
 #define VBAT_1p4V_MEASURED              0x16cc
 
-/* 电池 DIO3(IO) 采样量程（参考 peripheral_server_sleep：raw 6950≈3.0V→0%，9374≈4.4V→100%） */
+/* 电池 DIO3(IO) 采样量程。两个锚点都取实测 raw：
+ * 0%   = 7273 (≈3.19V)：实测「旧显示 40% 剩 1h、旧显示 20% 剩 15min」两点反解出的
+ *                       真正关机点（原 6950≈3.0V 只是电压低点，不是关机点）；
+ * 100% = 9174 (≈4.29V)：满电实测 raw（原 9374 偏高 200）。
+ * 详见开发文档 §17.2。 */
 #define BAT_ADC_DIO                     3
 #define BAT_ADC_CHANNEL                 0
-#define BAT_ADC_MIN                     6950
-#define BAT_ADC_MAX                     9374
+#define BAT_ADC_MIN                     7273
+#define BAT_ADC_MAX                     9174
 #define BAT_LVL_MAX                     100
+
+/* 低电量告警：电量低于 LOW_BATT_PCT 播提示音，首次跌破立即播，
+ * 之后只要仍低于阈值每 LOW_BATT_CHECK_MS 重复一次 */
+#define LOW_BATT_PCT                    20
+#define LOW_BATT_CHECK_MS               240000
+
+/* 电池采样间隔：每 300 个 200ms tick 采一次 = 60s（直接出值，不做多次平均） */
+#define BAT_SAMPLE_TICKS                300
 
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
