@@ -18,11 +18,19 @@
  * ------------------------------------------------------------------------- */
 #include "app.h"
 
+/* Bring-up counters: does the RM library actually ask for payload? Read over
+ * J-Link, or watch the report the 200 ms APP_Timer prints. Remove once the
+ * audio path is verified. */
+volatile uint32_t dbg_cnt_tx_req[2];    /* [0] = LEFT, [1] = RIGHT */
+volatile uint32_t dbg_len_last;
+volatile uint32_t dbg_cnt_status;
+volatile uint32_t dbg_last_status;
+
 uint32_t data_rd = 0;
 
 /*for test */
 uint8_t tmp;
-uint32_t ascc_cnt, audio_sink_phase_cnt, erraaa = 0;
+uint32_t ascc_cnt, erraaa = 0;
 
 uint8_t inTempBuffLeft[100]  = {
     0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf, 0xaf,
@@ -93,7 +101,7 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0x0d << 24));
+    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;
@@ -120,8 +128,11 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.mod_idx  = BLE_MOD_IDX;
     app_env.rm_param.dma_memcpy_num   = MEMCPY_DMA_NUM;
 
-    app_env.rm_param.debug_dio_num[0] = DEBUG_DIO_FIRST;
-    app_env.rm_param.debug_dio_num[1] = DEBUG_DIO_SECOND;
+    /* 0xff = leave the DIO alone. The working tx_coex project disables all four;
+     * DIO11 is the RFX2401C FEM TXEN on this board, so the RM library must not
+     * take it over as a debug output. */
+    app_env.rm_param.debug_dio_num[0] = 0xff;
+    app_env.rm_param.debug_dio_num[1] = 0xff;
     app_env.rm_param.debug_dio_num[2] = 0xff;
     app_env.rm_param.debug_dio_num[3] = 0xff;
 
@@ -145,22 +156,38 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
     {
         case RM_TX_PAYLOAD_READY_LEFT:
         {
+            dbg_cnt_tx_req[0]++;
+            dbg_len_last = *length;
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (RM_TEST_TONE)
+            memcpy(ptr, &coded_sample[cntr_enc_rm0], *length);
+            cntr_enc_rm0 = (cntr_enc_rm0 + *length) % (4 * 60);
+#else    /* if (RM_TEST_TONE) */
+#if (TX_TONE_TEST)
+            /* Refill the encoder for the next request, then serve what the
+             * previous refill produced (one packet of latency). */
+            Tone_feed_encoder(PKT_LEFT, *length / ENCODED_SUBFRAME_LENGTH);
+#endif    /* if (TX_TONE_TEST) */
             memcpy(ptr, Read_buffer(PKT_LEFT), *length);
-
-            /* memcpy(ptr, &coded_sample[cntr_enc_rm0], *length);
-            * cntr_enc_rm0 = (cntr_enc_rm0 + *length) % (240); */
+#endif    /* if (RM_TEST_TONE) */
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
         }
         break;
 
         case RM_TX_PAYLOAD_READY_RIGHT:
         {
+            dbg_cnt_tx_req[1]++;
+            dbg_len_last = *length;
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (RM_TEST_TONE)
+            memcpy(ptr, &coded_sample[cntr_enc_rm1], *length);
+            cntr_enc_rm1 = (cntr_enc_rm1 + *length) % (4 * 60);
+#else    /* if (RM_TEST_TONE) */
+#if (TX_TONE_TEST)
+            Tone_feed_encoder(PKT_RIGHT, *length / ENCODED_SUBFRAME_LENGTH);
+#endif    /* if (TX_TONE_TEST) */
             memcpy(ptr, Read_buffer(PKT_RIGHT), *length);
-
-            /* memcpy(ptr, &coded_sample[cntr_enc_rm1], *length);
-            * cntr_enc_rm1 = (cntr_enc_rm1 + *length) % (240); */
+#endif    /* if (RM_TEST_TONE) */
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT) */
         }
         break;
@@ -236,6 +263,12 @@ uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr)
 
 uint8_t RM_Callback_StatusUpdate(uint8_t status)
 {
+    /* Called from RM library context (including before interrupts are enabled
+     * during init), so count only — never print here. The 200 ms APP_Timer
+     * reports these counters. */
+    dbg_cnt_status++;
+    dbg_last_status = status;
+
     switch (status)
     {
         case LINK_DISCONNECTED:

@@ -53,7 +53,7 @@ extern "C"
  *  {2, 8, 14, 20, 26, 35, 38}
  *  {3, 9, 15, 21, 24, 33, 36}
  */
-#define RM_HOPLIST                      { 37, 9, 16, 20, 29, 32, 17 }
+#define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
@@ -62,7 +62,7 @@ extern "C"
 #define APP_RM_AUDIO_CHANNEL            RM_LEFT
 #endif
 
-#define OUTPUT_POWER_6DBM               0
+#define OUTPUT_POWER_6DBM               1
 
 #define NO_RX_INPUT                     0
 #define SPI_RX_CODED_INPUT              1    /*with bi_directional_master in E7100 */
@@ -73,9 +73,38 @@ extern "C"
 #define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
 #define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
 
-#define INPUT_INTRF                     SPI_RX_CODED_INPUT    /*PCM_RX_RAW_INPUT//SPI_RX_CODED_INPUT// */
+#define INPUT_INTRF                     PCM_RX_RAW_INPUT    /*PCM_RX_RAW_INPUT//SPI_RX_CODED_INPUT// */
 #define OUTPUT_INTRF                    NO_TX_OUTPUT    /*Fixed */
 #define SIMUL                           0    /*Fixed */
+
+/* 1 = boot straight into RM transmit mode: the radio is handed to the custom
+ * protocol during initialization and BLE is left idle. 0 = the vendor flow,
+ * where BLE is brought up first and RM is entered on a BLE trigger. */
+#define RM_START_AT_BOOT                1
+
+/* 1 = serve a pre-encoded sample (coded_sample[]) as the RM payload, bypassing
+ * both the PCM input and the LPDSP32 encoder. 0 = normal: the payload comes
+ * from the encoder fed by the PCM input. */
+#define RM_TEST_TONE                    0
+
+/* 1 = feed a standard 1 kHz tone into the LPDSP32 encoder instead of the PCM
+ * input, so the encoder and everything after it can be verified on their own.
+ * The tone is fed from the RM payload callback, which fires once per packet
+ * (every 10 ms per direction) — exactly the rate the encoder needs, so no extra
+ * timer is required. Takes precedence over the PCM input path. */
+#define TX_TONE_TEST                    0
+
+/* 1 = do not configure or enable the PCM peripheral at all: the four PCM pads
+ * are left as plain high-impedance inputs. Used to find out whether the PCM
+ * block itself is loading the source's lines. Set back to 0 afterwards. */
+#define PCM_HW_OFF                      0
+
+/* 1 = print the bring-up report from the 200 ms timer. That line takes several
+ * milliseconds on a blocking UART, which stalls the PCM DMA interrupt long
+ * enough for the circular buffer to be overwritten and corrupt samples — so it
+ * is off by default while listening to audio. The counters stay live and can be
+ * read over J-Link instead. */
+#define TX_DBG_PRINT                    0
 
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT || INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define APP_RM_DATA_REQUEST_TYPE        RM_PRO_REQUEST
@@ -117,13 +146,20 @@ extern "C"
 #endif    /* if (SIMUL == 1) */
 #define TIMER_REGUL                     2
 
-#define PCM_CFG_RX                      (PCM_BIT_ORDER_MSB_FIRST | \
+/* PCM receive configuration. The source (CM108B in I2S master mode) drives a
+ * 48 kHz LRCK with 64 SCLK per period, i.e. two 32-bit slots per frame, each
+ * carrying a 16-bit sample MSB-first one SCLK after the frame edge. Using
+ * 32-bit words makes one DMA word equal one channel slot, and MULTIWORD_2
+ * makes the frame exactly one LRCK period. Standard I2S drives data on the
+ * falling edge, so the input is sampled on the rising edge. */
+#define PCM_CFG_RX                      (PCM_SAMPLE_RISING_EDGE | \
+                                         PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_24 |        \
-                                         PCM_FRAME_ALIGN_LAST |    \
+                                         PCM_WORD_SIZE_32 |        \
+                                         PCM_FRAME_ALIGN_FIRST |   \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
-                                         PCM_SUBFRAME_DISABLE |    \
+                                         PCM_SUBFRAME_ENABLE |     \
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
@@ -191,10 +227,11 @@ extern "C"
                                          DMA_ADDR_CIRC)
 #elif (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define DMA_RX_CONFIG                   (DMA_LITTLE_ENDIAN |       \
-                                         DMA_DISABLE |             \
+                                         DMA_ENABLE |              \
                                          DMA_DISABLE_INT_DISABLE | \
+                                         DMA_ERROR_INT_DISABLE |   \
                                          DMA_COMPLETE_INT_ENABLE | \
-                                         DMA_COUNTER_INT_ENABLE |   \
+                                         DMA_COUNTER_INT_ENABLE |  \
                                          DMA_START_INT_DISABLE |   \
                                          DMA_DEST_WORD_SIZE_32 |   \
                                          DMA_SRC_WORD_SIZE_32 |    \
@@ -321,10 +358,13 @@ extern "C"
 #define PCM_CLK_DO                      12
 #define PCM_FRAME_SYNC                  9
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
+/* DIO0 is the only pad proven bad on this board — the source's LRCK dies as
+ * soon as it is wired there, even with the PCM block completely off. Only the
+ * frame sync moves (to DIO9); the data and clock stay on DIO2/DIO3. */
 #define PCM_SER_DI                      2
 #define PCM_SER_DO                      1
 #define PCM_CLK_DO                      3
-#define PCM_FRAME_SYNC                  0
+#define PCM_FRAME_SYNC                  9
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
 
 #define BUTTON_DIO                      5
@@ -364,8 +404,30 @@ extern "C"
 /* Subframe length in uint16_t */
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define SUBFRAME_LENGTH                 16
+
+/* The PCM source runs at PCM_DECIM_RATIO times the encoder rate (48 kHz in,
+ * 16 kHz out), so PCM_DECIM_RATIO raw samples are averaged into one encoder
+ * sample. */
+#define PCM_DECIM_RATIO                 3
+
+/* Encoder samples per channel per DMA half block. The DMA runs circular, so a
+ * half must be consumed while the DMA fills the other one — otherwise the read
+ * races the overwrite and produces bursts of noise. */
+#define PCM_HALF_SAMPLES                (SUBFRAME_LENGTH / 2)
+
+/* Raw PCM samples per channel per half block */
+#define PCM_HALF_RAW                    (PCM_HALF_SAMPLES * PCM_DECIM_RATIO)
+
+/* PCM DMA half block and full block in 32-bit words. Each word is one channel
+ * slot, so one sample pair costs two words. One block is one encoder subframe. */
+#define PCM_DMA_HALF_WORDS              (2 * PCM_HALF_RAW)
+#define PCM_DMA_BLOCK_WORDS             (2 * PCM_DMA_HALF_WORDS)
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
 #define SUBFRAME_LENGTH                 8
+
+/* pcm_buf is only used by the PCM branch; this keeps its declaration valid for
+ * the other raw input modes. */
+#define PCM_DMA_BLOCK_WORDS             (4 * SUBFRAME_LENGTH)
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
 
 /* Total subframe length accounting for left and right channel samples in uint16_t */
@@ -576,6 +638,31 @@ extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
 extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const dest_id,
                        ke_task_id_t const src_id);
+
+/* Bring-up debug counters, filled by the RM callbacks in rm_app.c and reported
+ * by the 200 ms APP_Timer. Remove once the audio path is verified. */
+extern volatile uint32_t dbg_cnt_tx_req[2];
+extern volatile uint32_t dbg_len_last;
+extern volatile uint32_t dbg_cnt_status;
+extern volatile uint32_t dbg_last_status;
+
+/* Pipeline liveness counters (app_func.c): PCM DMA ISR, encoder ISR and ASRC
+ * output ISR. A stage stuck at 0 is the stage that is not running. */
+extern volatile uint32_t dbg_cnt_pcm_isr;
+extern volatile uint32_t dbg_cnt_enc;
+extern volatile uint32_t dbg_cnt_asrc_out;
+extern volatile int32_t dbg_pcm_peak;
+
+/* Counts how often Read_buffer found the TX FIFO too empty/full and had to
+ * reposition its read pointer — each one is an audible discontinuity. */
+extern uint8_t ptr_rst_cnt;
+
+/* How often queuing a subframe failed on allocation (queue.c) — audio dropped. */
+extern volatile uint32_t dbg_q_alloc_fail;
+
+#if (TX_TONE_TEST)
+extern void Tone_feed_encoder(uint8_t side, uint8_t subframes);
+#endif    /* if (TX_TONE_TEST) */
 
 extern void APP_RM_Init(uint8_t side);
 

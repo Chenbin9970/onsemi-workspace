@@ -486,6 +486,11 @@ int GAPC_ParamUpdateReqInd(ke_msg_id_t const msg_id,
  * ------------------------------------------------------------------------- */
 void Connection_SendStartCmd(void)
 {
+#if (RM_START_AT_BOOT)
+    /* RM owns the radio at boot — never start a BLE connection, otherwise the
+     * stack keeps competing with the custom protocol for the transceiver. */
+    return;
+#else    /* if (RM_START_AT_BOOT) */
     uint8_t peerAddress0[BD_ADDR_LEN] = DIRECT_PEER_BD_ADDRESS;
     struct gapm_start_connection_cmd *cmd;
 
@@ -522,6 +527,7 @@ void Connection_SendStartCmd(void)
     ke_msg_send(cmd);
 
     ble_env.state = APPM_CONNECTING;
+#endif    /* if (RM_START_AT_BOOT) */
 }
 
 /* ----------------------------------------------------------------------------

@@ -58,6 +58,17 @@ void App_Initialize(void)
                              DIO_LPF_DISABLE | DIO_6X_DRIVE;
     while (DIO_DATA->ALIAS[RECOVERY_DIO] == 0);
 
+#if (INPUT_INTRF == PCM_RX_RAW_INPUT)
+    /* The PCM source drives these pads and its drivers are only 2 mA, so hold
+     * them high-impedance from the very first instruction — a pad left at its
+     * reset default would fight the source while the rest of the initialization
+     * runs, and the source can lose that fight. */
+    Sys_DIO_Config(PCM_FRAME_SYNC, DIO_MODE_INPUT | DIO_WEAK_PULL_UP);
+    Sys_DIO_Config(PCM_CLK_DO,     DIO_MODE_INPUT | DIO_WEAK_PULL_UP);
+    Sys_DIO_Config(PCM_SER_DI,     DIO_MODE_INPUT | DIO_NO_PULL);
+    Sys_DIO_Config(PCM_SER_DO,     DIO_MODE_INPUT | DIO_NO_PULL);
+#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
+
     /* Configure the current trim settings for VCC, VDDA */
     ACS_VCC_CTRL->ICH_TRIM_BYTE  = VCC_ICHTRIM_16MA_BYTE;
     ACS_VDDA_CP_CTRL->PTRIM_BYTE = VDDA_PTRIM_16MA_BYTE;
@@ -235,6 +246,16 @@ void App_Initialize(void)
     while (SPI0_CTRL1->SPI0_CS_ALIAS == SPI0_CS_1_BITBAND);
 #else    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT) */
 
+#if (PCM_HW_OFF)
+    /* Probe test: leave the PCM peripheral completely off and the four pads as
+     * plain high-impedance inputs, so nothing on the RSL10 side can touch the
+     * source's lines. Measure the source's LRCK at DIO0 in this state. */
+    Sys_DIO_Config(PCM_FRAME_SYNC, DIO_MODE_INPUT | DIO_WEAK_PULL_UP);
+    Sys_DIO_Config(PCM_CLK_DO,     DIO_MODE_INPUT | DIO_WEAK_PULL_UP);
+    Sys_DIO_Config(PCM_SER_DI,     DIO_MODE_INPUT | DIO_NO_PULL);
+    Sys_DIO_Config(PCM_SER_DO,     DIO_MODE_INPUT | DIO_NO_PULL);
+#else    /* if (PCM_HW_OFF) */
+
     /* Initialize and Configure PCM interface */
     Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
                       PCM_FRAME_SYNC,
@@ -242,14 +263,21 @@ void App_Initialize(void)
     Sys_PCM_Config(PCM_CFG_RX);
     Sys_PCM_Enable();
 
+    /* Sys_PCM_ConfigClk always drives the serial-output pad, but this is a
+     * receive-only path and does not use it. Driving it would fight the source
+     * if that line happens to be wired there — the source pads are only 2 mA.
+     * Put it back to high impedance. */
+    Sys_DIO_Config(PCM_SER_DO, DIO_MODE_INPUT | DIO_NO_PULL);
+#endif    /* if (PCM_HW_OFF) */
+
     /* Setup DMA channel for PCM data transfer */
     /* Using counter interrupt to setup dual buffer system to prevent read and
      * write access conflicts that result in audio artifacts */
     Sys_DMA_ChannelConfig(
         RX_DMA_NUM,
         DMA_RX_CONFIG,
-        4 * SUBFRAME_LENGTH,    /* because of left/right channel */
-        2 * SUBFRAME_LENGTH,
+        PCM_DMA_BLOCK_WORDS,    /* one encoder subframe of left/right slots */
+        PCM_DMA_HALF_WORDS,     /* interrupt at the half, to double buffer */
         (uint32_t)&(PCM->RX_DATA),
         (uint32_t)&pcm_buf[0]);
 
@@ -324,7 +352,12 @@ void App_Initialize(void)
         0,
         (uint32_t)&ASRC->PHASE_INC,
         (uint32_t)&asrc_state_mem_rx[0][0]);
+#if (INPUT_INTRF != PCM_RX_RAW_INPUT)
+    /* Starting the ASRC from here would also start Asrc_out_dma_isr, which
+     * inserts into queue_tx — the same queue the PCM path feeds. The PCM input
+     * path does not use the ASRC at all, so leave the chain disabled. */
     Sys_DMA_ChannelEnable(MEMCPY_SAVE_STATE_MEM);
+#endif    /* if (INPUT_INTRF != PCM_RX_RAW_INPUT) */
     Sys_DMA_ClearChannelStatus(MEMCPY_SAVE_STATE_MEM);
 
     NVIC_ClearPendingIRQ(DMA_IRQn(MEMCPY_SAVE_STATE_MEM));
@@ -352,10 +385,20 @@ void App_Initialize(void)
     APP_RM_Init(ear_side);
 #endif    /* if (SIMUL != 1) */
 
+#if (RM_START_AT_BOOT)
+    /* Hand the radio over to the custom protocol. RM itself is enabled at the
+     * end of this function, once TX power and the flash overlay are in place.
+     * BLE stays initialized but idle (see Connection_SendStartCmd). */
+    RF_SwitchToCPMode();
+    NVIC_DisableIRQ(BLE_FINETGTIM_IRQn);
+#else    /* if (RM_START_AT_BOOT) */
     RF_SwitchToBLEMode();
+#endif    /* if (RM_START_AT_BOOT) */
 
     Sys_DIO_Config(DEBUG_DIO_FIRST, DIO_MODE_GPIO_OUT_0);
-    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_0);
+    /* DIO11 is the RFX2401C FEM TXEN: the PA only passes signal while it is
+     * high (see docs/tx_coex/TX_COEX_DEV_LOG.md, phase 8). Hold it on. */
+    Sys_DIO_Config(DEBUG_DIO_SECOND, DIO_MODE_GPIO_OUT_1);
     Sys_DIO_Config(DIO_SYNC_PULSE, DIO_MODE_GPIO_OUT_0);
     Sys_GPIO_Set_Low(DEBUG_DIO_FIRST);
 
@@ -382,19 +425,6 @@ void App_Initialize(void)
     /* Enable CM3 loop cache */
     SYSCTRL->CSS_LOOP_CACHE_CFG = CSS_LOOP_CACHE_ENABLE;
 
-    Sys_DIO_Config(LED_DIO_NUM, DIO_MODE_GPIO_OUT_0);
-
-    Sys_DIO_Config(BUTTON_DIO, DIO_MODE_GPIO_IN_0 | DIO_WEAK_PULL_UP |
-                   DIO_LPF_DISABLE);
-    Sys_DIO_IntConfig(0, DIO_EVENT_TRANSITION | DIO_SRC(BUTTON_DIO) |
-                      DIO_DEBOUNCE_ENABLE,
-                      DIO_DEBOUNCE_SLOWCLK_DIV1024, 49);
-
-#if (DEBUG_UART_LOG)
-    UartLogInit();
-#endif    /* if (DEBUG_UART_LOG) */
-
-    NVIC_EnableIRQ(DIO0_IRQn);
 
     __set_PRIMASK(PRIMASK_ENABLE_INTERRUPTS);
     __set_FAULTMASK(FAULTMASK_ENABLE_INTERRUPTS);
@@ -416,35 +446,14 @@ void App_Initialize(void)
         Sys_I2C_StartWrite(WM8731_I2C_SLAVE_ADDRESS);
     }
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
+
+#if (RM_START_AT_BOOT)
+    /* Start RM transmit mode. Deferred to here so TX power, the flash overlay
+     * and the interrupt setup above are all done before the first packet. */
+    RM_Enable(1000);
+#endif    /* if (RM_START_AT_BOOT) */
 }
 
-/* ----------------------------------------------------------------------------
- * Function      : void DIO0_IRQHandler(void)
- * ----------------------------------------------------------------------------
- * Description   : Toggle selection for left or right channel
- * Inputs        : None
- * Outputs       : None
- * Assumptions   : None
- * ------------------------------------------------------------------------- */
-void DIO0_IRQHandler(void)
-{
-    static uint8_t ignore_next_dio_int = 0;
-    if (ignore_next_dio_int)
-    {
-        ignore_next_dio_int = 0;
-    }
-    else if (DIO_DATA->ALIAS[BUTTON_DIO] == 0)
-    {
-        /* Button is pressed: Ignore next interrupt.
-         * This is required to deal with the debounce circuit limitations. */
-        ignore_next_dio_int = 1;
-
-        ear_side = !ear_side;
-#if (SIMUL != 1)
-        APP_RM_Init(ear_side);
-#endif    /* if (SIMUL != 1) */
-    }
-}
 
 /* ----------------------------------------------------------------------------
  * Function      : void App_Env_Initialize(void)

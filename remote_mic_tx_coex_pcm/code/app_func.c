@@ -47,6 +47,18 @@ uint32_t asrc_cnt_prev;
 uint32_t asrc_cnt_cnst             = 0;
 bool flag_ascc_phase           = false;
 
+/* Bring-up counters. Read them over J-Link while audio is playing: a stage that
+ * stays at 0 is the stage that is not running. Remove once the PCM input path
+ * is verified. */
+volatile uint32_t dbg_cnt_pcm_isr  = 0;
+volatile uint32_t dbg_cnt_asrc_out = 0;
+volatile uint32_t dbg_cnt_enc      = 0;
+
+/* Peak |sample| of the most recently decoded PCM block. 0 means the PCM data is
+ * arriving as zeros; a value pinned near 32767 means the unpacked word is
+ * misaligned and clipping. Only updated when TX_TONE_TEST is 0. */
+volatile int32_t dbg_pcm_peak = 0;
+
 int16_t sample_in[FRAME_LENGTH]    = {
 #if 1
     0, 16, 31, 47, 63, 78, 93, 109, 124, 138, 153, 167, 182, 195, 209, 222,
@@ -157,7 +169,7 @@ uint32_t asrc_state_mem_rx[2][31];
 uint32_t cntr_sample = 0;
 PacketSide flag_packet_side = PKT_LEFT;
 int16_t spi_buf[2 * SUBFRAME_LENGTH];
-int32_t pcm_buf[4 * SUBFRAME_LENGTH];
+int32_t pcm_buf[PCM_DMA_BLOCK_WORDS];
 struct queue_t queue_tx[2] = { { NULL, NULL }, { NULL, NULL } };
 uint8_t cntr_wav    = 0;
 int16_t left_data[SUBFRAME_LENGTH];
@@ -351,6 +363,8 @@ void StoreDspEncData(uint8_t *src_addr, PacketSide side)
  * ------------------------------------------------------------------------- */
 void DspEnc0_isr(void)
 {
+    dbg_cnt_enc++;
+
     StoreDspEncData(    /*(uint8_t *)&coded_sample[cntr_enc0]*/ Dsp2CmBuff0enc,
                                                                 PKT_LEFT);
     cntr_enc0 = (cntr_enc0 + ENCODED_SUBFRAME_LENGTH) % (4 * 60);
@@ -462,7 +476,9 @@ void Asrc_reconfig(void)
                         avg_ck_outputcnt;
 
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
-    Cr = audio_sink_cnt >> 1;
+    /* audio_sink_cnt counts PCM frame-sync periods over the measurement window;
+     * scale it down to the 16 kHz encoder rate the ASRC output must match. */
+    Cr = audio_sink_cnt / PCM_DECIM_RATIO;
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
     Cr = audio_sink_cnt;
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
@@ -500,6 +516,114 @@ void Asrc_reconfig(void)
     Sys_ASRC_Config(asrc_inc_carrier, LOW_DELAY | ASRC_DEC_MODE1);
 }
 
+#if (INPUT_INTRF == PCM_RX_RAW_INPUT)
+/* ----------------------------------------------------------------------------
+ * Function      : int16_t Pcm_unpack_sample(uint32_t word)
+ * ----------------------------------------------------------------------------
+ * Description   : Convert one 32-bit PCM channel slot into a 16-bit sample.
+ *                 The source sends 16-bit data MSB first, one SCLK after the
+ *                 frame edge, so the sample occupies bits 30..15 of the slot.
+ * Inputs        : word - one PCM slot as received
+ * Outputs       : return value - the 16-bit sample
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+static int16_t Pcm_unpack_sample(uint32_t word)
+{
+    return ((int16_t)(word >> 15));
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Pcm_decode_half(uint32_t word_offset, uint8_t out_offset)
+ * ----------------------------------------------------------------------------
+ * Description   : Average one half block of PCM slots down to PCM_HALF_SAMPLES
+ *                 encoder samples per channel. Called once per half so that the
+ *                 DMA can fill the other half meanwhile — the buffer is
+ *                 circular, and reading the half the DMA is writing would
+ *                 corrupt samples.
+ * Inputs        : word_offset - first slot of the half in pcm_buf
+ *                 out_offset  - first sample slot to fill in left/right_data
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+static void Pcm_decode_half(uint32_t word_offset, uint8_t out_offset)
+{
+    uint8_t i;
+    uint8_t j;
+    int32_t sum_left;
+    int32_t sum_right;
+    int32_t peak = 0;
+    int32_t mag;
+
+    for (i = 0; i < PCM_HALF_SAMPLES; i++)
+    {
+        sum_left  = 0;
+        sum_right = 0;
+
+        for (j = 0; j < PCM_DECIM_RATIO; j++)
+        {
+            sum_left += Pcm_unpack_sample(
+                pcm_buf[word_offset + (2 * ((i * PCM_DECIM_RATIO) + j))]);
+            sum_right += Pcm_unpack_sample(
+                pcm_buf[word_offset + (2 * ((i * PCM_DECIM_RATIO) + j)) + 1]);
+        }
+
+        left_data[out_offset + i]  = (int16_t)(sum_left / PCM_DECIM_RATIO);
+        right_data[out_offset + i] = (int16_t)(sum_right / PCM_DECIM_RATIO);
+
+        mag = left_data[out_offset + i] < 0
+              ? -left_data[out_offset + i] : left_data[out_offset + i];
+        if (mag > peak)
+        {
+            peak = mag;
+        }
+        mag = right_data[out_offset + i] < 0
+              ? -right_data[out_offset + i] : right_data[out_offset + i];
+        if (mag > peak)
+        {
+            peak = mag;
+        }
+    }
+
+    dbg_pcm_peak = peak;
+}
+#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
+
+#if (TX_TONE_TEST)
+/* One full cycle of a 1 kHz tone at 16 kHz — exactly one encoder subframe, so
+ * every subframe queued is identical and the concatenation stays continuous
+ * (the last sample is -3061 and the next subframe starts at 0). Amplitude is
+ * about -12 dBFS; raise it if the tone comes out too quiet. */
+const int16_t tone_1k[SUBFRAME_LENGTH] = {
+       0,   3061,   5657,   7391,
+    8000,   7391,   5657,   3061,
+       0,  -3061,  -5657,  -7391,
+   -8000,  -7391,  -5657,  -3061
+};
+
+/* ----------------------------------------------------------------------------
+ * Function      : void Tone_feed_encoder(uint8_t side, uint8_t subframes)
+ * ----------------------------------------------------------------------------
+ * Description   : Queue `subframes` copies of the 1 kHz tone and let the encoder
+ *                 drain them. Called once per RM payload request, so what the
+ *                 encoder produces is what the next request reads.
+ * Inputs        : side      - PKT_LEFT or PKT_RIGHT
+ *                 subframes - number of subframes to queue
+ * Outputs       : None
+ * Assumptions   : None
+ * ------------------------------------------------------------------------- */
+void Tone_feed_encoder(uint8_t side, uint8_t subframes)
+{
+    uint8_t i;
+
+    for (i = 0; i < subframes; i++)
+    {
+        QueueInsert(&queue_tx[side], (uint16_t *)&tone_1k[0]);
+    }
+
+    Start_Enc_Lpdsp32_Channel(side);
+}
+#endif    /* if (TX_TONE_TEST) */
+
 /* ----------------------------------------------------------------------------
  * Function      : void Port_rx_raw_dma_isr(void)
  * ----------------------------------------------------------------------------
@@ -510,8 +634,11 @@ void Asrc_reconfig(void)
  * ------------------------------------------------------------------------- */
 void Port_rx_raw_dma_isr(void)
 {
-    uint8_t i;
+    dbg_cnt_pcm_isr++;
+
 #if (INPUT_INTRF == SPI_RX_RAW_INPUT)
+    uint8_t i;
+
     flag_packet_side = PKT_LEFT;
 
     /* E7100 sends the audio stream in 4 samples blocks.
@@ -537,77 +664,33 @@ void Port_rx_raw_dma_isr(void)
     Sys_ASRC_StatusConfig(ASRC_ENABLE);
 #else    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT) */
 
-    /* Effectively using two PCM data buffers to prevent read/write conflicts */
-    /* Packing ASRC buffer with data received from first part of the PCM RX buffer */
+#if (TX_TONE_TEST)
+    /* The tone test feeds the encoder from the RM payload callback instead, so
+     * the PCM data must not be queued as well. */
+#else    /* if (TX_TONE_TEST) */
+    /* The DMA buffer is circular, so each half is decoded while the DMA fills
+     * the other one: the counter interrupt marks the end of the first half, the
+     * complete interrupt the end of the second. Only the second half completes
+     * the subframe, so the encoder is fed there. The ASRC is deliberately not
+     * used — it shares queue_tx with this path and would interleave its own
+     * output into the encoder queue. */
     if ((Sys_DMA_Get_ChannelStatus(RX_DMA_NUM) & DMA_COUNTER_INT_STATUS) != 0)
     {
-        for (i = 0; i < SUBFRAME_LENGTH_LEFT_AND_RIGHT; i++)
-        {
-            if (i % 2 == 0)
-            {
-                left_data[i >> 1] = pcm_buf[i] >> 8;
-            }
-            else
-            {
-                right_data[i >> 1] = pcm_buf[i] >> 8;
-            }
-        }
-
-        /* Decimate the samples with ratio 2:1 */
-        for (i = 0; i < SUBFRAME_LENGTH; i += 2)
-        {
-            asrc_in_buf[i >> 1] = (left_data[i] + left_data[i + 1]) << 1;
-
-            /*sample_in[i + cntr_wav]; */
-            asrc_in_buf[SUBFRAME_LENGTH + (i >> 1)] = \
-                (right_data[i] + right_data[i + 1]) << 1;
-
-            /*sample_in[i + cntr_wav]; */
-        }
+        Pcm_decode_half(0, 0);
     }
-
-    /* Packing ASRC buffer with data received from second part of the PCM RX buffer */
     else
     {
-        for (i = 0; i < SUBFRAME_LENGTH_LEFT_AND_RIGHT; i++)
-        {
-            if (i % 2 == 0)
-            {
-                left_data[i >> 1] = \
-                    pcm_buf[i + SUBFRAME_LENGTH_LEFT_AND_RIGHT] >> 8;
-            }
-            else
-            {
-                right_data[i >> 1] = \
-                    pcm_buf[i + SUBFRAME_LENGTH_LEFT_AND_RIGHT] >> 8;
-            }
-        }
+        Pcm_decode_half(PCM_DMA_HALF_WORDS, PCM_HALF_SAMPLES);
 
-        /* Decimate the samples with ratio 2:1 */
-        for (i = 0; i < SUBFRAME_LENGTH; i += 2)
-        {
-            asrc_in_buf[(SUBFRAME_LENGTH + i) >> 1] = \
-                (left_data[i] + left_data[i + 1]) << 1;
+        QueueInsert(&queue_tx[PKT_LEFT], (uint16_t *)&left_data[0]);
+        Start_Enc_Lpdsp32_Channel(PKT_LEFT);
 
-            /*sample_in[i + cntr_wav]; */
-            asrc_in_buf[SUBFRAME_LENGTH + ((SUBFRAME_LENGTH + i) >> 1)] = \
-                (right_data[i] + right_data[i + 1]) << 1;
-
-            /*sample_in[i + cntr_wav]; */
-        }
-
-        flag_packet_side = PKT_LEFT;
-        Sys_DMA_Set_ChannelSourceAddress(ASRC_IN_IDX,
-                                         (uint32_t)&asrc_in_buf[0]);
-
-        /* Re-enable DMA for ASRC output */
-        Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-
-        /* Re-enable ASRC input DMA and start ASRC */
-        Sys_DMA_ChannelEnable(ASRC_IN_IDX);
-        Sys_ASRC_StatusConfig(ASRC_ENABLE);
+        QueueInsert(&queue_tx[PKT_RIGHT], (uint16_t *)&right_data[0]);
+        Start_Enc_Lpdsp32_Channel(PKT_RIGHT);
     }
+
     cntr_wav = (cntr_wav + SUBFRAME_LENGTH) % 160;
+#endif    /* if (TX_TONE_TEST) */
 #endif    /* if (INPUT_INTRF == SPI_RX_RAW_INPUT) */
     Sys_DMA_ClearChannelStatus(RX_DMA_NUM);
 }
@@ -637,6 +720,7 @@ void Asrc_in_dma_isr(void)
 void Asrc_out_dma_isr(void)
 {
     /*static uint8_t cntr_asrc[2] = {0, 0}; */
+    dbg_cnt_asrc_out++;
     asrc_out_buf[flag_packet_side][cntr_asrc_out[flag_packet_side]]
         = data_fifo_rec;
 

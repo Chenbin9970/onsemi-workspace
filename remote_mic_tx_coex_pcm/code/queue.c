@@ -17,6 +17,11 @@
 
 #include "queue.h"
 
+/* Bring-up counter: how often queuing an encoder subframe failed because the
+ * heap could not satisfy the allocation. Non-zero means audio is being dropped.
+ * Remove once the audio path is verified. */
+volatile uint32_t dbg_q_alloc_fail = 0;
+
 /* ----------------------------------------------------------------------------
  * Function      : void QueueInit(struct queue_t * queue, uint16_t x[])
  * ----------------------------------------------------------------------------
@@ -47,6 +52,7 @@ void QueueInsert(struct queue_t *queue, uint16_t x[])
     if (temp == NULL)
     {
         /* Memory allocation has been failed */
+        dbg_q_alloc_fail++;
         return;
     }
 
