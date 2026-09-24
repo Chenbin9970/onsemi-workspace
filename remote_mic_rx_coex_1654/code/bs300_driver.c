@@ -101,7 +101,7 @@ bool bs300_driver_init(void)
         const uint8_t *fb_ptr = NULL;
         if (bs300_settings_load(&saved_prog, saved_vol,
                                  saved_eq_low, saved_eq_mid, saved_eq_high,
-                                 saved_denoise, saved_fbonoff)) {
+                                 saved_denoise, saved_fbonoff, NULL)) {
             /* Only use settings feedback if any program was explicitly set */
             if (saved_fbonoff[0] | saved_fbonoff[1] |
                 saved_fbonoff[2] | saved_fbonoff[3])
@@ -174,7 +174,7 @@ bool bs300_driver_refresh(void)
         const uint8_t *fb_ptr = NULL;
         if (bs300_settings_load(&saved_prog, saved_vol,
                                  saved_eq_low, saved_eq_mid, saved_eq_high,
-                                 saved_denoise, saved_fbonoff)) {
+                                 saved_denoise, saved_fbonoff, NULL)) {
             if (saved_fbonoff[0] | saved_fbonoff[1] |
                 saved_fbonoff[2] | saved_fbonoff[3])
                 fb_ptr = saved_fbonoff;

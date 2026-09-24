@@ -46,24 +46,27 @@ static const uint8_t PROG_MAGIC[4] = { 'B', 'S', 'P', 'G' };
 #define SETTINGS_MAX_SLOTS    32    /* 2048 / 64 */
 
 /* Slot layout (offsets within 64B slot):
- *  0:  active_prog
- *  1-4:  volume[4]
- *  5-8:  eq_low[4]
- *  9-12: eq_mid[4]
+ *  0:     active_prog
+ *  1-4:   volume[4]
+ *  5-8:   eq_low[4]
+ *  9-12:  eq_mid[4]
  *  13-16: eq_high[4]
  *  17-20: denoise[4]
- *  21-24: magic "BSST"
- *  25-26: CRC16 XMODEM over bytes 0-24
- *  27:    version
- *  28-63: reserved (0xFF)
+ *  21-24: feedback_onoff[4]
+ *  25-27: rm_stream_addr (24-bit, little-endian)
+ *  28-31: magic "BSST"
+ *  32-33: CRC16 XMODEM over bytes 0-31
+ *  34:    version
+ *  35-63: reserved (0xFF)
  */
-#define SLOT_DATA_LEN     29   /* bytes 0-28: covered by CRC */
-#define SLOT_MAGIC_OFF    25
-#define SLOT_CRC_OFF      29
-#define SLOT_VER_OFF      31
+#define SLOT_STREAM_OFF   25
+#define SLOT_MAGIC_OFF    28
+#define SLOT_CRC_OFF      32
+#define SLOT_VER_OFF      34
+#define SLOT_DATA_LEN     32   /* bytes 0-31: data + stream addr + magic, covered by CRC */
 
 static const uint32_t SETTINGS_MAGIC_WORD = 0x54535342;  /* "BSST" little-endian */
-#define SETTINGS_VER  4  /* bumped: added feedback_onoff per-program storage */
+#define SETTINGS_VER  5  /* bumped: added rm_stream_addr (layout shifted, v4 slots invalid) */
 
 /* ---- Main Flash unlock (HIGH region: 0x00150000+) ---- */
 static void main_flash_unlock(void)
@@ -245,6 +248,7 @@ static void settings_build_slot(uint8_t active_prog,
                                   const int8_t *eq_high,
                                   const uint8_t *denoise,
                                   const uint8_t *feedback_onoff,
+                                  uint32_t stream_addr,
                                   uint8_t *slot)
 {
     uint16_t crc;
@@ -274,6 +278,10 @@ static void settings_build_slot(uint8_t active_prog,
         for (i = 0; i < 4; i++) slot[21 + i] = feedback_onoff[i];
     }
 
+    slot[SLOT_STREAM_OFF]     = (uint8_t)(stream_addr & 0xFF);
+    slot[SLOT_STREAM_OFF + 1] = (uint8_t)((stream_addr >> 8) & 0xFF);
+    slot[SLOT_STREAM_OFF + 2] = (uint8_t)((stream_addr >> 16) & 0xFF);
+
     memcpy(slot + SLOT_MAGIC_OFF, &SETTINGS_MAGIC_WORD, 4);
     slot[SLOT_VER_OFF] = SETTINGS_VER;
 
@@ -285,7 +293,7 @@ static void settings_build_slot(uint8_t active_prog,
 bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
                           const int8_t *eq_low, const int8_t *eq_mid,
                           const int8_t *eq_high, const uint8_t *denoise,
-                          const uint8_t *feedback_onoff)
+                          const uint8_t *feedback_onoff, uint32_t stream_addr)
 {
     uint32_t slot_buf[SETTINGS_SLOT_SIZE / 4];
     uint8_t *slot = (uint8_t *)slot_buf;
@@ -293,7 +301,7 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
     int i;
 
     settings_build_slot(active_prog, volume, eq_low, eq_mid, eq_high,
-                        denoise, feedback_onoff, slot);
+                        denoise, feedback_onoff, stream_addr, slot);
 
     main_flash_unlock();
 
@@ -339,14 +347,12 @@ bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
     return true;
 }
 
-bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
-                          int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
-                          uint8_t *denoise, uint8_t *feedback_onoff)
+/* Scan backwards: the latest valid slot wins. Returns NULL if none is valid.
+ * *slot_idx (optional) receives the slot number, for logging. */
+static const uint8_t *settings_find_latest(int *slot_idx)
 {
     int i;
-    uint8_t j;
 
-    /* Scan backwards: latest valid slot wins */
     for (i = SETTINGS_MAX_SLOTS - 1; i >= 0; i--) {
         const uint8_t *slot = (const uint8_t *)(SETTINGS_BASE
                                 + (uint32_t)i * SETTINGS_SLOT_SIZE);
@@ -364,39 +370,77 @@ bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
 
         if (slot[SLOT_VER_OFF] > SETTINGS_VER) continue; /* too new */
 
-        /* Found valid slot */
-        {
-            uint8_t prog = slot[0];
-            /* Program 3 is audio mode — never restore it */
-            if (active_prog != NULL) *active_prog = (prog == 3) ? 0 : prog;
+        if (slot_idx != NULL) *slot_idx = i;
+        return slot;
+    }
+    return NULL;
+}
 
-            if (volume != NULL) {
-                volume[0] = slot[1];
-                volume[1] = slot[2];
-                volume[2] = slot[3];
-                volume[3] = slot[4];
-            }
-            if (eq_low != NULL)
-                for (j = 0; j < 4; j++) eq_low[j] = (int8_t)slot[5 + j];
-            if (eq_mid != NULL)
-                for (j = 0; j < 4; j++) eq_mid[j] = (int8_t)slot[9 + j];
-            if (eq_high != NULL)
-                for (j = 0; j < 4; j++) eq_high[j] = (int8_t)slot[13 + j];
-            if (denoise != NULL)
-                for (j = 0; j < 4; j++) denoise[j] = slot[17 + j];
-            if (feedback_onoff != NULL)
-                for (j = 0; j < 4; j++) feedback_onoff[j] = slot[21 + j];
-        }
+bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
+                          int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
+                          uint8_t *denoise, uint8_t *feedback_onoff,
+                          uint32_t *stream_addr)
+{
+    uint8_t j;
+    int slot_idx = -1;
+    const uint8_t *slot = settings_find_latest(&slot_idx);
 
-        PRINTF("[BS300] settings loaded prog=%u slot=%d vol=[%u,%u,%u,%u]\r\n",
-               active_prog ? *active_prog : 0xFF, i,
-               volume ? volume[0] : 0, volume ? volume[1] : 0,
-               volume ? volume[2] : 0, volume ? volume[3] : 0);
-        return true;
+    if (slot == NULL) {
+        PRINTF("[BS300] settings not found\r\n");
+        return false;
     }
 
-    PRINTF("[BS300] settings not found\r\n");
-    return false;
+    {
+        uint8_t prog = slot[0];
+        /* Program 3 is audio mode — never restore it */
+        if (active_prog != NULL) *active_prog = (prog == 3) ? 0 : prog;
+
+        if (volume != NULL) {
+            volume[0] = slot[1];
+            volume[1] = slot[2];
+            volume[2] = slot[3];
+            volume[3] = slot[4];
+        }
+        if (eq_low != NULL)
+            for (j = 0; j < 4; j++) eq_low[j] = (int8_t)slot[5 + j];
+        if (eq_mid != NULL)
+            for (j = 0; j < 4; j++) eq_mid[j] = (int8_t)slot[9 + j];
+        if (eq_high != NULL)
+            for (j = 0; j < 4; j++) eq_high[j] = (int8_t)slot[13 + j];
+        if (denoise != NULL)
+            for (j = 0; j < 4; j++) denoise[j] = slot[17 + j];
+        if (feedback_onoff != NULL)
+            for (j = 0; j < 4; j++) feedback_onoff[j] = slot[21 + j];
+        if (stream_addr != NULL)
+            *stream_addr = (uint32_t)slot[SLOT_STREAM_OFF]
+                         | ((uint32_t)slot[SLOT_STREAM_OFF + 1] << 8)
+                         | ((uint32_t)slot[SLOT_STREAM_OFF + 2] << 16);
+    }
+
+    PRINTF("[BS300] settings loaded prog=%u slot=%d vol=[%u,%u,%u,%u]\r\n",
+           active_prog ? *active_prog : 0xFF, slot_idx,
+           volume ? volume[0] : 0, volume ? volume[1] : 0,
+           volume ? volume[2] : 0, volume ? volume[3] : 0);
+    return true;
+}
+
+/* Only the RM stream address. Separate entry point because APP_RM_Init() needs
+ * it before bs300_driver_init() (and thus the main settings load) has run —
+ * RM_Configure() latches the accessword at that point. Returns false when no
+ * valid record exists, leaving *stream_addr untouched. */
+bool bs300_settings_load_stream_addr(uint32_t *stream_addr)
+{
+    const uint8_t *slot;
+
+    if (stream_addr == NULL) return false;
+
+    slot = settings_find_latest(NULL);
+    if (slot == NULL) return false;
+
+    *stream_addr = (uint32_t)slot[SLOT_STREAM_OFF]
+                 | ((uint32_t)slot[SLOT_STREAM_OFF + 1] << 8)
+                 | ((uint32_t)slot[SLOT_STREAM_OFF + 2] << 16);
+    return true;
 }
 
 void bs300_settings_invalidate(void)

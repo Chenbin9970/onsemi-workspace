@@ -86,6 +86,10 @@ static uint8_t hdlc_stuff(uint8_t *dst, const uint8_t *src, uint8_t len)
 
 static void rempro_tx_send_next(void);
 
+/* SetStreamAddress(89) 写完 Flash 后需要复位才生效。置位后在 rempro_tx_poll()
+ * 里等 ACK 的全部分块发完（GATTC 完成事件）再复位，避免把响应掐断。 */
+static bool s_reset_pending = false;
+
 /* Build, stuff, and send an HDLC response in ≤20B chunks. */
 static void hdlc_response(uint16_t cmd_id, uint8_t flag,
                           const uint8_t *data, uint8_t data_len)
@@ -152,6 +156,14 @@ static void rempro_tx_send_next(void)
  * out in its own connection event — no ke_timer, no extra wake-ups. */
 void rempro_tx_poll(void)
 {
+    /* 本次 ACK 的最后一个分块已被协议栈确认发出（GATTC 完成事件）才复位，
+     * 否则 App 收不到「设置成功」的响应。 */
+    if (s_reset_pending && !s_tx_in_progress && rempro_env.sentSuccess) {
+        PRINTF("[REMPRO] SetStreamAddress: reset to apply\r\n");
+        Sys_Watchdog_Refresh();
+        NVIC_SystemReset();
+    }
+
     if (!s_tx_in_progress) return;
     if (ble_env.state != APPM_CONNECTED) { s_tx_in_progress = false; return; }
     if (!rempro_env.sentSuccess) return;
@@ -692,6 +704,177 @@ static void cmd_getfittingdata(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_GETFITTINGDATA, 0, d, pos);
 }
 
+/* ID:60  GetAGCOSettings — read AGCO back from program flash.
+ * Response payload (hdlc adds SYS_ID/CMD_ID/Flag):
+ *   Scene_ID, AGCO_Enable, AGCO_Threshold, AGCO_Attack(2), AGCO_Release(2) */
+static void cmd_getagcosettings(const uint8_t *data, uint8_t len)
+{
+    bs300_prog_struct_t agco;
+    uint8_t prog;
+    uint8_t d[7];
+    int8_t  th_db;
+
+    if (len < 2) { hdlc_response(CMD_GETAGCOSETTINGS, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_GETAGCOSETTINGS, 1, NULL, 0); return; }
+
+    prog = data[1];   /* Scene_ID */
+    if (prog >= 4) { hdlc_response(CMD_GETAGCOSETTINGS, 1, NULL, 0); return; }
+
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &agco) < 0) {
+        hdlc_response(CMD_GETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+
+    /* Protocol uses threshold magnitude 0~30; flash stores |dB| as well
+     * (codegen encode_agco_flash writes abs()). */
+    th_db = agco.modules.agco_threshold_db;
+    if (th_db < 0) th_db = -th_db;
+
+    d[0] = prog;                             /* Scene_ID */
+    d[1] = agco.modules.agco_enable ? 1 : 0; /* AGCO_Enable */
+    d[2] = (uint8_t)th_db;                   /* AGCO_Threshold */
+    d[3] = (uint8_t)(agco.modules.agco_attack_01ms & 0xFF);
+    d[4] = (uint8_t)(agco.modules.agco_attack_01ms >> 8);
+    d[5] = (uint8_t)(agco.modules.agco_release_01ms & 0xFF);
+    d[6] = (uint8_t)(agco.modules.agco_release_01ms >> 8);
+
+    PRINTF("[REMPRO] GetAGCOSettings: prog=%u en=%u th=%u atk=%u rel=%u\r\n",
+           prog, d[1], d[2], agco.modules.agco_attack_01ms,
+           agco.modules.agco_release_01ms);
+    hdlc_response(CMD_GETAGCOSETTINGS, 0, d, 7);
+}
+
+/* ID:61  SetAGCOSettings — per-program AGCO, flash-backed like SetGain/MPO.
+ * Request data: Device_Type, Scene_ID, AGCO_Enable, AGCO_Threshold,
+ *               AGCO_Attack(2), AGCO_Release(2)
+ * AGCO_Enable=0 is not supported: the flash decoder hardcodes enable=1
+ * (decode_agco_flash) — there is no enable bit to store — so we fail
+ * explicitly instead of silently doing nothing. */
+static void cmd_setagcosettings(const uint8_t *data, uint8_t len)
+{
+    uint8_t  dev_type;
+    uint8_t  prog;
+    uint8_t  th_mag;
+    uint16_t attack;
+    uint16_t release;
+
+    if (len < 8) { hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return; }
+    if (bs300_sync_is_busy()) { hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return; }
+
+    dev_type = data[0];
+    prog     = data[1];
+    th_mag   = data[3];
+    attack   = (uint16_t)data[4] | ((uint16_t)data[5] << 8);   /* little-endian */
+    release  = (uint16_t)data[6] | ((uint16_t)data[7] << 8);
+
+    if (prog >= 4 || th_mag > 30) {
+        hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+    if (data[2] == 0) {
+        PRINTF("[REMPRO] SetAGCOSettings: Enable=0 unsupported (待确认)\r\n");
+        hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+    if (attack  < 1)    attack  = 1;
+    if (attack  > 2500) attack  = 2500;
+    if (release < 1)    release = 1;
+    if (release > 2500) release = 2500;
+
+    /* Load flash → struct (same path as SetGain/MPO/Compress) */
+    bs300_storage_load_program(prog, bs300_work_buf);
+    if (bs300_flash_to_struct(bs300_work_buf, &s_fit_buf) < 0) {
+        hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+
+    /* agco_enable is set to 1 by the flash decoder only when the module
+     * directory contains 0x23 — i.e. it doubles as "module present". Without
+     * it there is no AGCO payload to write, so fail instead of silently
+     * writing nothing. */
+    if (s_fit_buf.modules.agco_enable == 0) {
+        PRINTF("[REMPRO] SetAGCOSettings: prog=%u has no AGCO module\r\n", prog);
+        hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+
+    s_fit_buf.modules.agco_enable       = 1;
+    s_fit_buf.modules.agco_threshold_db = (int8_t)th_mag;  /* flash stores |dB| */
+    s_fit_buf.modules.agco_attack_01ms  = attack;
+    s_fit_buf.modules.agco_release_01ms = release;
+
+    PRINTF("[REMPRO] SetAGCOSettings: dev=%u prog=%u th=-%u atk=%u rel=%u\r\n",
+           dev_type, prog, th_mag, attack, release);
+    /* flash-only; applied on next resync — same as SetGain/MPO/Compress */
+    if (fitting_commit(prog, false) < 0) {
+        hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0); return;
+    }
+    hdlc_response(CMD_SETAGCOSETTINGS, 0, NULL, 0);
+}
+
+/* ID:88  GetStreamAddress — read back the RM audio stream address (the high
+ * 24 bits of the accessword; the lowest byte is a fixed constant, see app.h).
+ * Request data: Device_Type (ignored — single-ear device)
+ * Response payload (hdlc adds SYS_ID/CMD_ID/Flag): Stream_Address(3, little-endian)
+ *
+ * Reports the *configured* value held in rm_param — i.e. what ID:89 wrote. The
+ * library's latched copy in rm_env is only refreshed by RM_Configure() at RM
+ * startup, so the two differ just in the window between a Set and the reset. */
+static void cmd_getstreamaddress(const uint8_t *data, uint8_t len)
+{
+    uint32_t addr;
+    uint8_t  d[3];
+
+    if (len < 1) { hdlc_response(CMD_GETSTREAMADDRESS, 1, NULL, 0); return; }
+
+    addr = RM_STREAM_ACCESSWORD_TO_ADDR(app_env.rm_param.accessword);
+
+    /* 小端：首字节 = 低位（0xF2CDE6 → E6 CD F2） */
+    d[0] = (uint8_t)(addr & 0xFF);
+    d[1] = (uint8_t)((addr >> 8) & 0xFF);
+    d[2] = (uint8_t)((addr >> 16) & 0xFF);
+
+    PRINTF("[REMPRO] GetStreamAddress: dev=%u addr=0x%06lX\r\n",
+           data[0], (unsigned long)addr);
+    hdlc_response(CMD_GETSTREAMADDRESS, 0, d, 3);
+}
+
+/* ID:89  SetStreamAddress — replace the high 24 bits of the RM audio stream
+ * accessword (the lowest byte stays RM_STREAM_ACCESSWORD_FIXED_LOW, see app.h).
+ * Request data: Device_Type, Stream_Address(3, little-endian)
+ * Response: Flag + status (1 = success), per the interface doc.
+ *
+ * The address is persisted to the Settings sector and the device then reboots:
+ * RM_Configure() (inside APP_RM_Init) latches the accessword into the library's
+ * rm_env at startup, so nothing short of a restart can apply it. The reset is
+ * deferred until the ACK notification has actually gone out — see
+ * s_reset_pending / rempro_tx_poll(). */
+static void cmd_setstreamaddress(const uint8_t *data, uint8_t len)
+{
+    uint32_t addr;
+    uint8_t  status = 1;
+
+    if (len < 4) { hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0); return; }
+
+    /* Device_Type (data[0]) ignored — single-ear device, as with the other
+     * setter commands. Stream_Address is little-endian (E6 CD F2 → 0xF2CDE6). */
+    addr = (uint32_t)data[1]
+         | ((uint32_t)data[2] << 8)
+         | ((uint32_t)data[3] << 16);
+
+    app_env.rm_param.accessword = RM_STREAM_ADDR_TO_ACCESSWORD(addr);
+
+    PRINTF("[REMPRO] SetStreamAddress: dev=%u addr=0x%06lX accessword=0x%08lX\r\n",
+           data[0], (unsigned long)addr,
+           (unsigned long)app_env.rm_param.accessword);
+
+    /* Persist before rebooting — a failed write must not look like success. */
+    if (!bs300_settings_persist()) {
+        PRINTF("[REMPRO] SetStreamAddress: flash save FAILED\r\n");
+        hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0);
+        return;
+    }
+
+    hdlc_response(CMD_SETSTREAMADDRESS, 0, &status, 1);
+    s_reset_pending = true;
+}
+
 /* ID:6  SetGain */
 static void cmd_setgain(const uint8_t *data, uint8_t len)
 {
@@ -1212,6 +1395,14 @@ void rempro_cmd_process(void)
             if (data) cmd_getfittingdata(data, data_len);
             else hdlc_response(CMD_GETFITTINGDATA, 1, NULL, 0);
             break;
+        case CMD_GETAGCOSETTINGS:
+            if (data) cmd_getagcosettings(data, data_len);
+            else hdlc_response(CMD_GETAGCOSETTINGS, 1, NULL, 0);
+            break;
+        case CMD_SETAGCOSETTINGS:
+            if (data) cmd_setagcosettings(data, data_len);
+            else hdlc_response(CMD_SETAGCOSETTINGS, 1, NULL, 0);
+            break;
         case CMD_GETDEVICEONOFF:
             cmd_getdeviceonoff();
             break;
@@ -1224,6 +1415,14 @@ void rempro_cmd_process(void)
         case CMD_IICDATACOMMUNITY:
             if (data) cmd_iicdatacommunity(data, data_len);
             else hdlc_response(CMD_IICDATACOMMUNITY, 1, NULL, 0);
+            break;
+        case CMD_GETSTREAMADDRESS:
+            if (data) cmd_getstreamaddress(data, data_len);
+            else hdlc_response(CMD_GETSTREAMADDRESS, 1, NULL, 0);
+            break;
+        case CMD_SETSTREAMADDRESS:
+            if (data) cmd_setstreamaddress(data, data_len);
+            else hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0);
             break;
         default:
             PRINTF("[REMPRO] unknown CMD=%u\r\n", cmd_id);

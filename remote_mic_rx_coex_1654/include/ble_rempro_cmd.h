@@ -33,8 +33,12 @@ extern "C" {
 #define CMD_GETFEEDBACKONOFF    34
 #define CMD_SETFITTINGSTATUS    37   /* ID:37 SetFittingStatus：只回成功 ACK；按状态挂起/恢复 RM */
 #define CMD_SETAUDIOMETRYSTATUS  40
+#define CMD_GETAGCOSETTINGS     60   /* ID:60 GetAGCOSettings：读回程序 AGCO 参数 */
+#define CMD_SETAGCOSETTINGS     61   /* ID:61 SetAGCOSettings：写程序 AGCO（仅支持 Enable=1） */
 #define CMD_IICDATACOMMUNITY    78
 #define CMD_FOTA_STATUS         87   /* ID:87 SetFOTAStatus：进入 FOTA 状态 */
+#define CMD_GETSTREAMADDRESS    88   /* ID:88 GetStreamAddress：读回 RM 音频流地址 */
+#define CMD_SETSTREAMADDRESS    89   /* ID:89 SetStreamAddress：设置 RM 音频流地址（accessword 低 24 位） */
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
 #define CMD_PUSH_VOLUME              4

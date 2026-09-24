@@ -77,10 +77,25 @@ extern "C"
 
 #define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
+/* RM 音频流 accessword：**最低 1 字节固定**，高 3 字节才是「音频流地址」
+ * （BLE ID:88 GetStreamAddress / ID:89 SetStreamAddress 读写）。
+ * 出厂值 0xF2CDE629 → 地址默认 0xF2CDE6、固定低字节 0x29。
+ *
+ * ⚠ 与 RSL10 SDK 样例的写法**方向相反**：样例是 `0x00cde629 | (xx << 24)`
+ * （低 3 字节固定、高 1 字节随流变，xx = 0xF2/0x0D）；本机按 App 约定改成
+ * 低 1 字节固定。改这里之前必须与 App / TX 侧对齐，否则 RM 直接搜不到。
+ *
+ * 映射只在这两个宏里定义，别在别处重算（88/89/落盘/开机初始化都走它）。 */
+#define RM_STREAM_ACCESSWORD_FIXED_LOW   0x29UL
+#define RM_STREAM_ADDR_DEFAULT           0xF2CDE6UL
+#define RM_STREAM_ADDR_MASK              0x00FFFFFFUL
+#define RM_STREAM_ADDR_TO_ACCESSWORD(a)  ((((uint32_t)(a)) << 8) | RM_STREAM_ACCESSWORD_FIXED_LOW)
+#define RM_STREAM_ACCESSWORD_TO_ADDR(w)  (((uint32_t)(w) >> 8) & RM_STREAM_ADDR_MASK)
+
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
-#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
 
 #define OUTPUT_POWER_6DBM               0
 
@@ -377,12 +392,15 @@ extern "C"
 /* 电池 DIO3(IO) 采样量程。两个锚点都取实测 raw：
  * 0%   = 7273 (≈3.19V)：实测「旧显示 40% 剩 1h、旧显示 20% 剩 15min」两点反解出的
  *                       真正关机点（原 6950≈3.0V 只是电压低点，不是关机点）；
- * 100% = 9174 (≈4.29V)：满电实测 raw（原 9374 偏高 200）。
- * 详见开发文档 §17.2。 */
+ * 100% = 9050 (≈4.21V)：原 9174 下调 124 count（按实测斜率 ≈72mV），曲线更保守、掉电更快。
+ *
+ * count ↔ mV 用**实测**标定换算：raw 9374 = 4.4V、raw 6950 = 3.0V
+ * （硬件实测，见 docs/开发/ADC电量检测开发记录.md）→ 2424 count / 1400 mV
+ * = 1.7314 count/mV。详见开发文档 §17.2 / §17.2.1。 */
 #define BAT_ADC_DIO                     3
 #define BAT_ADC_CHANNEL                 0
 #define BAT_ADC_MIN                     7273
-#define BAT_ADC_MAX                     9174
+#define BAT_ADC_MAX                     9050
 #define BAT_LVL_MAX                     100
 
 /* 低电量告警：电量低于 LOW_BATT_PCT 播提示音，首次跌破立即播，
@@ -527,6 +545,10 @@ extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const src_id);
 
 extern void APP_RM_Init(uint8_t side);
+
+/* 本次开机的 RM 流地址是否来自 Flash 持久化记录（true）/ 用的出厂默认（false）。
+ * 供 app.c 打印 `[RM] stream addr=... (from flash|default)` 用。 */
+extern bool rm_stream_addr_from_flash(void);
 
 extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
 

@@ -24,16 +24,25 @@ void bs300_storage_invalidate(uint8_t idx);
 
 /* ---- Settings (active program + volume per program) ---- */
 
-/* Save active program, volume, EQ, denoise, and feedback on/off to Settings sector. */
+/* Save active program, volume, EQ, denoise, feedback on/off, and the RM audio
+ * stream address (low 24 bits) to the Settings sector. */
 bool bs300_settings_save(uint8_t active_prog, const uint8_t *volume,
                           const int8_t *eq_low, const int8_t *eq_mid,
                           const int8_t *eq_high, const uint8_t *denoise,
-                          const uint8_t *feedback_onoff);
+                          const uint8_t *feedback_onoff, uint32_t stream_addr);
 
-/* Load active program, volume, EQ, denoise, and feedback on/off from Settings sector. */
+/* Load active program, volume, EQ, denoise, feedback on/off, and the RM audio
+ * stream address from the Settings sector. Any output pointer may be NULL. */
 bool bs300_settings_load(uint8_t *active_prog, uint8_t *volume,
                           int8_t *eq_low, int8_t *eq_mid, int8_t *eq_high,
-                          uint8_t *denoise, uint8_t *feedback_onoff);
+                          uint8_t *denoise, uint8_t *feedback_onoff,
+                          uint32_t *stream_addr);
+
+/* Load only the persisted RM audio stream address (low 24 bits). Called from
+ * APP_RM_Init(), which runs before bs300_driver_init() — hence the separate
+ * entry point. Returns false if no valid settings record exists, leaving
+ * *stream_addr untouched. */
+bool bs300_settings_load_stream_addr(uint32_t *stream_addr);
 
 /* Invalidate settings sector. */
 void bs300_settings_invalidate(void);

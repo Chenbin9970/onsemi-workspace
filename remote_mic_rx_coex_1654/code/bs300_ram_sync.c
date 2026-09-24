@@ -305,10 +305,16 @@ uint8_t bs300_get_feedback_onoff(uint8_t prog_idx)
     return s_feedback_onoff[prog_idx];
 }
 
+/* 当前 RM 音频流地址（accessword 的高 24 位），随设置一起落盘。见开发文档 §20.6。 */
+static uint32_t cur_stream_addr(void)
+{
+    return RM_STREAM_ACCESSWORD_TO_ADDR(app_env.rm_param.accessword);
+}
+
 void bs300_persist_active_prog(uint8_t prog)
 {
     bs300_settings_save(prog, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
-                        s_denoise, s_feedback_onoff);
+                        s_denoise, s_feedback_onoff, cur_stream_addr());
 }
 
 /* Initialize s_feedback_onoff from each program's flash dfbc_enable_mode bit7.
@@ -425,11 +431,12 @@ void bs300_reset_user_params(uint8_t prog_idx)
     }
 }
 
-void bs300_settings_persist(void)
+bool bs300_settings_persist(void)
 {
     uint8_t prog_to_save = (s_cur_prog == 3) ? 0 : s_cur_prog;
-    bs300_settings_save(prog_to_save, s_volumes, s_eq_low, s_eq_mid, s_eq_high,
-                        s_denoise, s_feedback_onoff);
+    return bs300_settings_save(prog_to_save, s_volumes, s_eq_low, s_eq_mid,
+                               s_eq_high, s_denoise, s_feedback_onoff,
+                               cur_stream_addr());
 }
 
 /* ================================================================

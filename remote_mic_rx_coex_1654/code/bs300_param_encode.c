@@ -435,6 +435,31 @@ static int encode_enr_flash(uint8_t *data, uint16_t max_bytes,
     }
 }
 
+/* Reverse of decode_agco_flash — mirrors codegen encode_agco_flash() (6 bytes).
+ * attack: uint12 at bits[11:0]; release: uint12 at bits[23:12]; threshold: uint8 = |dB|. */
+static int encode_agco_flash(uint8_t *data, uint16_t max_bytes,
+                             const bs300_modules_t *mod)
+{
+    uint16_t attack  = mod->agco_attack_01ms;
+    uint16_t release = mod->agco_release_01ms;
+    int32_t  th      = (int32_t)mod->agco_threshold_db;
+
+    if (max_bytes < 6) return -1;
+
+    if (attack  > 0x0FFF) attack  = 0x0FFF;
+    if (release > 0x0FFF) release = 0x0FFF;
+    if (th < 0) th = -th;
+    if (th > 0xFF) th = 0xFF;
+
+    data[0] = (uint8_t)(attack & 0xFF);
+    data[1] = (uint8_t)((attack >> 8) & 0x0F) | (uint8_t)((release & 0x0F) << 4);
+    data[2] = (uint8_t)((release >> 4) & 0xFF);
+    data[3] = (uint8_t)th;
+    data[4] = 0x00;
+    data[5] = 0x00;
+    return 6;
+}
+
 /* ================================================================
  *  ISS Flash decode
  * ================================================================ */
@@ -611,6 +636,7 @@ int bs300_struct_to_flash(const bs300_prog_struct_t *prog, uint8_t *flash_buf)
 
     uint8_t found_wdrc = 0;
     uint8_t found_enr  = 0;
+    uint8_t found_agco = 0;
 
     if (prog == NULL || flash_buf == NULL) return -1;
     if (flash_buf[1] != 0x80 || flash_buf[2] != 0x00) return -1;
@@ -658,6 +684,22 @@ int bs300_struct_to_flash(const bs300_prog_struct_t *prog, uint8_t *flash_buf)
                 memset(flash_buf + pos + new_len, 0, length_b - (uint16_t)new_len);
             found_enr = 1;
         }
+        else if (cmd_data == 0x23) {
+            /* Re-encode AGCO (6 bytes) */
+            uint8_t mod_buf[8];
+            memset(mod_buf, 0, sizeof(mod_buf));
+            new_len = encode_agco_flash(mod_buf, length_b, &prog->modules);
+            if (new_len < 0) return -1;
+            if ((uint16_t)new_len > length_b) {
+                PRINTF("[BS300] struct_to_flash: AGCO overflow %d > %u\r\n",
+                       new_len, length_b);
+                return -1;
+            }
+            memcpy(flash_buf + pos, mod_buf, (uint16_t)new_len);
+            if ((uint16_t)new_len < length_b)
+                memset(flash_buf + pos + new_len, 0, length_b - (uint16_t)new_len);
+            found_agco = 1;
+        }
         pos += length_b;
     }
 
@@ -668,6 +710,10 @@ int bs300_struct_to_flash(const bs300_prog_struct_t *prog, uint8_t *flash_buf)
     /* ENR is optional — some programs may not have it */
     if (!found_enr) {
         PRINTF("[BS300] struct_to_flash: ENR module not found (skipped)\r\n");
+    }
+    /* AGCO is optional too — absent means the write had nothing to update */
+    if (!found_agco) {
+        PRINTF("[BS300] struct_to_flash: AGCO module not found (skipped)\r\n");
     }
 
     return 0;

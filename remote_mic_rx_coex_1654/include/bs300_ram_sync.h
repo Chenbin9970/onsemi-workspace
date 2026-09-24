@@ -98,9 +98,9 @@ void bs300_sync_timer_handler(void);
  * Call from Main_Loop (NOT from timer handler). */
 void bs300_process_deferred(void);
 
-/* Persist current program + volume to flash.
- * Safe only when BLE is idle or disconnected. */
-void bs300_settings_persist(void);
+/* Persist current program + volume + RM stream address to flash.
+ * Returns false if the flash write failed. */
+bool bs300_settings_persist(void);
 
 /* ================================================================
  *  Async API (non-blocking via ke_timer)

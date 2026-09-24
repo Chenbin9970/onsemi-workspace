@@ -57,6 +57,12 @@ Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 | ADC_NEG_INPUT_GND);
 ```
 
 > 校准数据来源于硬件实测：4.4V 时 raw=9374，3.0V 时 raw=6950。DIO2/DIO3 电路相同（1M+360k 分压），校准常数不随引脚切换变化。
+>
+> ⚠ **上面这对 anchor 是「校准基准」，不是当前生效的量程值。** 当前用的是
+> `BAT_ADC_MIN=7273` / `BAT_ADC_MAX=9001`（0% 锚点按关机点重标、100% 锚点先后两次下调），
+> 以 `remote_mic_rx_coex_1654/include/app.h` 为准，推导见
+> `docs/remote_mic_rx_coex_1654_开发文档.md` §17.2 / §17.2.1。
+> 但 **100mV → count 的换算仍然用本页实测的这对**：`2424 count / 1400mV = 1.7314 count/mV`。
 
 ## 四、查询逻辑（`code/ble_rempro_cmd.c`）
 

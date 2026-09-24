@@ -21,6 +21,7 @@
 #include <printf.h>
 #ifdef BS300_ENABLE
 #include "bs300_ram_sync.h"
+#include "bs300_storage.h"
 #include "ble_rempro_cmd.h"
 #endif    /* ifdef BS300_ENABLE */
 
@@ -83,6 +84,15 @@ const uint8_t coded_sample[4 * 60] = {
 };
 uint32_t coded_cntr = 0;
 
+/* 本次开机取到的流地址是否来自 Flash 持久化记录。APP_RM_Init() 在中断屏蔽窗口内
+ * 不能打印，所以只在这里记个标志，由 app.c 主函数打印（见开发文档 §10 / §20.6）。 */
+static bool s_stream_addr_from_flash = false;
+
+bool rm_stream_addr_from_flash(void)
+{
+    return s_stream_addr_from_flash;
+}
+
 void APP_RM_Init(uint8_t side)
 {
     struct rm_callback callback;
@@ -102,7 +112,21 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));//f2
+    /* 音频流地址：BS300 可用时优先用持久化值（BLE 89 号 SetStreamAddress 写入后
+     * 复位重启），否则用默认值。必须在这里取 —— RM_Configure() 会把 accessword
+     * 拷进 rm_env，之后再改 app_env.rm_param 就无效了（见开发文档 §20.6）。
+     *
+     * ⚠ 这里**不能打印**：APP_RM_Init() 跑在 app_init.c 的 `PRIMASK` 屏蔽窗口内
+     * （341 行才开中断），而 UART 的 PRINTF 走 DMA + 完成中断，中断被屏蔽时
+     * tx_busy 清不掉 → 下一次 PRINTF 死等 `while (tx_busy == 1)`。日志改在
+     * app.c 主函数里打（见 §10）。 */
+    {
+        uint32_t stream_addr = RM_STREAM_ADDR_DEFAULT;
+#ifdef BS300_ENABLE
+        s_stream_addr_from_flash = bs300_settings_load_stream_addr(&stream_addr);
+#endif    /* ifdef BS300_ENABLE */
+        app_env.rm_param.accessword = RM_STREAM_ADDR_TO_ACCESSWORD(stream_addr);
+    }
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;

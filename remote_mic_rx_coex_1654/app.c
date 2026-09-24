@@ -106,6 +106,13 @@ int main()
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
     PRINTF("__remote_mic_rx_coex has started!\r\n");
 
+    /* RM 音频流地址（`APP_RM_Init()` 里已从 Flash 取好）—— 那里中断还没开、不能打印，
+     * 所以挪到这里报。出厂默认 0xF2CDE6；`from flash` = 回填了 BLE 89 号存的值。 */
+    PRINTF("[RM] stream addr=0x%06lX (%s)\r\n",
+           (unsigned long)RM_STREAM_ACCESSWORD_TO_ADDR(
+                               app_env.rm_param.accessword),
+           rm_stream_addr_from_flash() ? "from flash" : "default");
+
 #ifdef BS300_ENABLE
     /* BS300 driver init：I2C init + 解锁/启动序列，首启约 2-3s 阻塞（已喂狗） */
     if (!bs300_driver_init())
