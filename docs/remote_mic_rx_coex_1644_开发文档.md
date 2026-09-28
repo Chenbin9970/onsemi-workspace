@@ -1,8 +1,8 @@
-# remote_mic_rx_coex_1654 开发文档
+# remote_mic_rx_coex_1644 开发文档
 
 ## 1. 工程概述
 
-`remote_mic_rx_coex_1654` 基于 onsemi RSL10 `remote_mic_rx_coex` demo（远端麦克风接收机 / RM receiver，BLE+RM 共存）。
+`remote_mic_rx_coex_1644` 基于 onsemi RSL10 `remote_mic_rx_coex` demo（远端麦克风接收机 / RM receiver，BLE+RM 共存）。
 在 demo 基础上做了两件核心事情：
 
 1. **音频出口改为 OD 直驱**：不再把音频经 SPI0 泵给外部 Ezairo 7100 板，而是 RSL10 片上
@@ -35,7 +35,7 @@
 | RM 无线电参数对齐 sleep | include/app.h, code/rm_app.c | hoplist、accessword（见 §9） |
 | 链接修复 | code/rm_app.c | 注释与 app_func 重复的 `audio_sink_phase_cnt` 定义 |
 | bs300 内部日志放开 | code/bs300_*.c（6 个） | guard 前加 `<printf.h>`（见 §10） |
-| BLE 移植（单设备连接，对齐 sleep） | include/ble_std.h, code/ble_std.c | 设备名 Smart1654、广播/地址配置照 sleep（见 §14） |
+| BLE 移植（单设备连接，对齐 sleep） | include/ble_std.h, code/ble_std.c | 设备名 **Smart 1644 LE**、广播/地址配置照 sleep（见 §14） |
 | 修 bdaddr PUBLIC 分支 | code/ble_std.c | 读到公共地址不再被 `default_addr` 覆盖（见 §14） |
 | 新增 Rempro Service（全功能，UUID 自定 F36F…） | ble_rempro.* (新增) | HDLC 验配协议，见 §15 |
 | BLE 精简为只保留 Rempro | app.h 服务表等 | 去掉 Battery/Custom 注册与运行时电池（见 §15） |
@@ -221,7 +221,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
 - `accessword = 0x00cde629 | (0xf2<<24)` = `0xf2cde629`（rm_app.c，已从 `0x0d` 改掉）
 - 其余 rm_param（interval 10000 / retrans 5000 / audio_rate 48 / radio_rate 2000 / scan 6500 /
   preamble 0x55 / renderDelay 200 / preFetch 1300(RM_APP_REQUEST) / pkt/搜索阈值）与 sleep 一致。
-- ⚠ 这些是收发对端配对参数：发射机与 1654 接收机必须一致才能建链。
+- ⚠ 这些是收发对端配对参数：发射机与 1644 接收机必须一致才能建链。
 
 ## 10. 打印 / 调试
 
@@ -266,7 +266,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
    若仍乱码再继续（优先查波特率/UART 时钟，其次 DIO12 冲突）。
 2. RM↔BS300 流窗口目前是最简版（无 sleep 的 `saved_prog_before_rm`/debounce 状态机恢复逻辑）；
    若产品需要“RM 结束后切回原听音程序”，再补。
-3. BS300 首启读 4 程序会写主 Flash 高位 `0x0015C800+`，需确认该区域未被 1654 镜像占用（sleep 同址验证过）。
+3. BS300 首启读 4 程序会写主 Flash 高位 `0x0015C800+`，需确认该区域未被 1644 镜像占用（sleep 同址验证过）。
 4. 板上是否确有 BS300：无芯片时 `bs300_driver_init()` 应约 2 s 返回 false（不挂死），需实测确认。
 5. OD 引脚目前为 DIO0/1 差分（照 base sleep）；如换 7160test 的 DIO12 单端+内部钟方案，需另改 OD_P_DIO 与采样钟源。
 6. **【已修复】RM 重连后音频失真/断续 —— 采样钟与 BS300 I2C 共用 DIO7**
@@ -293,7 +293,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
    反而更差（摊开 = DIO7 被反复抢占、干扰窗口更长），这恰好是引脚冲突的有力旁证。
 
    **修复**：`SAMPL_CLK` 由 **DIO7 改为 DIO10**（`include/app.h`），采样钟与 BS300 I2C 物理解耦。
-   DIO10 在 1654 本为空闲脚。
+   DIO10 在 1644 本为空闲脚。
 
    **试过但不可行的替代方案**：改用片上内部源 `AUDIOSINK_CLK_SRC_DMIC_OD` —— 能解决重连失真，
    但该源不是音频速率的正确基准，ASRC 会周期性重锁，引入**间歇性噗噗声**。
@@ -347,7 +347,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
    - 与按键 / Rempro 的异步会话冲突，交给 `bs300_switch_program_async()` 自身的**抢断**机制处理
 
    > ⚠ 断链**必须**只进防抖 / 只 mute，**不要立刻切回**；否则每次闪断都要多一趟切换。
-   > （1654 未移植 sleep 的 `rm_disc_state` 防抖状态机，当前靠上面的守卫 + 抢断续传兜住。）
+   > （1644 未移植 sleep 的 `rm_disc_state` 防抖状态机，当前靠上面的守卫 + 抢断续传兜住。）
 
 8. **【已修复】延时推送（`bs300_schedule_delayed_push`）永不触发 —— 条件写成了 `state == IDLE`**
 
@@ -412,10 +412,10 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
 
 ## 13. 验证步骤
 
-1. Eclipse 导入/编译 `remote_mic_rx_coex_1654` Debug，确认链接通过（bs300 新增文件自动入编）。
+1. Eclipse 导入/编译 `remote_mic_rx_coex_1644` Debug，确认链接通过（bs300 新增文件自动入编）。
 2. 烧录后用 UART DIO5(115200) 观察：`started` → `[BS300] …` → `BS300_INIT_OK/FAIL`。
 3. 与已配对发射机建链：应听到 OD 输出音频；断链应静音；串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
-4. 手机/工具扫描应看到名为 **Smart1654** 的可连接广播（FOTA ON 时为 `Smart1654FOTA`，见 §16）；
+4. 手机/工具扫描应看到名为 **Smart 1644 LE** 的可连接广播（2026-09-24 起**不再区分 FOTA**，两个版本同名，见 §14/§16）；
    用主动扫描可读到 scan response 里的厂商段（含 MAC/耳侧，company data[10] = `0x01` 左 / `0x02` 右）。
 5. 示波器查 DIO0/DIO1（OD 差分）与 DIO8/DIO7（BS300 I2C）波形。
    **DIO7 上不应再出现采样钟**（已改到 DIO10）。
@@ -439,15 +439,16 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
 ## 14. BLE 配置（参考 sleep：单设备连接）
 
 - **单设备连接**：沿用原有 peripheral 单连接（`APP_IDX_MAX = 1`）；**未移植** sleep 的左右耳 peer、BLE Central、双耳 GATT 同步等双连逻辑；**Rempro 已单独移植**（见 §15）。
-- **设备名**：`APP_DFLT_DEVICE_NAME = "Smart1654"`（include/ble_std.h）。
+- **设备名**：`APP_DFLT_DEVICE_NAME = "Smart 1644 LE"`（include/ble_std.h，13 字符 ≤ `APP_DEVICE_NAME_LENGTH_MAX` 20）。
+  **2026-09-24 起不再按 `CFG_FOTA` 分支**（原 FOTA 版拼 `"FOTA"` 后缀用于扫描区分，现两版同名）。
 - **地址配置**（同 sleep）：`BD_ADDRESS_TYPE = BD_TYPE_PUBLIC`；`PRIVATE_BDADDR`、`APP_PUBLIC_BDADDR`、`RADIO_CLOCK_ACCURACY(500)` 均照 sleep。
 - **广播**：ADV 放设备名，可发现模式 `GAP_GEN_DISCOVERABLE`，广播间隔 160×0.625ms≈100ms（与 sleep 一致）；
   公司厂商段 18B 用 sleep 的 `APP_COMPANY_ID_DATA`，并把“耳侧 + 设备 MAC”编入 company data（同 sleep 的 `Advertising_Start`）。
-  因名字 Smart1654 为 9 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放 **scan response**（主动扫描可读）。
-- **bdaddr 修正**（code/ble_std.c）：原 1654 在 PUBLIC 分支里 `Device_Param_Read(PARAM_ID_PUBLIC_BLE_ADDRESS)` **成功后又用 `PRIVATE_BDADDR` 覆盖 bdaddr**
+  因名字（现 13 字符）加上 18B 厂商段放不进 ADV，MAC/耳侧数据改放 **scan response**（主动扫描可读）。
+- **bdaddr 修正**（code/ble_std.c）：原 1644 在 PUBLIC 分支里 `Device_Param_Read(PARAM_ID_PUBLIC_BLE_ADDRESS)` **成功后又用 `PRIVATE_BDADDR` 覆盖 bdaddr**
   （原 demo 只走 PRIVATE 分支，坏逻辑未暴露）。已照 sleep 改为：**读到即保留**，读不到回退 `co_default_bdaddr`。
 - ⚠ 注意：PUBLIC 实际 MAC 来自 NVR3 / APP 参数里已存的公共地址（sleep 为 `33:44:44:22:22:11`）；
-  1654 板若要与 sleep 同 MAC，需预烧 NVR（或后续加“为空则写入 `APP_PUBLIC_BDADDR`”的一次性逻辑，暂未加）。
+  1644 板若要与 sleep 同 MAC，需预烧 NVR（或后续加“为空则写入 `APP_PUBLIC_BDADDR`”的一次性逻辑，暂未加）。
 
 ## 15. Rempro 服务移植 & 服务精简（近期）
 
@@ -464,7 +465,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
 | 特征 ONOFF（设备→手机 Notify） | `F36F8683-ABEC-11F1-8F9E-7265746F6E65` |
 
 - 文件：`code/ble_rempro.c`（服务 DB）、`code/ble_rempro_cmd.c`（HDLC 验配协议：SetVolume/Scene/Gain/MPO/EQ/Denoise/Feedback/Audiometry/GetFitting/电池等，分块 Notify 发送），verbatim 自 sleep。**全部指令的索引表见 §20**。
-- 应用胶水：boot `RemproService_Env_Initialize`；主循环 `rempro_tx_poll()`（Kernel_Schedule 后）与连接态 `rempro_cmd_process()`；断链 `rempro_reasm_reset()`；电池量程按 1654 VBAT 采样（BAT_ADC_* 宏）。
+- 应用胶水：boot `RemproService_Env_Initialize`；主循环 `rempro_tx_poll()`（Kernel_Schedule 后）与连接态 `rempro_cmd_process()`；断链 `rempro_reasm_reset()`；电池量程按 1644 VBAT 采样（BAT_ADC_* 宏）。
 - **收发日志已开**：`ble_rempro*.c` 含 `<printf.h>`，UART DIO5 可见 `[REMPRO RX/TX frame/chunk/push]` 等。
 - 按键联动：短按音量+ / 长按切程序后推送 `rempro_push_volume_change / rempro_push_scene_change` 给手机（参考 sleep）。
 
@@ -487,7 +488,7 @@ OD。而停机挂在 `LINK_DISCONNECTED` 上，RM 库要**丢满 `pktLostHighThr
 | DFBC 开关 | `feedback_onoff[4]` | Rempro SetFeedbackOnOff |
 | RM 音频流地址 | `rm_stream_addr`（3B，24 位） | Rempro SetStreamAddress(89) —— **写完立即落盘并复位**，见 §20.6 |
 
-**存储**（[bs300_storage.c](remote_mic_rx_coex_1654/code/bs300_storage.c)）：
+**存储**（[bs300_storage.c](remote_mic_rx_coex_1644/code/bs300_storage.c)）：
 Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×32**，写满才擦一次扇区。
 槽内 = `active_prog(1) + volume(4) + eq_low/mid/high(各4) + denoise(4) + feedback_onoff(4)
 + rm_stream_addr(3)` + magic `"BSST"`(4) + CRC16-XMODEM(2) + version(1)。
@@ -497,7 +498,7 @@ Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×3
 > **v4 的旧槽在新固件下会被判为无效**（magic 位置变了）→ 升级后**首次开机**音量/EQ/降噪/DFBC
 > **一次性回到默认**，之后的新槽正常。这是格式变更的既定代价（与历史上加 `feedback_onoff` 时相同）。
 
-**恢复**（[bs300_driver.c:92-118](remote_mic_rx_coex_1654/code/bs300_driver.c#L92-L118)，`bs300_driver_init()` Step 4）：
+**恢复**（[bs300_driver.c:92-118](remote_mic_rx_coex_1644/code/bs300_driver.c#L92-L118)，`bs300_driver_init()` Step 4）：
 `bs300_settings_load()` → `bs300_restore_settings()` 灌入 RAM 影子状态 →
 `bs300_cache_boot_state()` 把值应用到 DSP 状态（音量 / EQ / 降噪 max_att 偏移 / DFBC 覆盖位）。
 
@@ -505,8 +506,8 @@ Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×3
 
 | 来源 | 时机 | 位置 |
 |---|---|---|
-| **按键**（短按音量+1 / 长按切程序） | 动作发起后**立即**同步落盘 | [app.c:96](remote_mic_rx_coex_1654/app.c#L96) |
-| **Rempro 手机命令** | 命令 handler 只改 RAM（注释 *"Flash persist deferred to BLE disconnect"*），**延后到 BLE 断链**时统一落盘 | [ble_std.c](remote_mic_rx_coex_1654/code/ble_std.c) `GAPC_DisconnectInd` |
+| **按键**（短按音量+1 / 长按切程序） | 动作发起后**立即**同步落盘 | [app.c:96](remote_mic_rx_coex_1644/app.c#L96) |
+| **Rempro 手机命令** | 命令 handler 只改 RAM（注释 *"Flash persist deferred to BLE disconnect"*），**延后到 BLE 断链**时统一落盘 | [ble_std.c](remote_mic_rx_coex_1644/code/ble_std.c) `GAPC_DisconnectInd` |
 | **Rempro SetStreamAddress(89)** | **立即**落盘，随后复位（该值只能靠重启生效，见 §20.6）—— 是唯一一条不走「延后到断链」的 Rempro 写指令 | `ble_rempro_cmd.c` `cmd_setstreamaddress()` |
 
 > Rempro 路径延后的理由：`Flash_EraseSector` 在 BLE 连接态不安全（sleep 同注释）。
@@ -520,7 +521,7 @@ Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×3
 > ⚠ **两处已知取舍**（与 sleep 相同，本次未改）：
 > 1. **连接期间直接断电会丢** —— 手机没断链就拔电，这期间改的值只在 RAM 未落盘。
 > 2. **RM 推流中手机断链** —— 此时 `s_cur_prog == 3`，`bs300_settings_persist()` 会把程序号存成
->    **0**（[bs300_ram_sync.c:426](remote_mic_rx_coex_1654/code/bs300_ram_sync.c#L426) 的 `(s_cur_prog==3)?0:` 逻辑），
+>    **0**（[bs300_ram_sync.c:426](remote_mic_rx_coex_1644/code/bs300_ram_sync.c#L426) 的 `(s_cur_prog==3)?0:` 逻辑），
 >    而非用户原本的听音程序（程序 3 是 RM 音频模式，本就不跨掉电保存）。
 
 ## 16. FOTA 空中升级（照 sleep，CFG_FOTA 开关 / fotaskill）
@@ -530,7 +531,9 @@ Main Flash **Settings sector `0x0015C800`**（2KB），**64B append-only 槽 ×3
 BLE 侧在 Rempro ROLE 写入收到首字节 `0xFD` 时 `Sys_Fota_StartDfu(1)` 进入升级（0xFD 非 HDLC 帧头 0x7E，安全保留）。
 
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
-FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `CFG_FOTA` 分支），方便扫描区分。
+~~FOTA 开启时 BLE 广播名自动带标识 `Smart1644FOTA`（`ble_std.h` 按 `CFG_FOTA` 分支），方便扫描区分。~~
+**2026-09-24 取消**：广播名不再按 `CFG_FOTA` 分支，FOTA / 非 FOTA 同名 `"Smart 1644 LE"`
+（`ble_std.h` 已去掉该 `#ifdef`）。要区分 FOTA 固件改用别的手段（如 §20 `GetDeviceConfig` 的返回）。
 
 > **当前状态：ON**（2026-09-21 切回；2026-09-20 当天曾切 OFF 做普通固件验证，同日又切 ON 过一次）。
 > `app.h` 的 `CFG_FOTA` 已放开，`startup_rsl10.S` / `sections.ld` / `.rteconfig` 三个变体文件
@@ -555,13 +558,13 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 > ```
 > 实际影响很小（`.py`/`.bin` 本来就不会被 CDT 编译），但**要出 FOTA 镜像前按 §16.1 重新 `cp` 一次**。
 
-**文件**（remote_mic_rx_coex_1654/ 下）：
+**文件**（remote_mic_rx_coex_1644/ 下）：
 - 代码：`code/fota_system.c`（SystemFotaInit→fota_init + weak Device_Param_Prepare）、
   `include/fota_system.h`；`ble_std.c` 里 `SYS_FOTA_VERSION(VER_ID,…)`（CFG_FOTA 时）生成版本符号；
   `ble_custom.c` Rempro ROLE 写 0xFD 触发。
 - RTE/Device/RSL10：`startup_rsl10_fota.S` / `_nofota.S`、`sections_fota.ld` / `_nofota.ld`
   （sections_fota 加 `__rom_start=0x00130800`、`__image_size`、FOTA rodata，不含 sleep 的 DRAM_DSP_CM3/.shared）。
-- 工程变体：`remote_mic_rx_coex_1654_fota.rteconfig` / `_nofota.rteconfig`（fota 把 Bluetooth Core 的
+- 工程变体：`remote_mic_rx_coex_1644_fota.rteconfig` / `_nofota.rteconfig`（fota 把 Bluetooth Core 的
   BLE Stack+Kernel 换成 Fota，提供 libfota.a/fota.bin/mkfotaimg.py）；`.cproject_fota`（CFG_FOTA=1 定义、
   链接 libfota.a、post-build 用 mkfotaimg.py 生成 `.fota`）与 `.cproject_nofota`。
 
@@ -570,7 +573,7 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
   ```
   cp RTE/Device/RSL10/startup_rsl10_fota.S  RTE/Device/RSL10/startup_rsl10.S
   cp RTE/Device/RSL10/sections_fota.ld      RTE/Device/RSL10/sections.ld
-  cp remote_mic_rx_coex_1654_fota.rteconfig remote_mic_rx_coex_1654.rteconfig
+  cp remote_mic_rx_coex_1644_fota.rteconfig remote_mic_rx_coex_1644.rteconfig
   cp .cproject_fota .cproject
   # app.h 取消注释 #define CFG_FOTA
   ```
@@ -578,7 +581,7 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 - OFF 构建不依赖 FOTA 库/头，行为与普通固件一致（fota_system.c 由 `--gc-sections` 剥掉）。
 
 **已验证**（FOTA ON 在 IDE 编译通过，0 错误）：链接 `libfota.a`（无 libblelib/libkelib）、post-build 产出
-`remote_mic_rx_coex_1654.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。
+`remote_mic_rx_coex_1644.fota`、`text≈115KB` 自 `0x130800` 起结束低于 `0x0015C800`（bs300 高位区）。
 **最近一次 ON 构建：2026-09-17 14:04**（`elf/fota/hex/map` 齐全，map 中 `SystemFotaInit` 落在
 `0x00136754` → 高于 `0x00130800`，重定位生效；链接库只有 `libbass.a` + `libfota.a`）。
 
@@ -588,7 +591,8 @@ FOTA 开启时 BLE 广播名自动带标识 `Smart1654FOTA`（`ble_std.h` 按 `C
 
 > ⚠ **FOTA ON 下的已知告警（既有，非本次引入）**：`ble_std.c` 的 `SYS_FOTA_VERSION(VER_ID,…)` 会报
 > `initializer-string for array of 'char' is too long` —— `Sys_Boot_app_id_t` 是 **`char[6]`**，而
-> `VER_ID = "Smart1654"` 有 10 字节，被截断（无 NUL）。参考工程 sleep 用的是 `"BS300"`（正好 6 字节）。
+> `VER_ID = "Smart1644"` 有 10 字节，被截断（无 NUL）。**2026-09-24 改名时特意保留未动** ——
+> 它是 FOTA 镜像标识符、不是广播名；改了也仍会被截断，且可能影响 bootloader 版本校验。参考工程 sleep 用的是 `"BS300"`（正好 6 字节）。
 > 1664 同样如此（`"Smart1664"`）。两个工程都只在 FOTA 模式下暴露。是否影响 bootloader 的版本校验
 > **未定**（镜像与比较用同一串被截断的常量时通常自洽）—— 若 FOTA 升级出问题，从这里先查。
 
@@ -709,7 +713,7 @@ grep -o 'excluding="[^"]*' .cproject | grep -c rsl10_protocol.c
   - 之后仍低于 20% → 每 `LOW_BATT_CHECK_MS`（app.h，=240000ms=4min）重复一次
     （累加步长 = `BAT_SAMPLE_TICKS × 200` = 60s，即每第 4 次判定播一次）；
   - 回到 ≥20% → `seen`/`elapsed_ms` 复位，下次跌破重新立即播。
-  - 跟随电池采样（而不是独立挂在 `Main_Loop`）的两个原因：① 1654 的 `APP_Timer` 无条件每
+  - 跟随电池采样（而不是独立挂在 `Main_Loop`）的两个原因：① 1644 的 `APP_Timer` 无条件每
     200ms re-arm，不像 sleep 要按 RM/BLE 状态分别累加时间；② `app_env.batt_lvl` 开机是 0
     （`App_Initialize` memset），挂在「首次采样之后」天然避开开机误报。
 - **提示音命令**：`bs300_play_low_batt_tone()`（bs300_ram_sync.c）→ 直接 I2C 写 **`0xFC12F2`**，
@@ -972,7 +976,7 @@ static void rm_bs300_switch_done(void)
 - **未移植 sleep 的 `rm_disc_state` 防抖状态机**：闪断会变成「排队切3 → abort → 排队切回 →
   abort → 排队切3」，**能收敛**，只是多几轮 diff 计算与 I2C。加防抖可省掉这些 churn。
   ⚠ 若要移植：sleep 是按主循环迭代次数累加（`RM_DISC_DEBOUNCE_THRESHOLD = 500`），
-  而 1654 主循环末尾有 `SYS_WAIT_FOR_EVENT`，迭代频率不固定，**照搬会算不准**；
+  而 1644 主循环末尾有 `SYS_WAIT_FOR_EVENT`，迭代频率不固定，**照搬会算不准**；
   应改用已有的 200ms `APP_Timer` 计 tick。
 
 ### 19.5 断开切回的过渡音量（先压到 5，2s 后回设定值）
@@ -1024,7 +1028,7 @@ RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到�
 | 项 | 值 |
 |---|---|
 | 分帧 | HDLC：`7E` 起止，`7E→7D 5E`、`7D→7D 5D` 转义 |
-| FCS | **8-bit 字节加和**（`hdlc_fcs`，[ble_rempro_cmd.c:66](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L66)），非 CRC |
+| FCS | **8-bit 字节加和**（`hdlc_fcs`，[ble_rempro_cmd.c:66](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L66)），非 CRC |
 | 上行帧体 | `SYS_ID(0) + CMD_ID(2, 小端) + data[] + FCS` |
 | 响应帧体 | `SYS_ID(0) + CMD_ID(2, 小端) + Flag + data[] + FCS`；**Flag=0 表示成功** |
 | 主动推送 | `SYS_ID=1`（`HDLC_SYS_ID_DEVICE`），见 §20.3 |
@@ -1037,7 +1041,7 @@ RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到�
 
 - `len` 不足 → 回 `Flag=1`，不做任何事；
 - 会写 BS300 的指令先查 `bs300_sync_is_busy()`（有未完成的异步会话时回 `Flag=1`）；
-- **`Device_Type` 字段一律忽略** —— 1654 是单耳设备，1/2/3/6/7/9/21/37/40/60/61/89 号等
+- **`Device_Type` 字段一律忽略** —— 1644 是单耳设备，1/2/3/6/7/9/21/37/40/60/61/89 号等
   都只把它读进变量或直接不读，只有 2 号 `SetVolume` 用它区分左右（`dev_type==0||1` 才下发）。
 
 ### 20.2 指令总表（App → 设备，SYS_ID=0）
@@ -1047,32 +1051,32 @@ RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到�
 
 | ID | 名称 | 请求 data[] | 响应 data[] | Handler | 存储/副作用 | 相关章节 |
 |---|---|---|---|---|---|---|
-| 2 | SetVolume | Device_Type, Volume, Volume2 | status=1 | [cmd_setvolume:324](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L324) | RAM `s_volumes[prog]` + `0x8060B2` 下发；断链落盘 | §15.1 |
-| 3 | SetDeviceOnOff | Device_Type, OnOff | status=1 | [cmd_setdeviceonoff:349](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L349) | `bs300_active()` / `bs300_mute()` | §18 |
-| 4 | GetBatteryInfo | — | Left_Battery, Right_Battery(=0) | [cmd_getbatteryinfo:490](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L490) | 只读；DIO3 ADC 现采 | §17 |
-| 5 | SetFeedbackOnOff | Device_Type, Scene_ID, OnOff | status=1 | [cmd_setfeedbackonoff:397](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L397) | RAM `s_feedback_onoff` → 覆写 `dfbc_enable_mode` bit7；断链落盘 | §15.1 |
-| 6 | SetGain | Device_Type, Scene_ID, (Spectrum, Raw)\* | — (Flag=0) | [cmd_setgain:827](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L827) | **程序 Flash**；`bin_gain = Raw-27` | — |
-| 7 | SetMPO | Device_Type, Scene_ID, (Channel, Raw)\* | — (Flag=0) | [cmd_setmpo:873](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L873) | **程序 Flash**；`lmt_th = Raw+30` | — |
-| 8 | SetCompressRatio | Device_Type, Scene_ID, Turn_Number, (Channel, Step)\* | — (Flag=0) | [cmd_setcompressratio:915](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L915) | **程序 Flash**；Turn 0→`kp1_r_idx`，否则`kp2_r_idx` | — |
-| 9 | SetDenoise | Device_Type, Scene_ID, Level(0-5) | — (Flag=0) | [cmd_setdenoise:966](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L966) | RAM `s_denoise`（`max_att += level*3`）+ 重同步；断链落盘 | §15.1 |
-| 10 | SetEqualizer | Device_Type, EQ_Type(0低/1中/2高), dB[-5,5] | status=1 | [cmd_setequalizer:590](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L590) | RAM `s_eq_*` + `bs300_set_eq_async()`；断链落盘 | §15.1 |
-| 13 | SetPlayVoice | Device_Type, Spectrum(0-16), Decibel(20-100) | status | [cmd_setplayvoice:1003](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1003) | 纯音：Mute → ITG 写 → Active | `docs/开发/测听功能.md` |
-| 14 | SetStopVoice | — | status=1 | [cmd_setstopvoice:1032](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1032) | Mute → ITG clear | `docs/开发/测听功能.md` |
-| 15 | GetCurrentScene | — | prog + vol + denoise + EQ×2（12B） | [cmd_getcurrentscene:534](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L534) | **只读** | §18 白名单 |
-| 16 | SetCurrentScene | Device_Type, Scene_ID | status=1 | [cmd_setcurrentscene:515](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L515) | `bs300_switch_program_async()` + 落盘 | §19 / §15.1 |
-| 17 | GetFittingData | Device_Type, Scene_ID | Flash raw：gain[32]+CR[32]+MPO[16]（86B） | [cmd_getfittingdata:654](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L654) | **只读**（读程序 Flash） | — |
-| 21 | SetMuteData | Device_Type, Mute(非0=静音) | status=1 | [cmd_setmutedata:375](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L375) | `bs300_mute()`/`active()`。⚠ **方向与 3 号相反** | §18 |
-| 26 | GetDeviceConfig | — | 版本/程序数/MAC/Product_Type/Chip_Type…（32B） | [cmd_getdeviceconfig:559](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L559) | **只读**；`Product_Type` 与广播包必须一致 | §18 白名单 |
-| 33 | GetDeviceOnOff | — | Left_OnOff, Right_OnOff | [cmd_getdeviceonoff:448](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L448) | **只读** RAM `s_device_on` | — |
-| 34 | GetFeedbackOnOff | Device_Type, Scene_ID | Left_OnOff, Right_OnOff | [cmd_getfeedbackonoff:458](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L458) | **只读** | — |
-| 37 | SetFittingStatus | Device_Type, Fitting_Status | ack=1 | [cmd_setfittingstatus:1084](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1084) | 按状态**挂起/恢复 RM** | §18 / §18.1 |
-| 40 | SetAudiometryStatus | Device_Type, Status(0进/1退) | ack=1 | [cmd_setaudiometrystatus:1112](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1112) | 测听 enter/exit + 挂起 RM + 延时推送 | §18 / §18.1 |
-| 60 | GetAGCOSettings | Device_Type, Scene_ID | Scene_ID, Enable, Thr, Atk(2), Rel(2)（7B） | [cmd_getagcosettings:698](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L698) | **只读**（读程序 Flash） | **§20.5（本次新增）** |
-| 61 | SetAGCOSettings | Device_Type, Scene_ID, Enable, Thr, Atk(2), Rel(2) | — (Flag=0) | [cmd_setagcosettings:741](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L741) | **程序 Flash**（新增 AGCO 反编码） | **§20.5（本次新增）** |
-| 78 | IICDataCommunity | Device_Type, Data_Number(=1), Data_Length(2), SUB_CMD_Type, payload | 原样回显 | [cmd_iicdatacommunity:1153](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1153) | ⚠ **真 I2C 中转未实现，目前只回显** | — |
-| 87 | SetFOTAStatus | Device_Type | Flag + status | [cmd_fota_status:1207](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L1207) | `CFG_FOTA` 开→`Sys_Fota_StartDfu(1)`；关→不支持 | §16 / §18 |
-| 88 | GetStreamAddress | Device_Type | Stream_Address(3, 小端) | [cmd_getstreamaddress:819](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L819) | **只读**，回 accessword 的**高 24 位** | **§20.6（本次新增）** |
-| 89 | SetStreamAddress | Device_Type, Stream_Address(3, 小端) | Flag + status | [cmd_setstreamaddress:847](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L847) | 改 `rm_param.accessword` + **立即落盘 Settings** → **复位**；开机回填 | **§20.6（本次新增）** |
+| 2 | SetVolume | Device_Type, Volume, Volume2 | status=1 | [cmd_setvolume:324](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L324) | RAM `s_volumes[prog]` + `0x8060B2` 下发；断链落盘 | §15.1 |
+| 3 | SetDeviceOnOff | Device_Type, OnOff | status=1 | [cmd_setdeviceonoff:349](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L349) | `bs300_active()` / `bs300_mute()` | §18 |
+| 4 | GetBatteryInfo | — | Left_Battery, Right_Battery(=0) | [cmd_getbatteryinfo:490](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L490) | 只读；DIO3 ADC 现采 | §17 |
+| 5 | SetFeedbackOnOff | Device_Type, Scene_ID, OnOff | status=1 | [cmd_setfeedbackonoff:397](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L397) | RAM `s_feedback_onoff` → 覆写 `dfbc_enable_mode` bit7；断链落盘 | §15.1 |
+| 6 | SetGain | Device_Type, Scene_ID, (Spectrum, Raw)\* | — (Flag=0) | [cmd_setgain:827](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L827) | **程序 Flash**；`bin_gain = Raw-27` | — |
+| 7 | SetMPO | Device_Type, Scene_ID, (Channel, Raw)\* | — (Flag=0) | [cmd_setmpo:873](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L873) | **程序 Flash**；`lmt_th = Raw+30` | — |
+| 8 | SetCompressRatio | Device_Type, Scene_ID, Turn_Number, (Channel, Step)\* | — (Flag=0) | [cmd_setcompressratio:915](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L915) | **程序 Flash**；Turn 0→`kp1_r_idx`，否则`kp2_r_idx` | — |
+| 9 | SetDenoise | Device_Type, Scene_ID, Level(0-5) | — (Flag=0) | [cmd_setdenoise:966](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L966) | RAM `s_denoise`（`max_att += level*3`）+ 重同步；断链落盘 | §15.1 |
+| 10 | SetEqualizer | Device_Type, EQ_Type(0低/1中/2高), dB[-5,5] | status=1 | [cmd_setequalizer:590](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L590) | RAM `s_eq_*` + `bs300_set_eq_async()`；断链落盘 | §15.1 |
+| 13 | SetPlayVoice | Device_Type, Spectrum(0-16), Decibel(20-100) | status | [cmd_setplayvoice:1003](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1003) | 纯音：Mute → ITG 写 → Active | `docs/开发/测听功能.md` |
+| 14 | SetStopVoice | — | status=1 | [cmd_setstopvoice:1032](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1032) | Mute → ITG clear | `docs/开发/测听功能.md` |
+| 15 | GetCurrentScene | — | prog + vol + denoise + EQ×2（12B） | [cmd_getcurrentscene:534](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L534) | **只读** | §18 白名单 |
+| 16 | SetCurrentScene | Device_Type, Scene_ID | status=1 | [cmd_setcurrentscene:515](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L515) | `bs300_switch_program_async()` + 落盘 | §19 / §15.1 |
+| 17 | GetFittingData | Device_Type, Scene_ID | Flash raw：gain[32]+CR[32]+MPO[16]（86B） | [cmd_getfittingdata:654](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L654) | **只读**（读程序 Flash） | — |
+| 21 | SetMuteData | Device_Type, Mute(非0=静音) | status=1 | [cmd_setmutedata:375](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L375) | `bs300_mute()`/`active()`。⚠ **方向与 3 号相反** | §18 |
+| 26 | GetDeviceConfig | — | 版本/程序数/MAC/Product_Type/Chip_Type…（32B） | [cmd_getdeviceconfig:559](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L559) | **只读**；`Product_Type` 与广播包必须一致 | §18 白名单 |
+| 33 | GetDeviceOnOff | — | Left_OnOff, Right_OnOff | [cmd_getdeviceonoff:448](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L448) | **只读** RAM `s_device_on` | — |
+| 34 | GetFeedbackOnOff | Device_Type, Scene_ID | Left_OnOff, Right_OnOff | [cmd_getfeedbackonoff:458](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L458) | **只读** | — |
+| 37 | SetFittingStatus | Device_Type, Fitting_Status | ack=1 | [cmd_setfittingstatus:1084](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1084) | 按状态**挂起/恢复 RM** | §18 / §18.1 |
+| 40 | SetAudiometryStatus | Device_Type, Status(0进/1退) | ack=1 | [cmd_setaudiometrystatus:1112](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1112) | 测听 enter/exit + 挂起 RM + 延时推送 | §18 / §18.1 |
+| 60 | GetAGCOSettings | Device_Type, Scene_ID | Scene_ID, Enable, Thr, Atk(2), Rel(2)（7B） | [cmd_getagcosettings:698](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L698) | **只读**（读程序 Flash） | **§20.5（本次新增）** |
+| 61 | SetAGCOSettings | Device_Type, Scene_ID, Enable, Thr, Atk(2), Rel(2) | — (Flag=0) | [cmd_setagcosettings:741](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L741) | **程序 Flash**（新增 AGCO 反编码） | **§20.5（本次新增）** |
+| 78 | IICDataCommunity | Device_Type, Data_Number(=1), Data_Length(2), SUB_CMD_Type, payload | 原样回显 | [cmd_iicdatacommunity:1153](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1153) | ⚠ **真 I2C 中转未实现，目前只回显** | — |
+| 87 | SetFOTAStatus | Device_Type | Flag + status | [cmd_fota_status:1207](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L1207) | `CFG_FOTA` 开→`Sys_Fota_StartDfu(1)`；关→不支持 | §16 / §18 |
+| 88 | GetStreamAddress | Device_Type | Stream_Address(3, 小端) | [cmd_getstreamaddress:819](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L819) | **只读**，回 accessword 的**高 24 位** | **§20.6（本次新增）** |
+| 89 | SetStreamAddress | Device_Type, Stream_Address(3, 小端) | Flag + status | [cmd_setstreamaddress:847](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L847) | 改 `rm_param.accessword` + **立即落盘 Settings** → **复位**；开机回填 | **§20.6（本次新增）** |
 
 \* `(X, Y)\*` 表示「可重复的 (X, Y) 对」，个数由 `len` 推出。
 
@@ -1080,16 +1084,16 @@ RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到�
 
 | 路径 | 代表指令 | 何时可见效果 |
 |---|---|---|
-| 程序 Flash（`fitting_commit(prog, false)`，[ble_rempro_cmd.c:629](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L629)） | 6/7/8/**61** | **下次切到该程序时**（写的是 Flash，不立即下发 DSP） |
+| 程序 Flash（`fitting_commit(prog, false)`，[ble_rempro_cmd.c:629](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L629)） | 6/7/8/**61** | **下次切到该程序时**（写的是 Flash，不立即下发 DSP） |
 | RAM 影子 + 异步下发 | 2/5/9/10 | 立即（`bs300_*_async()`），断链时落盘 |
 
 ### 20.3 设备 → App 主动推送（SYS_ID=1）
 
 | ID | 名称 | 推送 data[] | 触发点 | 函数 |
 |---|---|---|---|---|
-| 4 | `CMD_PUSH_VOLUME` | prog, Device_Type=1, Volume, Volume2 | 按键短按音量 / SetVolume | [rempro_push_volume_change:281](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L281) |
-| 5 | `CMD_PUSH_SCENE` | Scene_ID | 按键长按切程序 / RM 建链切 3 / RM 断开恢复原程序 | [rempro_push_scene_change:271](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L271) |
-| 6 | `CMD_PUSH_INITIAL_STATUS` | Device_Type=1, Initial_Status(2=初始化完成 / 1=未初始化) | 测听进入 / 退出后延时 2s | [rempro_push_initial_status_done:296](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L296) / [rempro_push_audiometry_exit:309](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c#L309) |
+| 4 | `CMD_PUSH_VOLUME` | prog, Device_Type=1, Volume, Volume2 | 按键短按音量 / SetVolume | [rempro_push_volume_change:281](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L281) |
+| 5 | `CMD_PUSH_SCENE` | Scene_ID | 按键长按切程序 / RM 建链切 3 / RM 断开恢复原程序 | [rempro_push_scene_change:271](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L271) |
+| 6 | `CMD_PUSH_INITIAL_STATUS` | Device_Type=1, Initial_Status(2=初始化完成 / 1=未初始化) | 测听进入 / 退出后延时 2s | [rempro_push_initial_status_done:296](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L296) / [rempro_push_audiometry_exit:309](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L309) |
 
 推送均先查 `ble_env.state == APPM_CONNECTED`，未连接直接丢弃。
 
@@ -1118,9 +1122,9 @@ SetGain/MPO/Compress 同一条路，不是 9 号 SetDenoise 的 RAM 缓存路）
 
 **为落 Flash 补的反向编码**（原缺失，不补则 Set 会静默空写）：
 
-- 新增 `encode_agco_flash()`（[bs300_param_encode.c:438](remote_mic_rx_coex_1654/code/bs300_param_encode.c#L438)）——
+- 新增 `encode_agco_flash()`（[bs300_param_encode.c:438](remote_mic_rx_coex_1644/code/bs300_param_encode.c#L438)）——
   逐行翻译 codegen `flash_write.py:encode_agco_flash()`，**6 字节**，threshold 存 `|dB|`；
-- `bs300_struct_to_flash()` 增加 `cmd_data == 0x23` 分支（[bs300_param_encode.c:687](remote_mic_rx_coex_1654/code/bs300_param_encode.c#L687)）——
+- `bs300_struct_to_flash()` 增加 `cmd_data == 0x23` 分支（[bs300_param_encode.c:687](remote_mic_rx_coex_1644/code/bs300_param_encode.c#L687)）——
   此前该函数只反编码 WDRC(`0x12`) 与 ENR(`0x1C`)，**AGCO 根本不会写回 Flash**。
 
 **用 ground truth 核对过的布局**：AGCO 模块目录字节 `0x23`、长度 `23 00 02` → 6 字节
@@ -1156,7 +1160,7 @@ SetGain/MPO/Compress 同一条路，不是 9 号 SetDenoise 的 RAM 缓存路）
 设置 RM 音频流的 accessword **高 24 位**（即「音频流地址」），用于与 TX 端的流标识对齐。
 **写 Flash 掉电保存 → 立即复位 → 开机重新读**，是本指令的完整闭环。
 
-**accessword 的构成**（宏在 [app.h:80](remote_mic_rx_coex_1654/include/app.h#L80)）：
+**accessword 的构成**（宏在 [app.h:80](remote_mic_rx_coex_1644/include/app.h#L80)）：
 
 | 位 | 含义 |
 |---|---|
@@ -1190,13 +1194,13 @@ SetGain/MPO/Compress 同一条路，不是 9 号 SetDenoise 的 RAM 缓存路）
 | 4 | 落盘**失败** → 回 `Flag=1`，**不复位**（不把失败伪装成成功） | 同上 |
 | 5 | 成功 → 回 `Flag=0 + status=1`，置 `s_reset_pending` | 同上 |
 | 6 | `rempro_tx_poll()` 里等 **ACK 最后一个分块被协议栈确认发出**（`!s_tx_in_progress && rempro_env.sentSuccess`）→ `NVIC_SystemReset()` | `ble_rempro_cmd.c` |
-| 7 | 重启后 `APP_RM_Init()` 调 `bs300_settings_load_stream_addr()` 取回地址（无记录则用默认），**再** `RM_Configure()` | [rm_app.c:112](remote_mic_rx_coex_1654/code/rm_app.c#L112) |
+| 7 | 重启后 `APP_RM_Init()` 调 `bs300_settings_load_stream_addr()` 取回地址（无记录则用默认），**再** `RM_Configure()` | [rm_app.c:112](remote_mic_rx_coex_1644/code/rm_app.c#L112) |
 | 8 | 该地址在 `app.c` 主函数里打印一行 `[RM] stream addr=0x...... (from flash\|default)` —— **不能在 `APP_RM_Init` 里打，那里中断未开会死锁**，见 §10 的 ⛔ 提示。`from flash`/`default` 由 `rm_stream_addr_from_flash()` 给出，用于一眼区分「回填成功」还是「用了默认」 | `app.c` + `rm_app.c` |
 
 > **第 6 步为什么不能直接复位**：响应走分块 Notify，复位太早会把 ACK 掐断，App 会当成
 > 「无响应」而重发。等 GATTC 完成事件是唯一可靠的信号。
 > **第 7 步为什么在 `APP_RM_Init` 里而不是 BS300 的加载流程里**：`APP_RM_Init()` 在
-> [app_init.c:303](remote_mic_rx_coex_1654/code/app_init.c#L303) 早期就被调用，早于
+> [app_init.c:303](remote_mic_rx_coex_1644/code/app_init.c#L303) 早期就被调用，早于
 > `bs300_driver_init()` —— 等那边加载就太晚了，`RM_Configure()` 早把旧值拷走了。
 
 > ⚠ **边角情况**：如果 App 在 ACK 发出前就断链，`sentSuccess` 不会置位 → **本次不复位**。
@@ -1244,16 +1248,16 @@ SetGain/MPO/Compress 同一条路，不是 9 号 SetDenoise 的 RAM 缓存路）
 
 | 文件 | 改动 |
 |---|---|
-| [include/ble_rempro_cmd.h](remote_mic_rx_coex_1654/include/ble_rempro_cmd.h) | 新增 `CMD_GETAGCOSETTINGS 60` / `CMD_SETAGCOSETTINGS 61` / `CMD_GETSTREAMADDRESS 88` / `CMD_SETSTREAMADDRESS 89` |
-| [code/ble_rempro_cmd.c](remote_mic_rx_coex_1654/code/ble_rempro_cmd.c) | 新增 4 个 handler（`:698` / `:741` / `:819` / `:847`）+ 分发 switch 4 个 case（`:1418` 起）；新增 `s_reset_pending` 与 `rempro_tx_poll()` 里的延迟复位 |
-| [code/bs300_param_encode.c](remote_mic_rx_coex_1654/code/bs300_param_encode.c) | 新增 `encode_agco_flash()`（`:438`）；`bs300_struct_to_flash()` 加 `0x23` 分支（`:687`） |
-| [code/bs300_storage.c](remote_mic_rx_coex_1654/code/bs300_storage.c) / [.h](remote_mic_rx_coex_1654/include/bs300_storage.h) | Settings 槽加 `rm_stream_addr`(3B)，`SETTINGS_VER` 4→5；`save/load` 加参数；新增 `bs300_settings_load_stream_addr()`；抽出 `settings_find_latest()` |
-| [code/bs300_ram_sync.c](remote_mic_rx_coex_1654/code/bs300_ram_sync.c) / [.h](remote_mic_rx_coex_1654/include/bs300_ram_sync.h) | 两处 `settings_save` 带上流地址（`cur_stream_addr()`）；`bs300_settings_persist()` 改为返回 `bool` |
-| [code/bs300_driver.c](remote_mic_rx_coex_1654/code/bs300_driver.c) | 两处 `bs300_settings_load()` 补 `NULL`（BS300 不关心流地址） |
-| [include/app.h](remote_mic_rx_coex_1654/include/app.h) | 新增 `RM_STREAM_ACCESSWORD_FIXED_LOW` / `RM_STREAM_ADDR_DEFAULT` / `_MASK` + 两个映射宏 `RM_STREAM_ADDR_TO_ACCESSWORD` / `RM_STREAM_ACCESSWORD_TO_ADDR` |
-| [code/rm_app.c](remote_mic_rx_coex_1654/code/rm_app.c) | `APP_RM_Init()` 的 accessword 改为**从 Flash 读**（带默认回退 + 宏化前缀） |
-| [app.c](remote_mic_rx_coex_1654/app.c) | 主函数启动日志后加一行 `[RM] stream addr=0x%06lX (from flash\|default)`（`APP_RM_Init` 里不能打印，见 §10 ⛔） |
-| [code/rm_app.c](remote_mic_rx_coex_1654/code/rm_app.c) | 另加 `rm_stream_addr_from_flash()`（+ `app.h` 声明）供上一条日志区分来源 |
+| [include/ble_rempro_cmd.h](remote_mic_rx_coex_1644/include/ble_rempro_cmd.h) | 新增 `CMD_GETAGCOSETTINGS 60` / `CMD_SETAGCOSETTINGS 61` / `CMD_GETSTREAMADDRESS 88` / `CMD_SETSTREAMADDRESS 89` |
+| [code/ble_rempro_cmd.c](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c) | 新增 4 个 handler（`:698` / `:741` / `:819` / `:847`）+ 分发 switch 4 个 case（`:1418` 起）；新增 `s_reset_pending` 与 `rempro_tx_poll()` 里的延迟复位 |
+| [code/bs300_param_encode.c](remote_mic_rx_coex_1644/code/bs300_param_encode.c) | 新增 `encode_agco_flash()`（`:438`）；`bs300_struct_to_flash()` 加 `0x23` 分支（`:687`） |
+| [code/bs300_storage.c](remote_mic_rx_coex_1644/code/bs300_storage.c) / [.h](remote_mic_rx_coex_1644/include/bs300_storage.h) | Settings 槽加 `rm_stream_addr`(3B)，`SETTINGS_VER` 4→5；`save/load` 加参数；新增 `bs300_settings_load_stream_addr()`；抽出 `settings_find_latest()` |
+| [code/bs300_ram_sync.c](remote_mic_rx_coex_1644/code/bs300_ram_sync.c) / [.h](remote_mic_rx_coex_1644/include/bs300_ram_sync.h) | 两处 `settings_save` 带上流地址（`cur_stream_addr()`）；`bs300_settings_persist()` 改为返回 `bool` |
+| [code/bs300_driver.c](remote_mic_rx_coex_1644/code/bs300_driver.c) | 两处 `bs300_settings_load()` 补 `NULL`（BS300 不关心流地址） |
+| [include/app.h](remote_mic_rx_coex_1644/include/app.h) | 新增 `RM_STREAM_ACCESSWORD_FIXED_LOW` / `RM_STREAM_ADDR_DEFAULT` / `_MASK` + 两个映射宏 `RM_STREAM_ADDR_TO_ACCESSWORD` / `RM_STREAM_ACCESSWORD_TO_ADDR` |
+| [code/rm_app.c](remote_mic_rx_coex_1644/code/rm_app.c) | `APP_RM_Init()` 的 accessword 改为**从 Flash 读**（带默认回退 + 宏化前缀） |
+| [app.c](remote_mic_rx_coex_1644/app.c) | 主函数启动日志后加一行 `[RM] stream addr=0x%06lX (from flash\|default)`（`APP_RM_Init` 里不能打印，见 §10 ⛔） |
+| [code/rm_app.c](remote_mic_rx_coex_1644/code/rm_app.c) | 另加 `rm_stream_addr_from_flash()`（+ `app.h` 声明）供上一条日志区分来源 |
 | `.claude/skills/bs300/docs/plans/agco_flash_encode.md` | 新增：AGCO Flash 反编码接口计划（含 ground truth 核对记录） |
 
 **编译状态**：仅改动源码，**未编译、未上板**。验证项见 §20.5 / §20.6 各自的清单。

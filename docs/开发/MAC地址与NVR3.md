@@ -7,7 +7,7 @@
 | 问题 | 答案 |
 |---|---|
 | 本机 MAC 存哪 | NVR3 的 `DEVICE_INFO_BLUETOOTH_ADDR`，绝对地址 `0x00081000`，6 字节（**小端**） |
-| 为什么 1654 正常 | 没被解锁过，NVR3 完好，各自 MAC 不同 |
+| 为什么 1644 正常 | 没被解锁过，NVR3 完好，各自 MAC 不同 |
 | 为什么 1664 / 7160SL 板 MAC 全一样 | 解锁 7160SL 时整片擦除**含 NVR3**，固件回退到常量 `co_default_bdaddr` |
 | 那个常量是什么 | `01 23 45 67 89 AB`（小端）→ MAC **AB:89:67:45:23:01** |
 | 常量在哪 | SDK 的 BLE 内核库 `libkelib.a` 里，**每个 build 都一样**，所以所有板必然同 MAC |
@@ -15,7 +15,7 @@
 
 ## 2. 固件侧的取值链路
 
-`code/ble_std.c` `BLE_Initialize()`（1664 与 1654 逻辑相同）：
+`code/ble_std.c` `BLE_Initialize()`（1664 与 1644 逻辑相同）：
 
 ```c
 #if (BD_ADDRESS_TYPE == BD_TYPE_PUBLIC)
@@ -64,7 +64,7 @@ if (((memcmp(all_ff_bytes, ptr, 6) == 0) || (memcmp(all_00_bytes, ptr, 6)) == 0)
 | 工程 | `nm` 得到的地址 | 该工程 hex 中 AB89 的位置 |
 |---|---|---|
 | `remote_mic_rx_coex_1664` | `0x0012324E` | `smart1654_0914.hex` @ `0x0012324E` ✔ |
-| `remote_mic_rx_coex_1654` | `0x0012324E` | 同上 ✔ |
+| `remote_mic_rx_coex_1644` | `0x0012324E` | 同上 ✔ |
 | `peripheral_server_sleep7160test` | `0x00128B9B` | 同工程 hex @ `0x00128B9B` ✔ |
 | `peripheral_server_sleep` | `0x0013B0BF` | 同工程 hex @ `0x0013B0BF` ✔ |
 

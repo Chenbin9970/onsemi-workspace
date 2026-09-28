@@ -25,7 +25,7 @@
  * 见开发文档「FOTA」。 */
 #define CFG_FOTA
 #ifdef CFG_FOTA
-#define VER_ID                  "Smart1654"
+#define VER_ID                  "Smart1644"
 #define VER_MAJOR               1
 #define VER_MINOR               0
 #define VER_REVISION            0
@@ -95,7 +95,7 @@ extern "C"
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
-#define APP_RM_AUDIO_CHANNEL            RM_LEFT
+#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
 
 #define OUTPUT_POWER_6DBM               0
 

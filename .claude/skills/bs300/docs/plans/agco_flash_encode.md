@@ -6,7 +6,7 @@ last_updated: 2026-09-23
 
 # AGCO Flash 反向编码（encode_agco_flash）接口设计计划
 
-用于 1654 工程 BLE ID:60/61（Get/SetAGCOSettings）把 AGCO 参数写回程序 Flash。
+用于 1644 工程 BLE ID:60/61（Get/SetAGCOSettings）把 AGCO 参数写回程序 Flash。
 
 ## 1. 前置信息
 
@@ -21,7 +21,7 @@ last_updated: 2026-09-23
 ## 2. 设计方案
 
 - **路径**: Flash（Program Burn）
-- **语言**: C（`remote_mic_rx_coex_1654/code/bs300_param_encode.c`）
+- **语言**: C（`remote_mic_rx_coex_1644/code/bs300_param_encode.c`）
 - **复用模块**: 复用 codegen `flash_write.py:encode_agco_flash()`，逐行翻译；不新造公式
 
 ### 模块布局（已核对 ground truth）

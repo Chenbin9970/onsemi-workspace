@@ -7,17 +7,17 @@
 
 `remote_mic_tx_coex_pcm` 基于 onsemi RSL10 `remote_mic_tx_coex` demo（远端麦克风发送机 / RM TX，
 BLE + RM 共存），目标是把 **CM108B（USB 音频芯片）的 I2S 输出**作为音源，
-经 RSL10 编码后用 RM 自定义协议广播，由 **1654** 设备接收播放。
+经 RSL10 编码后用 RM 自定义协议广播，由 **1644** 设备接收播放。
 
 完整通路：
 
 ```
 PC/USB ──▶ CM108B ──I2S(48kHz/16bit/立体声)──▶ RSL10 PCM 从机
         ──3:1 抽取(48k→16k)──▶ LPDSP32 G.722 编码(48kbps)
-        ──▶ tx_data_fifo ──▶ RM 广播 ──▶ 1654 解码播放
+        ──▶ tx_data_fifo ──▶ RM 广播 ──▶ 1644 解码播放
 ```
 
-参考工程：`remote_mic_tx_coex`（DMIC 输入版，**端到端已验证能在 1654 上播放**），
+参考工程：`remote_mic_tx_coex`（DMIC 输入版，**端到端已验证能在 1644 上播放**），
 本工程的后级通路照它的结构做，只有输入侧不同。
 
 ## 2. 来源与 git 基线
@@ -185,13 +185,13 @@ Start_Enc_Lpdsp32_Channel(PKT_LEFT);
 BLE 仍然初始化但不参与：`Connection_SendStartCmd()` 顶部直接 `return`
 （它是扫描/定向连接的唯一入口，4 处调用），否则 BLE 会自动发起连接和 RM 抢射频。
 
-TX 是**单向广播**，不需要 RX 连接/应答；1654 自己进 RM 搜索。
+TX 是**单向广播**，不需要 RX 连接/应答；1644 自己进 RM 搜索。
 
-### 5.2 RM 参数（必须与 1654 一致）
+### 5.2 RM 参数（必须与 1644 一致）
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| `accessword` | `0x00cde629 \| (0xf2 << 24)` = **0xF2CDE629** | 1654 侧 = `(stream_addr << 8) \| 0x29`，默认 `stream_addr = 0xF2CDE6` |
+| `accessword` | `0x00cde629 \| (0xf2 << 24)` = **0xF2CDE629** | 1644 侧 = `(stream_addr << 8) \| 0x29`，默认 `stream_addr = 0xF2CDE6` |
 | `RM_HOPLIST` | `{3, 9, 15, 21, 24, 33, 36}` | 与 `peripheral_server_sleep` 一致 |
 | `numChnlInHopList` | 7 | |
 | `role` | `RM_MASTER_ROLE` | |
@@ -228,7 +228,7 @@ TX 是**单向广播**，不需要 RX 连接/应答；1654 自己进 RM 搜索�
 
 后级不明时，**先用已知数据把后级锁死，再攻输入**：
 
-1. `RM_TEST_TONE=1` → 预编码数据直接进 RM 载荷 → 验证 **RM 发射 + 1654 播放**
+1. `RM_TEST_TONE=1` → 预编码数据直接进 RM 载荷 → 验证 **RM 发射 + 1644 播放**
 2. `TX_TONE_TEST=1` → 1 kHz 表进真编码器 → 验证 **LPDSP32 编码 + FIFO + RM**
 3. 都通了再开 PCM 输入 → 此时变量只剩 PCM 那一层
 
@@ -258,9 +258,9 @@ TX 是**单向广播**，不需要 RX 连接/应答；1654 自己进 RM 搜索�
 
 ### ✅ 已上板验证
 
-- **RM 开机直启 + 链路**：1654 能收到
-- **编码器 → RM → 1654 播放**：`TX_TONE_TEST=1` 时 1654 出**干净的 1 kHz 纯音**（端到端锁定）
-- **PCM 输入能出声**：CM108B 播音频，1654 能听到
+- **RM 开机直启 + 链路**：1644 能收到
+- **编码器 → RM → 1644 播放**：`TX_TONE_TEST=1` 时 1644 出**干净的 1 kHz 纯音**（端到端锁定）
+- **PCM 输入能出声**：CM108B 播音频，1644 能听到
 - CM108B 单独供电时 LRCK 正常（未被此前的电平对顶打坏）
 - RSL10 VDDO = 3.3 V
 

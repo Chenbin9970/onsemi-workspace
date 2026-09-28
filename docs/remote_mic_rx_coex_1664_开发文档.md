@@ -2,12 +2,12 @@
 
 ## 1. 工程概述
 
-`remote_mic_rx_coex_1664` 由 `remote_mic_rx_coex_1654` 复制而来，是 RSL10 远端麦克风接收机
-（RM receiver，BLE + RM 共存）的 1664 机型分支。音频出口继承 1654 的 OD 直驱方案，但因 7100 I2C
+`remote_mic_rx_coex_1664` 由 `remote_mic_rx_coex_1644` 复制而来，是 RSL10 远端麦克风接收机
+（RM receiver，BLE + RM 共存）的 1664 机型分支。音频出口继承 1644 的 OD 直驱方案，但因 7100 I2C
 占用 DIO0/DIO1，**已改为 PCM 从机输出**（`OUTPUT_INTRF = PCM_SLAVE_OUTPUT`）：7100 做时钟主机
 提供 BCLK/FS，RSL10 从机在 SERO 移位输出，见 §3.4 与 §6。
 
-与 1654 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
+与 1644 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
 （与 7100 I2C 分时复用，§3.2）**、**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
@@ -17,28 +17,28 @@
 > **纯音测听已上板验证通过**（App 侧尚在完善）；**WDRC 与 EQ 尚未上板**，详见 §7.4.3 / §7.4.4 与 §17。
 > 引脚按「音频输出关闭 + I2C 用 DIO0/DIO1」定案（见 §5）。
 
-参考工程：`remote_mic_rx_coex_1654`（本工程直接来源）、`peripheral_server_sleep`（OD 输出路径
+参考工程：`remote_mic_rx_coex_1644`（本工程直接来源）、`peripheral_server_sleep`（OD 输出路径
 + BS300 通讯来源）、`remote_mic_rx_coex`（7100 I2C 协议来源）。
 
 ## 2. 来源与 git 基线
 
 | commit | 说明 |
 |--------|------|
-| `d9ddf9b` | 1664 工程基线：由 1654 复制（61 文件），设备名改 Smart1664/1664FOTA |
+| `d9ddf9b` | 1664 工程基线：由 1644 复制（61 文件），设备名改 Smart1664/1664FOTA |
 | `0ad0541` | 删除按键 / 删除 AD 采样 / 打印口改 DIO12 |
 | `95896c1` | 移植 7100 通讯层取代 BS300 + 读回参数 flash 缓存 |
 | `b6365f2` | Rempro 切模式 / 调音量接 7100 运行时命令 |
 | （未提交） | 降噪 / DFBC 写入（tick 模型）+ GetBatteryInfo 回 100% + I2C 收发日志 |
 | （未提交） | **音频出口改 PCM 从机**（DIO2/3/4/14，24k），见 §3.4 / §6 |
 
-1664 与 1654 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1654 逐字节一致
+1664 与 1644 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1644 逐字节一致
 （仅行尾符差异）。
 
-## 3. 相对 1654 的改动总览
+## 3. 相对 1644 的改动总览
 
 | 改动 | 涉及文件 | 说明 |
 |------|----------|------|
-| 设备名 `Smart1654` → `Smart1664`（含 FOTA 变体） | include/ble_std.h、include/app.h（`VER_ID`） | 广播名区分机型 |
+| 设备名 `Smart1644` → `Smart1664`（含 FOTA 变体） | include/ble_std.h、include/app.h（`VER_ID`） | 广播名区分机型 |
 | 工程名 / rteconfig / .cproject 改名 | .project、.cproject*、*.rteconfig、RTE/RTE_Components.h | 工程标识 |
 | **删除按键** | app.c、code/app_init.c、include/app.h | 见 §5 |
 | ~~**删除电池 AD 采样**~~ → **改为 DIO0 分时复用** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h、code/i2c_7100_hal.c/.h | 见 §3.2、§5 |
@@ -65,10 +65,10 @@
 
 ### 3.2 电池 AD 采样：DIO3 版已删 → 改为 DIO0 分时复用（2026-09-21）
 
-**历史**：1664 复制自 1654 时删掉了 1654 的 **DIO3** 电池 AD 采样（`ADC_POS_INPUT_DIO3`、
+**历史**：1664 复制自 1644 时删掉了 1644 的 **DIO3** 电池 AD 采样（`ADC_POS_INPUT_DIO3`、
 `APP_Timer` 内 200ms 采样 + 16 次平均、`read_battery_raw()`、`BAT_ADC_*` 宏、`app_env.batt_lvl`
 等字段），`GetBatteryInfo` 一度**固定回 `100/100`**。
-**原因**：1664 的 DIO3 被 PCM FS 占用（§5），不能再做 ADC 输入 —— **不能照搬 1654 的 DIO3 方案**。
+**原因**：1664 的 DIO3 被 PCM FS 占用（§5），不能再做 ADC 输入 —— **不能照搬 1644 的 DIO3 方案**。
 
 **现状（已实现，未标定）**：电池采样改到 **DIO0**，与 7100 I2C 的 SCL **分时复用**。
 
@@ -106,7 +106,7 @@ Sys_DIO_Config(5, DIO_MODE_DISABLE);              /* 释放 DIO5 */
 （TX 靠 pad 的 IO_MODE 路由，`DIO->UART_SRC` 只有 RX 字段），因此覆写后 DIO5 真正被释放。
 新增宏 `PRINT_TX_DIO(12)` / `PRINT_RX_DIO(6)` 在 include/app.h。
 
-> ⚠ pack 的 `printf.c` 未改动，1654 / 7160test 等其它工程的打印口仍为 DIO5。
+> ⚠ pack 的 `printf.c` 未改动，1644 / 7160test 等其它工程的打印口仍为 DIO5。
 
 ### 3.4 音频输出改为 PCM 从机（DIO0/DIO1 留给 7100 I2C）
 
@@ -738,7 +738,7 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 ```
 
 **CMD 3 开关机**（2026-09-17 补实现）：请求 `{Device_Type, Device_OnOff}`，按接口文档 `Device_OnOff` 的
-`0: Off 1: On` —— **非 0 = 开机**。7100 侧没有独立的开关机指令，按 1654 的做法（`bs300_active`/`bs300_mute`）
+`0: Off 1: On` —— **非 0 = 开机**。7100 侧没有独立的开关机指令，按 1644 的做法（`bs300_active`/`bs300_mute`）
 映射成解除静音/静音，复用上面那两条帧：
 
 | 请求 | 动作 | 7100 帧 |
@@ -945,13 +945,13 @@ App_Initialize() → 打印 started → bs300_driver_init()
     目的是不再永久强制唤醒基带；改动本身实测对搜索态电流**无影响**（见 §18），保留是为将来真加
     深睡时的前提。
 15. **电池 AD 采样（DIO0）当前实测不可用，且量程未标定**（§3.2）：
-    - `BAT_ADC_MIN/MAX` 仍是 **1654 的占位值**（6950/9374），从未按 1664 实测标定。
+    - `BAT_ADC_MIN/MAX` 仍是 **1644 的占位值**（6950/9374），从未按 1664 实测标定。
     - **根因**：DIO0 上挂着 **7100 侧内置的 10k I2C 上拉**，而 1M+360k 分压的戴维南等效只有
       265 kΩ —— 电池只占节点电压约 **3.6%**。2026-09-21 实测：电池 3.2V→raw **9816**、
       4.4V→**10334**，折算节点电压 1.233V→1.312V，**与分压关系不符**（电池 1.2V 变化只对应
       节点 ~0.01V）；且 13 个采样点呈单调爬升，更像漂移。
     - **出路**：① **关掉 7100 的内置上拉**（RSL10 侧本来就用 `DIO_STRONG_PULL_UP` 撑着 I2C，
-      不依赖它）—— 关掉后预期 raw **3.2V≈7296 / 4.4V≈9374**，可直接沿用 1654 常量；
+      不依赖它）—— 关掉后预期 raw **3.2V≈7296 / 4.4V≈9374**，可直接沿用 1644 常量；
       ② 若关不掉则须改硬件，把分压挪到未被 I2C 占用的脚（DIO5 已释放 / DIO15 空闲）。
     - **判定办法**：万用表直接量 DIO0 直流电压 —— 随电池成比例（3.2V≈0.85V / 4.4V≈1.17V）
       是 ADC 配置问题；基本不变（≈1.2V）即上拉主导。

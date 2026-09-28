@@ -73,14 +73,11 @@ extern "C"
 #define PREF_SLV_LATENCY                0
 #define PREF_SLV_SUP_TIMEOUT            200
 
-/* Set the device name */
+/* Set the device name
+ * 2026-09-24：产品改名，且**不再按 CFG_FOTA 区分广播名**（原来 FOTA 版会在名字后拼
+ * "FOTA"，方便扫描区分）—— 两个版本同名，一致性优先。 */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
-#ifdef CFG_FOTA
-/* FOTA 固件广播名带标识，方便扫描区分 */
-#define APP_DFLT_DEVICE_NAME            "Smart1654FOTA"
-#else    /* ifdef CFG_FOTA */
-#define APP_DFLT_DEVICE_NAME            "Smart1654"
-#endif    /* ifdef CFG_FOTA */
+#define APP_DFLT_DEVICE_NAME            "Smart 1644 LE"
 #define APP_DEVICE_NAME_FLAG            '\x09'
 
 /* ON SEMICONDUCTOR Company ID */

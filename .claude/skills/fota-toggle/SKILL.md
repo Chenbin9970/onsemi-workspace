@@ -20,7 +20,7 @@ python .claude/skills/fota-toggle/fota_toggle.py --list              # 所有带
 python .claude/skills/fota-toggle/fota_toggle.py --status [<项目>]   # 只报当前状态
 ```
 
-- `<项目>` 用工程**目录名**（如 `remote_mic_rx_coex_1654`），不是 rteconfig 前缀
+- `<项目>` 用工程**目录名**（如 `remote_mic_rx_coex_1644`），不是 rteconfig 前缀
 - 目标工程取用户明确说的那个；用户没说时看当前打开的文件属于哪个工程，仍不确定就问 ——
   **不要默认某个工程**
 - 脚本幂等：已是目标状态会直接退出
@@ -59,7 +59,7 @@ python .claude/skills/fota-toggle/fota_toggle.py --status [<项目>]   # 只报�
 `.cproject_{fota,nofota}` 备份可能**落后或本身不完整**。实测：
 
 - `remote_mic_rx_coex_1664` 的 `_fota` 备份 config2、`_nofota` 备份两个 config **都没排除变体文件**
-- `remote_mic_rx_coex_1654` 活跃 `.cproject` 两个 config 的 exclude 互不一致
+- `remote_mic_rx_coex_1644` 活跃 `.cproject` 两个 config 的 exclude 互不一致
 
 裸 cp 会把排除项弄丢 → `startup_rsl10.S` 与 `startup_rsl10_fota.S`/`_nofota.S` 同时入编 →
 `Reset_Handler` / `ISR_Vector_Table` 重复定义 → **链接失败**。
@@ -86,7 +86,7 @@ python .claude/skills/fota-toggle/fota_toggle.py --status [<项目>]   # 只报�
 
 > **旧版本 skill 的错误**：曾说「FOTA ON → 无 libblelib / libkelib」。
 > 实测 `peripheral_server_sleep` 与 `peripheral_server_sleep7160test` 的 FOTA 版**照样链**
-> libblelib + libkelib（叠加式），只有 `remote_mic_rx_coex_1654` / `1664` 是替换式。
+> libblelib + libkelib（叠加式），只有 `remote_mic_rx_coex_1644` / `1664` 是替换式。
 > **可靠判别是 `libfota.a` 存在与否**，不是 blelib/kelib 缺席。
 
 ## 注意事项
