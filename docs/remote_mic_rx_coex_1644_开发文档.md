@@ -57,6 +57,12 @@
 
 ## 4. 构建与总开关
 
+> ⚠ **2026-09-24 产品改名**：工程目录 `remote_mic_rx_coex_1654` → **`remote_mic_rx_coex_1644`**；
+> Eclipse 工程名（`.project` 的 `<name>`）同步改为 `remote_mic_rx_coex_1644`，rteconfig 也换成
+> `remote_mic_rx_coex_1644*.rteconfig`。**Eclipse 里必须重新导入，并删掉旧的 `remote_mic_rx_coex`
+> 工程条目** —— 否则同名冲突会**直接拒绝导入**（详见 `docs/工程复制改名注意事项.md` §一）。
+> 旧 `Debug/` 产物仍是旧名，建议 Clean 后重建。
+
 - IDE：ON Semi Eclipse（GNU ARM，arm-none-eabi-gcc，`-mcpu=cortex-m3`）。
 - `.cproject` sourceEntries 按目录整收：**新增到 `code/` 的 .c、`include/` 的 .h 自动参与编译**，无需改工程文件。
 - 总开关（include/app.h）：
