@@ -3,6 +3,7 @@
 #include "ble_rempro_cmd.h"
 #include "dsp_7100_cmd.h"
 #include "dsp_7100_init.h"   /* DSP7100_WDRC_CH */
+#include "dsp_7100_storage.h" /* 流地址落盘/读回（Settings 扇区） */
 #include "i2c_7100_hal.h"    /* DIO0 分时复用（电池 AD 采样） */
 
 #include <printf.h>   /* Rempro 收发日志跟随 OUTPUT_INTERFACE */
@@ -45,6 +46,9 @@ static uint8_t s_tx_frame[TX_BUF_SIZE];   /* pending stuffed frame */
 static uint8_t s_tx_frame_len;
 static uint8_t s_tx_offset;
 static bool    s_tx_in_progress;
+/* SetStreamAddress(89) 落盘成功后置位：等 ACK 最后一个分块被协议栈确认发出再复位
+ * （见 rempro_tx_poll）。 */
+static bool    s_reset_pending;
 
 /* -------- helpers -------- */
 
@@ -144,6 +148,14 @@ static void rempro_tx_send_next(void)
  * out in its own connection event — no ke_timer, no extra wake-ups. */
 void rempro_tx_poll(void)
 {
+    /* 本次 ACK 的最后一个分块已被协议栈确认发出（GATTC 完成事件）才复位，
+     * 否则 App 收不到「设置成功」的响应。 */
+    if (s_reset_pending && !s_tx_in_progress && rempro_env.sentSuccess) {
+        PRINTF("[REMPRO] SetStreamAddress: reset to apply\r\n");
+        Sys_Watchdog_Refresh();
+        NVIC_SystemReset();
+    }
+
     if (!s_tx_in_progress) return;
     if (ble_env.state != APPM_CONNECTED) { s_tx_in_progress = false; return; }
     if (!rempro_env.sentSuccess) return;
@@ -1130,6 +1142,69 @@ static void cmd_fota_status(const uint8_t *data, uint8_t len)
 #endif    /* ifdef CFG_FOTA */
 }
 
+/* ID:88 GetStreamAddress — 读回 RM 音频流地址（accessword 高 24 位）
+ * 请求: [0]=Device_Type（忽略，单耳）
+ * 响应: Flag + Stream_Address(3, 小端：首字节 = 低位)
+ *
+ * 回的是 rm_param 的**配置值**，不是库内部 rm_env 的在效值。两者只在
+ * 「89 号已写、复位还没发生」这一小段窗口内不同 —— 回配置值才能让 App 看到
+ * 自己刚设的值（Set→Get 往返一致）。 */
+static void cmd_getstreamaddress(const uint8_t *data, uint8_t len)
+{
+    uint32_t addr;
+    uint8_t  d[3];
+
+    if (len < 1) { hdlc_response(CMD_GETSTREAMADDRESS, 1, NULL, 0); return; }
+
+    addr = RM_STREAM_ACCESSWORD_TO_ADDR(app_env.rm_param.accessword);
+
+    /* 小端：首字节 = 低位（0xF2CDE6 → E6 CD F2） */
+    d[0] = (uint8_t)(addr & 0xFF);
+    d[1] = (uint8_t)((addr >> 8) & 0xFF);
+    d[2] = (uint8_t)((addr >> 16) & 0xFF);
+
+    PRINTF("[REMPRO] GetStreamAddress: dev=%u addr=0x%06lX\r\n",
+           data[0], (unsigned long)addr);
+    hdlc_response(CMD_GETSTREAMADDRESS, 0, d, 3);
+}
+
+/* ID:89 SetStreamAddress — 设置 RM 音频流地址（accessword 高 24 位）
+ * 请求: [0]=Device_Type（忽略）, [1..3]=Stream_Address（小端）
+ * 响应: Flag + status
+ *
+ * RM_Configure() 会把 accessword 拷进库内部 rm_env，运行时改 app_env 无效 →
+ * 落盘成功后复位，由 APP_RM_Init() 重新取值。落盘失败必须回失败 ACK 且不复位
+ * （不把失败伪装成成功）。 */
+static void cmd_setstreamaddress(const uint8_t *data, uint8_t len)
+{
+    uint32_t addr;
+    uint8_t  status = 1;
+
+    if (len < 4) { hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0); return; }
+
+    /* Device_Type (data[0]) ignored — single-ear device. Stream_Address is
+     * little-endian (E6 CD F2 → 0xF2CDE6). */
+    addr = (uint32_t)data[1]
+         | ((uint32_t)data[2] << 8)
+         | ((uint32_t)data[3] << 16);
+
+    app_env.rm_param.accessword = RM_STREAM_ADDR_TO_ACCESSWORD(addr);
+
+    PRINTF("[REMPRO] SetStreamAddress: dev=%u addr=0x%06lX accessword=0x%08lX\r\n",
+           data[0], (unsigned long)addr,
+           (unsigned long)app_env.rm_param.accessword);
+
+    /* Persist before rebooting — a failed write must not look like success. */
+    if (!dsp_7100_settings_save_stream_addr(addr)) {
+        PRINTF("[REMPRO] SetStreamAddress: flash save FAILED\r\n");
+        hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0);
+        return;
+    }
+
+    hdlc_response(CMD_SETSTREAMADDRESS, 0, &status, 1);
+    s_reset_pending = true;
+}
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
@@ -1262,6 +1337,14 @@ void rempro_cmd_process(void)
             break;
         case CMD_FOTA_STATUS:
             cmd_fota_status(data, data_len);
+            break;
+        case CMD_GETSTREAMADDRESS:
+            if (data) cmd_getstreamaddress(data, data_len);
+            else hdlc_response(CMD_GETSTREAMADDRESS, 1, NULL, 0);
+            break;
+        case CMD_SETSTREAMADDRESS:
+            if (data) cmd_setstreamaddress(data, data_len);
+            else hdlc_response(CMD_SETSTREAMADDRESS, 1, NULL, 0);
             break;
         case CMD_IICDATACOMMUNITY:
             if (data) cmd_iicdatacommunity(data, data_len);

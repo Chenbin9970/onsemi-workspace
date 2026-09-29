@@ -72,6 +72,21 @@ extern "C"
  */
 #define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
 
+/* RM 音频流 accessword：**最低 1 字节固定**，高 3 字节才是「音频流地址」
+ * （BLE ID:88 GetStreamAddress / ID:89 SetStreamAddress 读写）。
+ * 出厂值 0xF2CDE629 → 地址默认 0xF2CDE6、固定低字节 0x29。
+ *
+ * ⚠ 与 RSL10 SDK 样例的写法**方向相反**：样例是 `0x00cde629 | (xx << 24)`
+ * （低 3 字节固定、高 1 字节随流变，xx = 0xF2/0x0D）；本机按 App 约定改成
+ * 低 1 字节固定。改这里之前必须与 App / TX 侧对齐，否则 RM 直接搜不到。
+ *
+ * 映射只在这两个宏里定义，别在别处重算（88/89/落盘/开机初始化都走它）。 */
+#define RM_STREAM_ACCESSWORD_FIXED_LOW   0x29UL
+#define RM_STREAM_ADDR_DEFAULT           0xF2CDE6UL
+#define RM_STREAM_ADDR_MASK              0x00FFFFFFUL
+#define RM_STREAM_ADDR_TO_ACCESSWORD(a)  ((((uint32_t)(a)) << 8) | RM_STREAM_ACCESSWORD_FIXED_LOW)
+#define RM_STREAM_ACCESSWORD_TO_ADDR(w)  (((uint32_t)(w) >> 8) & RM_STREAM_ADDR_MASK)
+
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
@@ -594,6 +609,10 @@ extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
                        ke_task_id_t const src_id);
 
 extern void APP_RM_Init(uint8_t side);
+
+/* 本次开机的流地址是否来自 Flash 持久化记录（供 app.c 启动日志区分
+ * 「回填成功」与「用了默认值」；两者取值可能恰好相同）。 */
+extern bool rm_stream_addr_from_flash(void);
 
 extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
 

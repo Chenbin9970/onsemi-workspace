@@ -791,6 +791,11 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 > 其余 4 个 Rempro 命令（SetCompressRatio (8) / GetCurrentScene (15) /
 > GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`。
 
+**RM 推流期间全部指令被丢弃**：`app.c` 主循环里 `app_env.audio_streaming` 为真时只调
+`rempro_reasm_reset()`，**不调** `rempro_cmd_process()` —— 所有 BLE 指令（含 §19 的 88/89）
+静默丢弃、不回响应。比 1644 §20.4 的白名单**更严**（1644 放行 26/4/15 三条只读）。
+理由是推流中任何写 DSP 的命令都会打断音频，而复位类（89）更会直接掐断流。
+
 **应答格式统一（2026-09-15）**：所有**设置类**命令的应答统一为 `Flag(1) + status(1)`
 （协议文档规定；`hdlc_response_set()` 生成，成功 = `00 01`，失败/不支持 = `01 00`）。
 此前 SetDenoise / SetFeedbackOnOff / SetEqualizer 及各处兜底分支只回 `Flag`，本轮按文档补齐；
@@ -866,7 +871,10 @@ App_Initialize() → 打印 started → bs300_driver_init()
 ## 9. RM 无线电配置（对齐 sleep）
 
 - `RM_HOPLIST = { 3, 9, 15, 21, 24, 33, 36 }`（include/app.h）
-- `accessword = 0x00cde629 | (0xf2<<24)` = `0xf2cde629`（rm_app.c）
+- **音频流地址 = accessword 的高 24 位**，默认 `0xF2CDE6` → `accessword = 0xF2CDE629`
+  （`RM_STREAM_ADDR_TO_ACCESSWORD()`，宏在 include/app.h）。**默认值可被 BLE 89 号
+  SetStreamAddress 改写并落盘**，开机由 `APP_RM_Init()` 从 Settings 扇区回填 —— 见 §19。
+  （原写法 `0x00cde629 | (0xf2<<24)` 与本宏展开结果**逐位相同**，非默认路径的行为不变。）
 - 其余 rm_param（interval 10000 / retrans 5000 / audio_rate 48 / radio_rate 2000 / scan 6500 /
   preamble 0x55 / renderDelay 200 / preFetch 1300(RM_APP_REQUEST) / pkt / 搜索阈值）与 sleep 一致。
 - **扫描驻留已改**：`waitCntGranularity` 200 → **400**（突发之间的驻留 = `retrans_time(5ms) × 该值`
@@ -907,6 +915,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
   code/rm_app.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h
 - **PCM 输出（§3.4/§6）**：include/app.h、code/app_init.c、code/app_func.c、code/rm_app.c
   —— 无新增文件
+- **BLE 88/89 流地址（§19）**：include/app.h、include/ble_rempro_cmd.h、app.c、code/rm_app.c、
+  code/ble_rempro_cmd.c、code/dsp_7100_storage.c / include/dsp_7100_storage.h（settings 扇区）
+  —— 无新增文件，`.cproject` 不动
 
 **删除**
 - `code/bs300_*.c`（9）、`include/bs300_*.h`（10）
@@ -960,6 +971,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
     **测功耗前必须把 `BAT_ADC_ENABLE` 置 0**（SDK 有 `ADC_DISABLE` 可加收尾，待做）。
 17. **低电量提示未实现**（§3.2）：1664 无 BS300，播不了 `0xFD12F2`。待确认 7100 有无可用
     提示音命令；位置已留在 `code/app_process.c` 的 `APP_Timer`（有 TODO 注释）。
+18. **BLE 88/89 流地址未上板实测**（§19）：落地路径（Settings 扇区擦写、复位时机、
+    开机回填）都只做了代码走查。唯一能证明正确性的两项 —— 「断电重启后流地址是否保持」
+    与「改完地址后 TX 能否对上」—— 见 §19 验证清单。
 
 ## 13. 验证步骤
 
@@ -1214,3 +1228,106 @@ sleep 工程之所以能靠 `BB_DEEP_SLEEP` / 音频外设停机 / `DSS_LPDSP32_
 赌注大，先别碰。
 
 > 结论：在「RM 必须常搜 + 7100 不动」下，450µA 基本是地板；继续调扫描占空比收益在几十 µA 量级。
+
+## 19. BLE 88/89 GetStreamAddress / SetStreamAddress（照 1644 §20.6 移植）
+
+把 RM **音频流地址**（accessword 高 24 位）开放给 App 改，用于让 RX 的流地址与 TX 端对齐。
+闭环：App 写 → 落盘 Settings 扇区 → 复位 → 开机回填。
+
+**accessword 的构成**（宏在 include/app.h）：
+
+| 位 | 含义 |
+|---|---|
+| bit31-8 | **音频流地址**（24 位，`RM_STREAM_ADDR_MASK`；默认 `0xF2CDE6`，`RM_STREAM_ADDR_DEFAULT`） |
+| bit7-0 | 固定常量 `0x29`（`RM_STREAM_ACCESSWORD_FIXED_LOW`） |
+
+> ⚠ **与 RSL10 SDK 样例方向相反**：SDK 写的是 `0x00cde629 | (xx << 24)`（低 3 字节固定、
+> 高 1 字节随流变，xx = `0xF2`/`0x0D`）；本机按 App 约定改成低 1 字节固定、高 3 字节可设。
+> 两种拆法都能得到出厂值 `0xF2CDE629`，但 App 能改的字节不同 —— 改动前必须与 App/TX 侧对齐，
+> 否则 RM 直接搜不到。映射只在 `RM_STREAM_ADDR_TO_ACCESSWORD` / `RM_STREAM_ACCESSWORD_TO_ADDR`
+> 两个宏里定义，其余代码不许重算。
+
+**指令**
+
+| ID | 名称 | 请求 data[] | 响应 data[] | handler |
+|---|---|---|---|---|
+| 88 | GetStreamAddress | Device_Type | Flag + Stream_Address(3, 小端) | `cmd_getstreamaddress` |
+| 89 | SetStreamAddress | Device_Type, Stream_Address(3, 小端) | Flag + status | `cmd_setstreamaddress` |
+
+- `Device_Type` 一律忽略（单耳设备）。
+- 88 回的是 `rm_param` 的**配置值**，不是库内部 `rm_env` 的在效值 —— 两者只在「89 已写、
+  复位还没发生」这一小段窗口内不同；回配置值才能让 App 看到自己刚设的值（Set→Get 往返一致）。
+- 89 落盘失败 → 回 `Flag=1` 且**不复位**（不把失败伪装成成功）。
+
+**为什么必须复位**：`RM_Configure()` 把 `param->accessword` **拷贝**进库内部 `rm_env`
+（`APP_RM_Init()` 里调用，之后就与 `app_env.rm_param` 脱钩）；`RF_InitRegistersCustomMode()`
+只在 RM 启动时把它写进 RF `PATTERN` 寄存器。所以运行时改 `app_env.rm_param` 对已跑起来的 RM
+毫无影响，只能重启让 `APP_RM_Init()` 用新值重新 `RM_Configure()`。
+
+**执行流程**
+
+| # | 动作 |
+|---|---|
+| 1 | 89: 校验 `len>=4`；3 字节小端拼成 24 位 → `RM_STREAM_ADDR_TO_ACCESSWORD()` |
+| 2 | `dsp_7100_settings_save_stream_addr()` 写 Settings 扇区；失败 → `Flag=1`，**不复位** |
+| 3 | 成功 → 回 `Flag=0 + status=1`，置 `s_reset_pending` |
+| 4 | `rempro_tx_poll()` 等 **ACK 最后一个分块被协议栈确认发出**（`!s_tx_in_progress && rempro_env.sentSuccess`）→ `NVIC_SystemReset()` |
+| 5 | 重启后 `APP_RM_Init()` 用 `dsp_7100_settings_load_stream_addr()` 取值（无记录则用默认），**再** `RM_Configure()` |
+| 6 | `app.c` 主函数打印一行 `[RM] stream addr=0x...... (from flash\|default)` —— **不能在 `APP_RM_Init()` 里打**，那里跑在 `App_Initialize()` 的 PRIMASK 屏蔽窗口内，UART PRINTF 走 DMA+中断，`tx_busy` 清不掉会死锁（§10） |
+
+> **第 4 步为什么不能直接复位**：响应走分块 Notify，复位太早会把 ACK 掐断，App 会当成
+> 「无响应」而重发。等 GATTC 完成事件是唯一可靠的信号。
+> ⚠ **边角情况**：App 在 ACK 发出前断链 → `sentSuccess` 不置位 → **本次不复位**。地址已落盘、
+> 下次开机自然生效，只是没立刻生效。刻意不加超时轮询（那会在断链后突然重启，行为更怪）。
+
+**Settings 扇区**（`0x0015F000`，2KB，`code/dsp_7100_storage.c`）
+
+1664 没有 BS300 那套设置记录（音量/EQ/降噪本就不持久化），这里**只存 3 字节流地址**：
+
+```
+0..2    stream_addr（小端 24 位）
+3..6    magic "RMST"
+7       version 1
+8       valid   0xA5
+9..10   CRC16-XMODEM（覆盖 0..7）
+11..15  0xFF 填充
+```
+
+选址理由：链接脚本 `RTE/Device/RSL10/sections.ld` 的 FLASH 区 = `0x00100000 + 380K`，
+上界 **`0x15F000`（不含）** → 该扇区**在链接区之外，代码涨不到它**（7100 缓存的
+`0x15D000~0x15EFFF` 反而落在区内，是 §16.1 已记录的既有隐患）。属于 main flash HIGH 区，
+复用 `dsp_7100_storage.c` 现成的 `main_flash_unlock()` / `crc16_xmodem()`，不新写 flash/CRC 代码。
+
+**RM 推流期间收不到**：主循环在 `app_env.audio_streaming` 时 `rempro_reasm_reset()` 丢掉全部指令
+（§7.4.5），等效于 1644 §20.4 的白名单 —— 88/89 都在此列。（89 若在推流中被收下，复位会直接
+打断音频，所以这个丢弃是必要的。）
+
+**本轮改动文件**：include/app.h（RM_STREAM 宏 + `rm_stream_addr_from_flash()` 声明）、
+include/ble_rempro_cmd.h（`CMD_GETSTREAMADDRESS 88` / `CMD_SETSTREAMADDRESS 89`）、
+code/ble_rempro_cmd.c（两个 handler + 分发 case + `s_reset_pending` + `rempro_tx_poll()` 延迟复位）、
+code/dsp_7100_storage.c / include/dsp_7100_storage.h（Settings 扇区 save/load）、
+code/rm_app.c（`APP_RM_Init()` 从 flash 取值 + `rm_stream_addr_from_flash()`）、app.c（开机日志）。
+**无新增文件，`.cproject` 不动。**
+
+**编译状态**：仅改动源码，**未编译、未上板**。
+
+**验证清单**
+
+1. Set：`Device_Type=1, Stream_Address = E6 CD F2`（小端 → 值 `0xF2CDE6`）→ 日志顺序应为
+   `[REMPRO] SetStreamAddress: dev=1 addr=0xF2CDE6 accessword=0xF2CDE629`
+   → `[7100-settings] stream addr saved (crc=....)`
+   → `[REMPRO] SetStreamAddress: reset to apply` → 设备重启
+   （`accessword` 末字节恒为 `0x29` —— 那是固定的低字节，不随地址变）
+2. **验证持久化（核心）**：重启后开机日志应为 `[RM] stream addr=0xF2CDE6 (from flash)` ——
+   且**要带 `(from flash)`**；若显示 `(default)` 说明值虽然对，但用的是出厂默认、**没存住**
+   （两者取值恰好相同，只能靠这个标签区分）
+3. **验证读回**：发 88 号（只带 `Device_Type`）→ 应回 3 字节 `E6 CD F2`。**Set→Get 往返应一致**
+4. **验证掉电**：设一个**非默认**地址（如 `12 34 56`，小端发 `56 34 12`）→ 直接拔电再上电，
+   开机日志应是 `[RM] stream addr=0x123456 (from flash)`。用非默认值才能和「默认回退」区分开
+5. **验证字节序**：小端才对得上 `addr=0xF2CDE6`。若 App 发的是 `F2 CD E6`（大端写法），
+   日志会变成 `addr=0xE6CDF2` —— 说明与固件的小端约定不一致
+6. **失败路径**：89 字段 < 4 字节 → 失败 ACK 且**不复位**；88 无 payload → 失败 ACK
+7. **回归**：SetVolume / 切程序 / 降噪 / 测听仍正常；RM 推流期间发 88/89 应被静默丢弃
+8. **端到端**（唯一能证明地址真被 RF 采用的测试）：设新地址 → 重启 → TX 用同一 accessword
+   则能连上，不同则搜不到
+

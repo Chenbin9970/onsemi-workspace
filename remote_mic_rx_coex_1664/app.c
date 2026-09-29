@@ -32,6 +32,13 @@ int main()
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
     PRINTF("__remote_mic_rx_coex has started!\r\n");
 
+    /* 本次开机 RM 音频流地址（from flash = 89 号写入的持久化值已被采用；
+     * default = 无记录，用出厂值。两者取值可能恰好相同，只能靠这个标签区分）。
+     * 必须在 App_Initialize() 之后打 —— APP_RM_Init() 里打会死锁，见开发文档 §19。 */
+    PRINTF("[RM] stream addr=0x%06lX (%s)\r\n",
+           (unsigned long)RM_STREAM_ACCESSWORD_TO_ADDR(app_env.rm_param.accessword),
+           rm_stream_addr_from_flash() ? "from flash" : "default");
+
     /* 上电握手（照 remote_mic_rx_coex 参考设计）：
      * DIO13 = 7100 输出 → RSL10 输入；DIO11 = RSL10 输出 → 7100 输入。
      * 7100 上电先拉低 DIO13 等待；RSL10 检测到低后在 DIO11 发一个低脉冲应答。 */

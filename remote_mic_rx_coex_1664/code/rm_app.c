@@ -18,6 +18,7 @@
  * ------------------------------------------------------------------------- */
 
 #include "app.h"
+#include "dsp_7100_storage.h"
 #include <printf.h>
 
 uint32_t data_rd = 0;
@@ -79,6 +80,15 @@ const uint8_t coded_sample[4 * 60] = {
 };
 uint32_t coded_cntr = 0;
 
+/* 本次开机取到的流地址是否来自 Flash 持久化记录。APP_RM_Init() 在中断屏蔽窗口内
+ * 不能打印，所以只在这里记个标志，由 app.c 主函数打印（见开发文档 §19）。 */
+static bool s_stream_addr_from_flash = false;
+
+bool rm_stream_addr_from_flash(void)
+{
+    return s_stream_addr_from_flash;
+}
+
 void APP_RM_Init(uint8_t side)
 {
     struct rm_callback callback;
@@ -98,7 +108,20 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
+    /* 音频流地址：优先用 Settings 扇区的持久化值（BLE 89 号 SetStreamAddress 写入后
+     * 复位重启），否则用默认值。必须在这里取 —— RM_Configure() 会把 accessword
+     * 拷进 rm_env，之后再改 app_env.rm_param 就无效了（见开发文档 §19）。
+     *
+     * ⚠ 这里**不能打印**：APP_RM_Init() 跑在 App_Initialize() 的 `PRIMASK` 屏蔽窗口内
+     * （开中断的 __set_PRIMASK 是它的最后一句），而 UART 的 PRINTF 走 DMA + 完成中断，
+     * 中断被屏蔽时 tx_busy 清不掉 → 下一次 PRINTF 死等 `while (tx_busy == 1)`。
+     * 日志改在 app.c 主函数里打（见 §10）。 */
+    {
+        uint32_t stream_addr = RM_STREAM_ADDR_DEFAULT;
+
+        s_stream_addr_from_flash = dsp_7100_settings_load_stream_addr(&stream_addr);
+        app_env.rm_param.accessword = RM_STREAM_ADDR_TO_ACCESSWORD(stream_addr);
+    }
 
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;

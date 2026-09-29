@@ -9,6 +9,9 @@
  *
  * 每程序只写一槽 864B（216 word），保存时整扇区擦除后重写。
  * 槽内布局见 include/dsp_7100_storage.h。
+ *
+ * 另有 Settings 扇区 0x0015F000（在链接区 380K 上界之外，代码不会压到），
+ * 只存 BLE 89 号写入的 RM 音频流地址（24 位）。布局见本文件 SETS_* 宏。
  */
 
 #include "dsp_7100_storage.h"
@@ -69,6 +72,28 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
 static const uint8_t CACHE_MAGIC[4] = { 'D', '7', '1', 'P' };
 #define CACHE_VERSION   5    /* v5: wdrc_ll/hl 语义由"不含 EQ 的基准"改为"设备当前值" */
 #define CACHE_VALID     0xA5
+
+/* ---- Settings 扇区（最后一个 2KB，在链接区 380K 上界 0x15F000 之外）----
+ *   [0..2]  stream_addr（小端 24 位）
+ *   [3..6]  magic "RMST"
+ *   [7]     version
+ *   [8]     valid 0xA5
+ *   [9..10] CRC16-XMODEM（覆盖 [0..7]）
+ *   [11..15] 0xFF 填充
+ */
+#define SETTINGS_BASE         0x0015F000
+#define SETS_ADDR_OFF         0
+#define SETS_MAGIC_OFF        3
+#define SETS_VER_OFF          7
+#define SETS_VALID_OFF        8
+#define SETS_CRC_OFF          9
+#define SETS_CRC_LEN          8                       /* CRC 覆盖 [0..7] */
+#define SETS_REC_BYTES        16
+#define SETS_REC_WORDS        (SETS_REC_BYTES / 4)    /* 4 */
+
+static const uint8_t SETS_MAGIC[4] = { 'R', 'M', 'S', 'T' };
+#define SETS_VERSION     1
+#define SETS_VALID       0xA5
 
 /* ---- Main Flash unlock（HIGH region 0x00150000+，同 BS300）---- */
 static void main_flash_unlock(void)
@@ -224,4 +249,67 @@ void dsp_7100_cache_invalidate(void)
         b->valid[prog] = 0;
     }
     PRINTF("[7100-cache] invalidated (4 sectors)\r\n");
+}
+
+/* ---- Settings 扇区：RM 音频流地址 ---- */
+
+bool dsp_7100_settings_save_stream_addr(uint32_t stream_addr)
+{
+    uint32_t buf[SETS_REC_WORDS];
+    uint8_t *sb = (uint8_t *)buf;
+    uint16_t crc;
+
+    memset(sb, 0xFF, SETS_REC_BYTES);
+    sb[SETS_ADDR_OFF]     = (uint8_t)(stream_addr & 0xFF);
+    sb[SETS_ADDR_OFF + 1] = (uint8_t)((stream_addr >> 8) & 0xFF);
+    sb[SETS_ADDR_OFF + 2] = (uint8_t)((stream_addr >> 16) & 0xFF);
+    memcpy(sb + SETS_MAGIC_OFF, SETS_MAGIC, 4);
+    sb[SETS_VER_OFF]   = SETS_VERSION;
+    sb[SETS_VALID_OFF] = SETS_VALID;
+    crc = crc16_xmodem(sb, SETS_CRC_LEN);
+    sb[SETS_CRC_OFF]     = (uint8_t)(crc & 0xFF);
+    sb[SETS_CRC_OFF + 1] = (uint8_t)(crc >> 8);
+
+    main_flash_unlock();
+
+    Sys_Watchdog_Refresh();
+    __disable_irq();
+    if (Flash_EraseSector(SETTINGS_BASE) != FLASH_ERR_NONE) {
+        __enable_irq();
+        PRINTF("[7100-settings] erase FAIL\r\n");
+        return false;
+    }
+    Sys_Watchdog_Refresh();
+    if (Flash_WriteBuffer(SETTINGS_BASE, SETS_REC_WORDS,
+                          (unsigned int *)buf) != FLASH_ERR_NONE) {
+        __enable_irq();
+        PRINTF("[7100-settings] stream addr write FAIL\r\n");
+        return false;
+    }
+    __enable_irq();
+
+    PRINTF("[7100-settings] stream addr saved (crc=%04X)\r\n", crc);
+    return true;
+}
+
+bool dsp_7100_settings_load_stream_addr(uint32_t *stream_addr)
+{
+    const uint8_t *rec = (const uint8_t *)SETTINGS_BASE;
+    uint16_t stored, calc;
+
+    if (stream_addr == NULL) return false;
+
+    if (memcmp(rec + SETS_MAGIC_OFF, SETS_MAGIC, 4) != 0) return false;
+    if (rec[SETS_VALID_OFF] != SETS_VALID) return false;
+    if (rec[SETS_VER_OFF] != SETS_VERSION) return false;
+
+    stored = (uint16_t)rec[SETS_CRC_OFF]
+           | ((uint16_t)rec[SETS_CRC_OFF + 1] << 8);
+    calc = crc16_xmodem(rec, SETS_CRC_LEN);
+    if (stored != calc) return false;
+
+    *stream_addr = (uint32_t)rec[SETS_ADDR_OFF]
+                 | ((uint32_t)rec[SETS_ADDR_OFF + 1] << 8)
+                 | ((uint32_t)rec[SETS_ADDR_OFF + 2] << 16);
+    return true;
 }
