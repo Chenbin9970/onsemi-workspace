@@ -829,6 +829,92 @@ pct = (raw - 7273) * 100 / (9174 - 7273)      /* 跨度 1901（旧 6950~9374 跨
 > ADC_DISABLE)` 收尾。我们的重配不是防御性编程，是必需的。
 > 省不掉的固定开销：板上 `1MΩ+360kΩ` 外部分压直接跨电池，`4.4V/1.36MΩ ≈ 3.2µA` 恒定流着。
 
+> **2026-09-30 更新**：真病根已按本节建议的**两阶段采样**修掉，见 §17.4。上面那句
+> 「不要再加」指的是**不要单独**加 disable（配置完立刻读仍是非法值），不是否定 disable 本身。
+
+### 17.4 ADC 常开耗电 —— 两阶段采样（2026-09-30 实施）
+
+**现象**：设备运行到**第一次电池采样（t=60s）之后**功耗台阶式升高，且**不恢复**。
+
+**根因链条**（已确认，不是推测）：
+
+| 时刻 | 事件 | ADC 状态 |
+|---|---|---|
+| `app_init.c:109` | `App_Initialize` 使能 ADC（ch0=DIO3） | 开 |
+| `app_init.c:317/319` | `Sys_RFFE_SetTXPower()` 量完 VDDRF 后 `ADC_DISABLE`（SDK 原文：*"uses ADC channel 0 and disables it after use"*） | 关 |
+| **t = 60s** | `read_battery_raw()` 重新使能 ADC（`PRESCALE_1280H`，最慢档），**之后再没有任何地方关它** | **开 → 永久开** |
+
+关键点：本工程开机后 ADC **本来是全程关着的**（被 RF 驱动关掉），是**周期采样把它打开后
+忘了关**——所以现象精确表现为「采样之后功耗才升高」，而不是开机就高。
+
+**改动**（把 §17.3 的两阶段建议落地）：
+
+| 文件 | 改动 |
+|---|---|
+| `code/ble_rempro_cmd.c` | `read_battery_raw()` 拆成 `battery_adc_start()`（只使能）+ `battery_adc_read_stop()`（读值 + `Sys_ADC_Set_Config(ADC_DISABLE)`） |
+| `code/app_process.c` | `battery_sample_tick()` 改成两阶段状态机：到点 arm，**下一个 200ms tick** 读+关；换算/打印/告警拆到新的 `battery_report()` |
+| `include/app.h` | 新增 `BAT_ARM_FIRST_TICKS=1`（开机 ~200ms 补采一次） |
+| `code/ble_rempro_cmd.c` | `cmd_getbatteryinfo` 改用缓存值 `app_env.batt_lvl`，不再同步读 ADC |
+
+**时序依据**：`SLOWCLK = 2MHz`、`PRESCALE_1280H` → ADC clk = `2MHz/1280 = 1562.5Hz`
+→ 0.64ms/通道 × 8 通道 = **5.1ms** 扫完一轮；200ms tick 有 **39 倍**余量，
+**不需要任何延时常数**（这正是 §17.3 说"不需要猜"的那条）。
+
+**代价与取舍**：`GetBatteryInfo` 最大滞后一个采样周期（60s）；开机头 60s 由
+`BAT_ARM_FIRST_TICKS` 补采覆盖（第一条 `__BATT` 出现在开机 ~400ms）。
+`low_batt_check` 的调用节奏不变（仍每采样一次调一次 → 告警音仍每 5 次采样 ≈300s 重复）。
+
+**仍在、但故意没动**：
+
+- `app_init.c:106-112` 那段开机使能现已**冗余**（开机就被 RF 驱动关掉），可删——**但删了
+  也省不下电**，不着急。
+- DIO3 焊盘模式 `DIO_MODE_GPIO_IN_0` vs 参考工程的 `DIO_MODE_DISABLE`：
+  `docs/开发/ADC电量检测开发记录.md` §6.4 记两者功能都能工作，**没比过功耗**。
+  要试请**单独**试（一行改动），别和本节改动混在一起测，否则功耗变化归因不了。
+
+**⚠ 尚未上板实测。** 验证判据：
+
+1. `__BATT n% raw=<raw>` 仍每 60s 一行，且 raw 与改前同量级（满电 ≈9050）——
+   **若出现 100% / raw≈16383 说明又读到非法值**，即两阶段间隔不够或没生效。
+2. 第一条 `__BATT` 出现在开机 ~400ms（补采生效，不是等 60s）。
+3. 功耗：t=60s 的台阶消失，且跑 5min 以上不再爬升。
+4. App 端 `GetBatteryInfo` 返回值与最近一条 `__BATT` 一致。
+
+### 17.5 BLE 侧电量通道盘点 &「4 号指令不实时」的取舍（2026-09-30）
+
+**缘起**：反馈"设备端 `__BATT` 每 60s 都是准的，但 App 从 BLE 拿到的电量不对"。
+先把 BLE 侧所有可能带电量出去的通道盘了一遍 —— **实际启用的只有一条**：
+
+| 通道 | 状态 | 依据 |
+| --- | --- | --- |
+| Rempro `GetBatteryInfo(4)`（SYS_ID=0 响应） | **启用** | 返回 `app_env.batt_lvl`，即最近一次 `__BATT` 的百分比（仅多一层 `pct==0 → 1` 保护） |
+| 标准 BLE 电池服务 0x180F / 0x2A19 | **未注册** | `app.h` 的 `SERVICE_ADD_FUNCTION_LIST` 只有 Rempro；`Batt_ServiceAdd_Server()` / `Batt_LevelUpdateSend()` 全工程无调用方（§15 精简时摘掉） |
+| 主动上报 SYS_ID=1 CMD=1（协议手册里带 Device_Status + 左/右电量） | **未实现** | 本工程只上报 4=音量 / 5=程序 / 6=初始化状态 |
+
+**结论（用户实测确认）**：反馈的"不对"就是 **4 号指令不再实时采集** —— 它回的是缓存值，
+最大滞后一个采样周期（60s）。这是 §17.4 两阶段采样的**有意代价，不是缺陷**：ADC 常开会耗电、
+配置完立刻读又会读到非法满量程（§17.3），两头夹击下只能异步取缓存。
+**决定：接受，不做实时化。**
+
+以后若确实要更"新"的值，只走这两条（都不动功耗模型）：
+
+1. 收到 4 号指令时把采样状态机提前 arm，下一 tick 读回来再回响应 —— 响应延迟 ~200ms，需 App 侧接受；
+2. 调小 `BAT_SAMPLE_TICKS`（300 = 60s，改 50 即 10s）—— 代价是采样更频繁。
+
+**禁止**恢复"配置完同步读"：那等于 ADC 常开，§17.4 修掉的功耗台阶会原样回来。
+
+**两个遗留（本次未处理，记录备查）**：
+
+- **`Right_Battery` 回了 0**：1644 回 `0`，而 1664 对同一 App 的同一指令回 `100`
+  （`remote_mic_rx_coex_1664/code/ble_rempro_cmd.c`，其注释还写着"回 flag=1 会导致 App 连不上"
+  —— 说明 App 确实在读 4 号、且对这个响应敏感）。单耳设备若 App 取右耳值或左右最小值，
+  会显示 0%。要不要对齐 1664 的 `100`，待确认。
+- **`hdlc_response()` 会顶掉未发完的帧**：上一帧还没发完时，新响应直接覆盖 pending 帧
+  （日志 `[REMPRO] TX busy — dropping previous pending frame`）。被丢的帧已经发出去一半、
+  没有结束 `7E`，App 的 HDLC 解析器会把下一帧开头一起吞掉 → 解析出别的值。
+  **与电量无关**，是 Rempro TX 通路的独立缺陷，App 连发查询时才触发（与 §2.4 那条
+  "`sentSuccess` 提前置位"是两回事，那条只重叠不丢帧）。
+
 ## 18. RM 与 BLE/按键互斥 + 特殊 Rempro 命令
 
 **RM 连接(流)期间：指令白名单**（app.c + ble_rempro_cmd.c）
@@ -1059,7 +1145,7 @@ RM 断开切回助听模式时**先以档位 5 出声，约 2s 后自动回到�
 |---|---|---|---|---|---|---|
 | 2 | SetVolume | Device_Type, Volume, Volume2 | status=1 | [cmd_setvolume:324](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L324) | RAM `s_volumes[prog]` + `0x8060B2` 下发；断链落盘 | §15.1 |
 | 3 | SetDeviceOnOff | Device_Type, OnOff | status=1 | [cmd_setdeviceonoff:349](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L349) | `bs300_active()` / `bs300_mute()` | §18 |
-| 4 | GetBatteryInfo | — | Left_Battery, Right_Battery(=0) | [cmd_getbatteryinfo:490](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L490) | 只读；DIO3 ADC 现采 | §17 |
+| 4 | GetBatteryInfo | — | Left_Battery, Right_Battery(=0) | [cmd_getbatteryinfo:524](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L524) | 只读；取周期采样缓存 `app_env.batt_lvl`（滞后 ≤60s，见 §17.4/§17.5） | §17 |
 | 5 | SetFeedbackOnOff | Device_Type, Scene_ID, OnOff | status=1 | [cmd_setfeedbackonoff:397](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L397) | RAM `s_feedback_onoff` → 覆写 `dfbc_enable_mode` bit7；断链落盘 | §15.1 |
 | 6 | SetGain | Device_Type, Scene_ID, (Spectrum, Raw)\* | — (Flag=0) | [cmd_setgain:827](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L827) | **程序 Flash**；`bin_gain = Raw-27` | — |
 | 7 | SetMPO | Device_Type, Scene_ID, (Channel, Raw)\* | — (Flag=0) | [cmd_setmpo:873](remote_mic_rx_coex_1644/code/ble_rempro_cmd.c#L873) | **程序 Flash**；`lmt_th = Raw+30` | — |

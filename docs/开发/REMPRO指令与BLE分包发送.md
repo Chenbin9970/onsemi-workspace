@@ -104,17 +104,18 @@ void rempro_tx_poll(void)
 
 ---
 
-## 三、read_battery_raw() 共用采样逻辑
+## 三、电池 ADC：两阶段采样（原 read_battery_raw() 已拆掉）
 
-`code/ble_rempro_cmd.c`，所有电池 ADC 读取（GetBatteryInfo、低电量检测）共用：
+2026-09-30 起 `read_battery_raw()` 不再存在，拆成 `code/ble_rempro_cmd.c` 里的一对：
 
-```c
-uint32_t read_battery_raw(void)
-{
-    Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
-    Sys_ADC_InputSelectConfig(0, ADC_POS_INPUT_DIO3 | ADC_NEG_INPUT_GND);
-    return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
-}
-```
+- `battery_adc_start()` —— 重配 DIO3 输入 + `ADC_PRESCALE_1280H`，只**使能** ADC；
+- `battery_adc_read_stop()` —— 隔一个 200ms tick 后读 `ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL]`，
+  随即 `Sys_ADC_Set_Config(ADC_DISABLE)` **关掉 ADC**。
 
-每次读取前重新配置 ADC，否则读到旧值。详见 `ADC电量检测开发记录.md`。
+**为什么分两阶段**：配置完立刻读时通道序列还没扫到 ch0，会读到非法满量程（一直报 100%）；
+而只使能不关会让 ADC 常开耗电（t=60s 起功耗台阶）。调用方是 `app_process.c` 的
+`battery_sample_tick()`（两阶段状态机），每 60s 一轮。
+
+**`GetBatteryInfo(4)` 因此不再现采**，回周期采样的缓存 `app_env.batt_lvl`（滞后 ≤60s）——
+这是有意代价，取舍与替代方案见 `remote_mic_rx_coex_1644_开发文档.md` §17.4 / §17.5。
+量程标定见 `ADC电量检测开发记录.md`。

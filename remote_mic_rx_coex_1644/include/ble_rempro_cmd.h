@@ -54,9 +54,11 @@ void rempro_cmd_process(void);
  * notification completed. No ke_timer — low-power safe. */
 void rempro_tx_poll(void);
 
-/* Re-trigger a fresh ADC conversion on the battery channel and return the raw
- * count. Used by the low-battery check. */
-uint32_t read_battery_raw(void);
+/* 电池 ADC 两阶段采样（见开发文档 §17.4）：start 只使能，隔一个 200ms tick
+ * 再 read_stop 读值并关掉 ADC。间隔 ≫ 扫完 8 通道的 5.1ms，无需延时常数；
+ * 读完必须关，否则 ADC 常开耗电。调用方见 app_process.c 的 battery_sample_tick。 */
+void battery_adc_start(void);
+uint32_t battery_adc_read_stop(void);
 
 /* Called from GATT callback — appends raw BLE chunk directly to
  * reassembly buffer.  Avoids the single-slot role_value race condition

@@ -408,8 +408,14 @@ extern "C"
 #define LOW_BATT_PCT                    20
 #define LOW_BATT_CHECK_MS               240000
 
-/* 电池采样间隔：每 300 个 200ms tick 采一次 = 60s（直接出值，不做多次平均） */
+/* 电池采样间隔：每 300 个 200ms tick 采一次 = 60s（直接出值，不做多次平均）。
+ * 两阶段采样：到点只使能 ADC，下一个 200ms tick 读值并关掉 ADC，见开发文档 §17.4。 */
 #define BAT_SAMPLE_TICKS                300
+
+/* 首次采样的使能时刻（第 N 个 200ms tick）。开机 ~200ms 补采一次，
+ * 填上 GetBatteryInfo 用的 app_env.batt_lvl 缓存，避免头 60s 报 1%。
+ * 此时 Sys_RFFE_SetTXPower() 已在 App_Initialize 内跑完、ADC 是关的，不会打架。 */
+#define BAT_ARM_FIRST_TICKS             1
 
 /* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
 #define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \

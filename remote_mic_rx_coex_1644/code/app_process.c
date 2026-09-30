@@ -102,29 +102,17 @@ static void low_batt_check(uint8_t batt_lvl)
 }
 
 /* ----------------------------------------------------------------------------
- * Function      : void battery_sample_tick(void)
+ * Function      : void battery_report(uint32_t raw)
  * ----------------------------------------------------------------------------
- * Description   : 电池周期采样。每 BAT_SAMPLE_TICKS 个 200ms tick（=60s）读一次
- *                 ADC 并换算成百分比，更新 app_env.batt_lvl、打印 raw，
+ * Description   : 把 ADC 原始值换算成百分比，更新 app_env.batt_lvl、打印 raw，
  *                 随后跑一次低电量告警判定。
- * Inputs        : None
+ * Inputs        : - raw  - ADC 原始值（battery_adc_read_stop() 的返回）
  * Outputs       : None
- * Assumptions   : 由 APP_Timer 每 200ms 调用一次
+ * Assumptions   : 由 battery_sample_tick 在两阶段采样的第二阶段调用
  * ------------------------------------------------------------------------- */
-static void battery_sample_tick(void)
+static void battery_report(uint32_t raw)
 {
-    static uint16_t ticks = 0;
-    uint32_t raw;
     uint32_t pct;
-
-    ticks++;
-    if (ticks < BAT_SAMPLE_TICKS)
-    {
-        return;
-    }
-    ticks = 0;
-
-    raw = read_battery_raw();
 
     if (raw <= BAT_ADC_MIN)
     {
@@ -143,6 +131,42 @@ static void battery_sample_tick(void)
     app_env.batt_lvl = (uint8_t)pct;
     PRINTF("__BATT %u%% raw=%u\r\n", app_env.batt_lvl, raw);
     low_batt_check(app_env.batt_lvl);
+}
+
+/* ----------------------------------------------------------------------------
+ * Function      : void battery_sample_tick(void)
+ * ----------------------------------------------------------------------------
+ * Description   : 电池周期两阶段采样。第一阶段（到点）只使能 ADC；第二阶段
+ *                 （下一个 200ms tick）读值并关掉 ADC，再换算/打印/告警。
+ *                 分两阶段的原因见 battery_adc_start() 的注释：配置完立刻读
+ *                 会读到非法值（一直报 100%），而 ADC 只开不关会持续耗电。
+ * Inputs        : None
+ * Outputs       : None
+ * Assumptions   : 由 APP_Timer 每 200ms 调用一次
+ * ------------------------------------------------------------------------- */
+static void battery_sample_tick(void)
+{
+    static uint32_t tick_no  = 0;
+    static uint32_t next_arm = BAT_ARM_FIRST_TICKS;
+    static uint8_t  armed    = 0;
+
+    if (armed)
+    {
+        /* 第二阶段：ADC 已使能 ≥1 个 tick（≥200ms ≫ 8 通道 5.1ms），读+关 */
+        armed = 0;
+        battery_report(battery_adc_read_stop());
+        return;
+    }
+
+    tick_no++;
+    if (tick_no != next_arm)
+    {
+        return;
+    }
+
+    next_arm = tick_no + BAT_SAMPLE_TICKS;
+    battery_adc_start();
+    armed = 1;
 }
 
 /* ----------------------------------------------------------------------------

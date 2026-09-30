@@ -484,42 +484,56 @@ static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
     hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
 }
 
-/* Re-configure the ADC before each read, otherwise DATA_TRIM_CH is stale.
- * DIO3(IO) 电池采样（参考 peripheral_server_sleep），每次读前重配 ADC。
- * 勿读完 disable：会让 ADC 处于「刚使能、尚未转换」的窗口，读回满量程 → 一直报 100%，
- * 见开发文档 §17.3。 */
-uint32_t read_battery_raw(void)
+/* 电池 DIO3(IO) ADC 两阶段采样（详见开发文档 §17.3 / §17.4）。
+ *
+ * 为什么必须**分两阶段**：ADC_NORMAL 模式下 8 个通道靠序列轮询刷新
+ * DATA_TRIM_CH[]，配置完立刻读时序列还没扫到 ch0，读到非法值（≈满量程
+ * 0x3FFF）→ raw ≥ BAT_ADC_MAX → 一直报 100%。以前不暴露，是因为 ADC 一直
+ * 开着、序列一直在刷，读到的总是上一轮的合法值。
+ *
+ * 为什么必须**读完关掉**：开机 Sys_RFFE_SetTXPower() 量完 VDDRF 会
+ * ADC_DISABLE（SDK 注释 "uses ADC channel 0 and disables it after use"），
+ * 本工程的 ADC 本来是全程关着的。采样只开不关的话，ADC 会从第一次采样起
+ * 以最慢档 PRESCALE_1280H 常开 → 功耗台阶式升高且不恢复。
+ *
+ * 时序：start 使能 → 隔一个 200ms tick → read_stop 读+关。SLOWCLK=2MHz、
+ * PRESCALE_1280H 下扫完 8 通道约 5.1ms，200ms 有约 39 倍余量，不需要猜
+ * 任何延时常数。 */
+void battery_adc_start(void)
 {
     Sys_DIO_Config(BAT_ADC_DIO, DIO_MODE_GPIO_IN_0 | DIO_NO_PULL |
                    DIO_LPF_DISABLE);
     Sys_ADC_Set_Config(ADC_NORMAL | ADC_PRESCALE_1280H);
     Sys_ADC_InputSelectConfig(0, (ADC_NEG_INPUT_GND |
                                   ADC_POS_INPUT_DIO3));
-    return ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
 }
 
-/* ID:4  GetBatteryInfo */
+uint32_t battery_adc_read_stop(void)
+{
+    uint32_t raw = ADC->DATA_TRIM_CH[BAT_ADC_CHANNEL];
+
+    Sys_ADC_Set_Config(ADC_DISABLE);
+    return raw;
+}
+
+/* ID:4  GetBatteryInfo
+ * 取周期两阶段采样的缓存值 app_env.batt_lvl，不再同步读 ADC —— 采样需要
+ * 200ms 才能读到合法值，而 ADC 常开又会持续耗电（见 battery_adc_start 的注释）。
+ * 代价是最大滞后一个采样周期（60s），对电量查询无影响；
+ * 开机时 battery_sample_tick 已提前补采一次，避免头 60s 报 1%。 */
 static void cmd_getbatteryinfo(void)
 {
     uint8_t resp_data[2];
-    uint32_t raw = read_battery_raw();
-    uint32_t pct;
-    if (raw <= BAT_ADC_MIN) {
-        pct = 1;
-    } else if (raw >= BAT_ADC_MAX) {
-        pct = BAT_LVL_MAX;
-    } else {
-        pct = (raw - BAT_ADC_MIN) * BAT_LVL_MAX
-              / (BAT_ADC_MAX - BAT_ADC_MIN);
-    }
+    uint8_t pct = app_env.batt_lvl;
+
     /* 保护：低于阈值/取整到 0 时最低报 1%，不报 0 */
     if (pct == 0) {
         pct = 1;
     }
-    resp_data[0] = (uint8_t)pct;  /* Left_Battery: measured */
+    resp_data[0] = pct;           /* Left_Battery: 周期采样缓存值 */
     resp_data[1] = 0;             /* Right_Battery: 0 (single device) */
 
-    PRINTF("[REMPRO] GetBatteryInfo: raw=%u pct=%u%%\r\n", raw, pct);
+    PRINTF("[REMPRO] GetBatteryInfo: pct=%u%% (cached)\r\n", pct);
     hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
 }
 
