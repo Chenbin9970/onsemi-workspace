@@ -99,6 +99,10 @@ static bool dsp_7100_send_end(void)
     bool ok = i2c_7100_write(I2C_7100_ADDR, &end, sizeof(end));
 
     print_w(&end, sizeof(end), ok);
+    /* 紧跟在 82 之后探一次 DIO13（见 DSP7100_DIO13_IRQ_ENABLE）：脉冲若贴在
+     * 这一行后面 = 7100 收到 82 就跳；拖到下一行（延时/读之后）才出现 =
+     * 7100 应用完才跳。本函数是命令路径里发 82 的唯一出口，一行覆盖全部调用者。 */
+    dsp_7100_dio13_irq_poll();
     return ok;
 }
 

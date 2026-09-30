@@ -37,7 +37,8 @@
  *                                         ke_task_id_t const src_id)
  * ----------------------------------------------------------------------------
  * Description   : 200ms 周期 tick。优先推进降噪/DFBC 写会话（一条命令一 tick），
- *                 否则推进读回会话；每 5s(25 tick) 向 7100 发心跳 {0x88, 0x01}。
+ *                 否则给读回会话兜底（正常由 DIO13 下降沿加速推进）；
+ *                 每 5s(25 tick) 向 7100 发心跳 {0x88, 0x01}。
  *                 写会话期间不读回/不发心跳，避免抢 I2C。
  * ------------------------------------------------------------------------- */
 int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
@@ -68,8 +69,10 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
         return (KE_MSG_CONSUMED);
     }
 
-    /* 每 tick(200ms)：推进 4 程序×(降噪/DFBC/WDRC) 读回（一轮完成即停止） */
-    dsp_7100_rb_seq_tick();
+    /* 每 tick(200ms)：读回**兜底** —— 只置超时标志，真正推进在主循环的
+     * dsp_7100_rb_poll（那里正常靠 DIO13 边沿，比 200ms 快得多）。
+     * 兜底不能去：实测「等边沿」有两次没等到（810/820ms 不落）。 */
+    dsp_7100_rb_tick();
 
     /* 每 25 tick(5s)：发心跳 {0x88,0x01} */
     if ((s_7100_cnt % 25) == 0) {

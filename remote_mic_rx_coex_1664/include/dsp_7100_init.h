@@ -35,6 +35,39 @@ extern const uint16_t        dsp_init_step_cnt;
 /* 只跑到前 N 步用于调试；0 = 全部。 */
 #define DSP7100_INIT_MAX_STEPS  0
 
+/* DIO13 边沿中断：把 7100 的「A7 响应就绪」边沿变成可观测事件（上升+下降都数）。
+ * 1 = 开（ISR 只置计数，主循环打印），0 = 关（不装中断）。
+ *
+ * 为什么 DIO13 能做中断：RSL10 的 4 条 DIO 中断线（DIO0_IRQn..DIO3_IRQn）是
+ * **可编程源**的 —— 任意 DIO 都能经 DIO_SRC_DIO_<n> 挂上去（见
+ * rsl10_sys_dio.h 的 Sys_DIO_IntConfig），与 pad 号无关。本项占 2、3 号两条。
+ *
+ * ⚠ DIO2_IRQn / DIO3_IRQn 只是 NVIC 线号，与 DIO2/DIO3 pad（PCM DATA/CLK）
+ *   无绑定关系（INT_CFG 里配的源是 DIO13），理论上不冲突；但同属一批 DIO 资源，
+ *   上板时一并确认 PCM 输出无异常。1664 目前没有别处用 DIO 中断，两条线都是空的。
+ *
+ * 为什么采双边沿而不是只采上升沿：协议只说是「窄脉冲」，没说极性；而 7100 在
+ * 上电握手里是**拉低** DIO13 表示 ready，所以「低=有效」同样说得通。只测一个
+ * 方向可能白跑一趟上板。双边沿一次拿全。
+ *
+ * 目的：参考设计（remote_mic_rx_coex/code/dsp_7100_init.c）用它做过 A7 响应
+ * 中断，但调用点被注释掉、没留下结论。本开关去把结论补上 —— 发 A7 的时候
+ * 7100 到底会不会回跳，串口就能看出来，不用示波器。测完改回 0。 */
+#define DSP7100_DIO13_IRQ_ENABLE    1
+
+/* 开机调一次，**握手之前**：DIO13 配输入 + 使能上升/下降沿中断 + 计数清零
+ * （关闭时为空实现）。放握手前是为了让握手本身当阳性对照。 */
+void dsp_7100_dio13_irq_arm(void);
+
+/* 有新的边沿就打印一次增量（关闭时为空实现）。共三处调用：
+ * boot_init 里每步一条（逐命令定位）+ app.c 握手后一条当基线、主循环里一条当总数。 */
+void dsp_7100_dio13_irq_poll(void);
+
+/* DIO13 上升/下降沿累计数。读回拿它们当「7100 已吃下这一步」的加速判据
+ * （见 dsp_7100_rb_poll）。中断没开时恒为 0 ⇒ 加速路径永不触发，自动退回 200ms。 */
+uint32_t dsp_7100_dio13_rise_cnt(void);
+uint32_t dsp_7100_dio13_fall_cnt(void);
+
 /* 同步跑「首个 A7 之前」的引导步。开机调用一次，阻塞（≥1ms 分段喂狗）。 */
 void dsp_7100_boot_init(void);
 
@@ -49,8 +82,16 @@ typedef struct
 extern const dsp_a7_cmd_t dsp_rb_cmds[];
 extern const uint16_t     dsp_rb_cmd_cnt;
 
-/* 读回推进：由 200ms tick 调用，一条命令一个 tick。一轮跑完自行停止并解析。 */
+/* 读回推进一步（一条命令一个相位）。一轮跑完自行停止并解析。
+ * 外部不要直接调 —— 走下面两个入口，见 dsp_7100_rb_poll 的说明。 */
 void dsp_7100_rb_seq_tick(void);
+
+/* 200ms tick 调（app_process.c）：只置超时标志，不推进。 */
+void dsp_7100_rb_tick(void);
+
+/* 主循环调（app.c）：读回唯一的推进点 —— 两个相位都由 DIO13 边沿驱动
+ * （RB_SEND 等下降沿、RB_READ 等上升沿），边沿不来则由 dsp_7100_rb_tick 的超时兜底。 */
+void dsp_7100_rb_poll(void);
 
 /* ---- 读回规模 ---- */
 #define DSP7100_RB_PROGS      4
