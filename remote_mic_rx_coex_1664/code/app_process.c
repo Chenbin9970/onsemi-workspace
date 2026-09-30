@@ -36,15 +36,16 @@
  *                                         ke_task_id_t const dest_id,
  *                                         ke_task_id_t const src_id)
  * ----------------------------------------------------------------------------
- * Description   : 200ms 周期 tick。优先推进降噪/DFBC 写会话（一条命令一 tick），
- *                 否则给读回会话兜底（正常由 DIO13 下降沿加速推进）；
- *                 每 5s(25 tick) 向 7100 发心跳 {0x88, 0x01}。
- *                 写会话期间不读回/不发心跳，避免抢 I2C。
+ * Description   : 200ms 周期 tick。给命令会话和读回**兜底**（两者的推进都在主循环，
+ *                 正常由 DIO13 边沿驱动，比 200ms 快得多）；会话刚结束的那一 tick
+ *                 启动下一条缓存命令；每 5s(25 tick) 向 7100 发心跳 {0x88, 0x01}。
+ *                 会话期间不读回/不发心跳，避免抢 I2C。
  * ------------------------------------------------------------------------- */
 int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
                         ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
     static uint16_t s_7100_cnt = 0;
+    static uint8_t  s_cmd_was_busy = 0;
 
     (void)msg_id;
     (void)param;
@@ -59,14 +60,19 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
     /* 测听进入/退出的延时推送（纯 BLE，不占 I2C，放最前面不受会话影响） */
     rempro_deferred_tick();
 
-    /* 降噪/DFBC 写会话进行中：只推进它，不读回不发心跳 */
+    /* 命令会话进行中：只置兜底标志（推进在主循环的 dsp_7100_cmd_poll），
+     * 会话期间不读回不发心跳 */
     if (dsp_7100_cmd_busy()) {
         dsp_7100_cmd_tick();
-        /* 本 tick 刚跑完 ⇒ 启动下一条缓存的设置命令（无缓存则空操作） */
-        if (!dsp_7100_cmd_busy()) {
-            rempro_pending_start_next();
-        }
+        s_cmd_was_busy = 1;
         return (KE_MSG_CONSUMED);
+    }
+
+    /* 会话是在上一个 tick 之后由主循环收尾的（不是在本函数里）→ 补启动下一条
+     * 缓存的设置命令。比原来晚一个 tick(≤200ms) 启动，异步语义下无影响。 */
+    if (s_cmd_was_busy) {
+        s_cmd_was_busy = 0;
+        rempro_pending_start_next();
     }
 
     /* 每 tick(200ms)：读回**兜底** —— 只置超时标志，真正推进在主循环的

@@ -75,7 +75,7 @@ static void dump_hex(const uint8_t *p, uint16_t len)
 /* 读回过程中把**真发到线上**的字节打出来（tag = I2C 首字节：写 04 / 读 05 / 收尾 82）。
  * 1 = 开。⚠ 串口 115200：一轮多出约 4KB ≈ 0.35s，
  *   **开着时的时间戳不能用来比较调速效果**（会把 1.0s 的一轮拖到 1.4s 上下）。测速前改回 0。 */
-#define RB_DUMP_BYTES   0
+#define RB_DUMP_BYTES   1
 
 #if (RB_DUMP_BYTES)
 #define RB_DUMP(tag, p, n)   do { PRINTF(" %s:", (tag)); dump_hex((p), (n)); } while (0)

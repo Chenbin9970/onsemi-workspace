@@ -322,8 +322,9 @@ void rempro_push_audiometry_exit(void)
 
 /* ---- 延时推送：测听进入/退出完成后，隔 1s 再推 ----
  * 用 APP_7100_HB_Handler 的 200ms 周期 tick 计数（5 tick = 1s），不引入新的 ke_timer。
- * 原因：切程序（dsp_7100_switch_program）是阻塞调用且 7100 侧要消化一下，
- * 推早了 App 会拿到还没生效的状态；同时也避免推送抢在 CMD 40 的应答前面。 */
+ * 原因：测听会话（切程序 + 0x2E + 解除静音）7100 侧要消化一下，
+ * 推早了 App 会拿到还没生效的状态；同时也避免推送抢在 CMD 40 的应答前面。
+ * （会话本身已是异步的，这 1s 现在是纯余量。） */
 #define AUD_PUSH_TICKS   5
 #define AUD_PUSH_ENTER   1
 #define AUD_PUSH_EXIT    2
@@ -914,7 +915,8 @@ static void cmd_setdeviceonoff_7100(const uint8_t *data, uint8_t len)
  *   推早了会抢在应答前面发出去（实测日志：push 先于 TX frame），App 会拿到没生效的状态。
  * ========================================================================== */
 
-#define AUDIOMETRY_PROG   3
+/* 测听程序号（3）已挪到 dsp_7100_cmd.c 的 DSP7100_AUDIOMETRY_PROG ——
+ * 它是 7100 侧的程序编号，跟切程序一起归命令层管。 */
 
 static uint8_t s_audiometry_prev_prog;   /* 进入测听前的程序，退出时切回 */
 static bool    s_audiometry_active;
@@ -929,44 +931,35 @@ static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetAudiometryStatus: status=%u active=%u\r\n",
            fitting_status, s_audiometry_active);
 
-    /* 会话占着 I2C 时不能插阻塞的切程序调用 */
+    /* 会话占着 I2C 时起不了新的（同一时刻只允许一个会话） */
     if (dsp_7100_cmd_busy()) {
         PRINTF("[REMPRO] SetAudiometryStatus: 7100 会话进行中，忽略\r\n");
         hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, false);
         return;
     }
 
-    /* 先回应答，再做活（切程序是阻塞调用，放后面不影响应答时序） */
+    /* 先回应答，再做活（会话是异步的，放后面不影响应答时序） */
     hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, true);
 
     switch (fitting_status) {
     case 0:   /* 进入测听：切程序 → 0x2E=0x00 → 解除静音（照 tonestar.txt 抓包顺序）*/
         if (s_audiometry_active) break;                  /* 已在测听，幂等 */
         s_audiometry_prev_prog = dsp_7100_get_program();
-        if (!dsp_7100_switch_program(AUDIOMETRY_PROG)) {
-            PRINTF("[REMPRO] SetAudiometryStatus: 切入程序%u 失败\r\n", AUDIOMETRY_PROG);
+        if (!dsp_7100_audiometry(true, s_audiometry_prev_prog)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 入测听会话启动失败\r\n");
             break;
         }
         s_audiometry_active = true;
-        if (!dsp_7100_set_tone_mode(true)) {
-            PRINTF("[REMPRO] SetAudiometryStatus: 0x2E 置位失败\r\n");
-        }
-        dsp_7100_set_mute(false);                        /* 抓包末尾恒有 26（解除静音）*/
         aud_push_schedule(AUD_PUSH_ENTER);               /* 1s 后推 Initial_Status = 2 */
         break;
 
     case 1:   /* 退出测听：切回原程序 → 0x2E=0x58 → 解除静音 */
         if (!s_audiometry_active) break;                 /* 未在测听，幂等 */
-        if (!dsp_7100_switch_program(s_audiometry_prev_prog)) {
-            PRINTF("[REMPRO] SetAudiometryStatus: 切回程序%u 失败\r\n",
-                   s_audiometry_prev_prog);
+        if (!dsp_7100_audiometry(false, s_audiometry_prev_prog)) {
+            PRINTF("[REMPRO] SetAudiometryStatus: 出测听会话启动失败\r\n");
             break;
         }
         s_audiometry_active = false;
-        if (!dsp_7100_set_tone_mode(false)) {
-            PRINTF("[REMPRO] SetAudiometryStatus: 0x2E 复位失败\r\n");
-        }
-        dsp_7100_set_mute(false);                        /* 抓包末尾恒有 26（解除静音）*/
         aud_push_schedule(AUD_PUSH_EXIT);                /* 1s 后推 Initial_Status = 1 */
         break;
 
@@ -975,8 +968,9 @@ static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
         break;
     }
 
-    PRINTF("[REMPRO] SetAudiometryStatus: prog %u -> %u\r\n",
-           s_audiometry_prev_prog, dsp_7100_get_program());
+    /* 会话异步跑，此刻 s_cur_prog 还是旧值（收尾才更新）→ 只报本次的目标程序 */
+    PRINTF("[REMPRO] SetAudiometryStatus: prev_prog=%u（会话已排入队列）\r\n",
+           s_audiometry_prev_prog);
 }
 
 /* ============================================================================

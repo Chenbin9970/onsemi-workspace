@@ -1,7 +1,9 @@
-/* 7100 运行时命令层（切程序 / 调音量），移植自 peripheral_server_sleep7160test。
+/* 7100 运行时命令层（切程序 / 调音量 / 降噪 / DFBC / WDRC / EQ / 纯音 / 静音 / 测听）。
  *
- * 帧序列见 include/dsp_7100_cmd.h。均为阻塞调用（内含 ms 级延时），
- * 由 Rempro 命令处理（主循环上下文）调用。 */
+ * 帧序列见 include/dsp_7100_cmd.h。**全部异步**：所有设置都是往步骤表里塞命令，
+ * 由主循环的 dsp_7100_cmd_poll() 在 DIO13 边沿上推进（200ms tick 兜底），
+ * 与读回（dsp_7100_init.c 的 dsp_7100_rb_poll）同一套模型。
+ * 由 Rempro 命令处理（主循环上下文）调用启动；同一时刻只允许一个会话。 */
 
 #include "dsp_7100_cmd.h"
 #include "dsp_7100_init.h"
@@ -17,11 +19,15 @@
 #define DSP7100_CMD_PARAM_WRITE  0xA2
 #define DSP7100_REG_PROGRAM      0x16
 #define DSP7100_REG_VOLUME       0x12
-#define DSP7100_REG_TONE_MODE    0x2E   /* 测听模式寄存器：进测听 0x00 / 退出 0x58 */
-#define DSP7100_TONE_MODE_ON     0x00
-#define DSP7100_TONE_MODE_OFF    0x58
+/* 测听模式寄存器 —— 测听进入 / 退出的第 ② 条命令（`A2 00 2E <00|58>`），
+ * 抓包来源 tonestar.txt / tonestop.txt。
+ * 2026-09-30 一度随「只切程序」被停用，同日又加回（保留命令、只砍读）。 */
+#define DSP7100_REG_TONE_MODE    0x2E
+#define DSP7100_TONE_MODE_ON     0x00   /* 进测听时的值 */
+#define DSP7100_TONE_MODE_OFF    0x58   /* 退测听时的值 */
 #define DSP7100_CMD_END          0x82
-#define DSP7100_RX_LEN           6
+#define DSP7100_RX_LEN           6      /* 单步读回长度上限（rx[] 缓冲与 rd 夹紧都用它） */
+#define DSP7100_AUDIOMETRY_PROG  3      /* 测听程序号（原 ble_rempro_cmd.c 的 AUDIOMETRY_PROG） */
 
 /* 6 档音量 → 0-100 值：round(档位 * 100 / 6) = 17/33/50/67/83/100 */
 static const uint8_t s_volume_value[6] = {0x11, 0x21, 0x32, 0x43, 0x53, 0x64};
@@ -75,23 +81,6 @@ static void print_i2c(char dir, const uint8_t *d, uint16_t len, bool ok)
 #define print_w(p, l, ok)   print_i2c('W', (p), (l), (ok))
 #define print_r(p, l, ok)   print_i2c('R', (p), (l), (ok))
 
-static bool dsp_7100_write_cmd(uint8_t reg, uint8_t value)
-{
-    uint8_t wr[4] = {DSP7100_CMD_PARAM_WRITE, 0x00, reg, value};
-    bool ok = i2c_7100_write(I2C_7100_ADDR, wr, sizeof(wr));
-
-    print_w(wr, sizeof(wr), ok);
-    return ok;
-}
-
-static bool dsp_7100_read6(uint8_t *rx)
-{
-    bool ok = i2c_7100_read(I2C_7100_ADDR, rx, DSP7100_RX_LEN);
-
-    print_r(rx, DSP7100_RX_LEN, ok);
-    return ok;
-}
-
 /* 发一帧结束 82，并打印 */
 static bool dsp_7100_send_end(void)
 {
@@ -106,44 +95,8 @@ static bool dsp_7100_send_end(void)
     return ok;
 }
 
-/* 调音量：写帧 → 2ms → 读确认 → 1ms → 82 */
-bool dsp_7100_set_volume(uint8_t level)
-{
-    uint8_t rx[DSP7100_RX_LEN];
-
-    if (level < 1 || level > 6) return false;
-    PRINTF("[7100] --- SetVolume level=%u ---\r\n", level);
-    if (!dsp_7100_write_cmd(DSP7100_REG_VOLUME, s_volume_value[level - 1])) return false;
-    i2c_7100_delay_ms(2);
-    if (!dsp_7100_read6(rx)) return false;
-    i2c_7100_delay_ms(1);
-    if (!dsp_7100_send_end()) return false;
-    s_cur_vol_level = level;
-    PRINTF("[7100] --- SetVolume done ---\r\n");
-    return true;
-}
-
-/* 切程序（对照 program1 完整 5 帧）：
- * 写帧 → 80ms → 读确认 → 1ms → 82 → 1ms → 读状态 → 1ms → 82 */
-bool dsp_7100_switch_program(uint8_t prog)
-{
-    uint8_t rx[DSP7100_RX_LEN];
-
-    if (prog < 1 || prog > 4) return false;
-    PRINTF("[7100] --- SwitchProgram prog=%u ---\r\n", prog);
-    if (!dsp_7100_write_cmd(DSP7100_REG_PROGRAM, prog)) return false;
-    i2c_7100_delay_ms(80);
-    if (!dsp_7100_read6(rx)) return false;
-    i2c_7100_delay_ms(1);
-    if (!dsp_7100_send_end()) return false;
-    i2c_7100_delay_ms(1);
-    if (!dsp_7100_read6(rx)) return false;
-    i2c_7100_delay_ms(1);
-    if (!dsp_7100_send_end()) return false;
-    s_cur_prog = prog;
-    PRINTF("[7100] --- SwitchProgram done ---\r\n");
-    return true;
-}
+/* dsp_7100_set_volume / dsp_7100_switch_program 已改成异步会话，
+ * 定义在文件后半段（与其它 set_* 入口放一起）。 */
 
 uint8_t dsp_7100_get_program(void)      { return s_cur_prog; }
 uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
@@ -156,6 +109,10 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
  *   发命令 → （下个 tick）读 3B 应答(46 00 00) → 写 04 82 → 进下一条
  * 会话序列（与 rx_coex 写会话骨架一致，无 0x03 状态读）：
  *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
+ *
+ * ⚠ 2026-09-30 起 **DFBC 走变体**（见 §23、s_sess_noack）：不再读那 3B，
+ *   改成「写帧 → 等 DIO13 上升沿 → 直接 82 → 等下降沿 → 下一条」，
+ *   边沿等不到仍由 200ms tick 兜底。降噪 / WDRC / EQ 本轮**未改**，仍读应答。
  * ========================================================================== */
 
 /* 最长会话 = WDRC 全通道单参数：静音+选程序+16 通道×2 命令+确认+解除+选回+提交 = 38 条
@@ -180,6 +137,10 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 #define A7_KIND_WDRC     3
 #define A7_KIND_TONE     4
 #define A7_KIND_MUTE     5
+#define A7_KIND_PROG         6   /* 切程序（A2 五帧） */
+#define A7_KIND_VOL          7   /* 调音量（A2 三帧） */
+#define A7_KIND_AUDIO_ENTER  8   /* 进测听：切程序3 + 0x2E=00 + 解除静音（三条，都不读） */
+#define A7_KIND_AUDIO_EXIT   9   /* 退测听：切回原程序 + 0x2E=58 + 解除静音 */
 
 /* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2，OutputLimit = +3
  * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1、§2）
@@ -305,17 +266,48 @@ static const uint8_t s_noise_tri[5][3] = {
     {0x79, 0x91, 0x1C},   /* 档位 4 */
 };
 
+/* 一条命令 = 一个步骤，两步相位（写帧 → 读回+82），与读回
+ * dsp_7100_init.c 的 RB_SEND / RB_READ 完全同构。
+ *
+ *   wait_ms > 0  写完固定延时这么久再读（**A2 写没有 DIO13 回铃** —— 实测
+ *                「A1/A2 写和纯读命令一个都不跳」，所以不能等上升沿）
+ *   wait_ms == 0 写完等 DIO13 **上升沿**（7100 收到了）再收尾（A7 命令走这条）——
+ *                收尾是「先读 rlen 字节再发 82」还是「直接发 82」，看 rlen / wait_rise
+ *   wlen == 0    本条不发写帧，只读（切程序第 2 条「读状态」）
+ */
 typedef struct
 {
-    const uint8_t *data;
-    uint16_t       len;
+    const uint8_t *data;     /* 写帧字节；NULL = 本条只读 */
+    uint16_t       wlen;     /* 写帧长度；0 = 不写 */
+    uint16_t       rlen;     /* 读回长度（>0 则读完补一条 82 收尾；0 = 本步不读那 3B） */
+    uint16_t       wait_ms;  /* 写完后的固定延时（>0 时不等上升沿，延时满直接走下一步）；
+                              * 0 = 不延时 —— 有回铃就等上升沿，没回铃就立刻 82 */
+    uint8_t        wait_rise; /* 1 = 本步**不读**那 3B，但**仍要等** A7 回铃的上升沿再发 82
+                              *（DFBC 会话走这条，见 §23）。
+                              * ⚠ 与「rlen=0 且本字段=0」（纯音：不等回铃、写完立刻 82）
+                              * 语义相反 —— 两者帧形状完全一样，只能靠本字段显式区分，
+                              * 不能从 rlen 推断。 */
 } a7_step_t;
 
 static a7_step_t s_steps[A7_MAX_CMDS];
 static uint8_t   s_step_cnt;
 static uint8_t   s_step_idx;
-static bool      s_step_read;       /* false=发命令  true=读应答+82 */
 static bool      s_sess_active;
+
+/* ---- 推进状态（照 dsp_7100_init.c 的 s_rb_st / s_rb_wait_* / s_rb_timeout）----
+ * 相位与门控：
+ *   CMD_ST_SEND 发命令 —— 有前序 82 时等它的**下降沿**（7100 吃下了才发下一条）
+ *   CMD_ST_READ 读应答 —— 等**上升沿**（7100 收到了），除非本步用固定延时
+ * 200ms tick 只置 s_cmd_timeout 兜底，真正步进在主循环的 dsp_7100_cmd_poll()。 */
+#define CMD_ST_SEND   0
+#define CMD_ST_READ   1
+
+static uint8_t  s_cmd_st;
+static uint8_t  s_cmd_send_gate;    /* 1 = SEND 前等上一条 82 的下降沿 */
+static uint8_t  s_cmd_read_gate;    /* 1 = READ 前等上升沿（wait_ms==0 时） */
+static uint8_t  s_cmd_timeout;      /* 200ms tick 兜底标志 */
+static uint32_t s_cmd_wait_rise;    /* 发本命令前记的上升沿数 */
+static uint32_t s_cmd_wait_fall;    /* 发本条 82 前记的下降沿数 */
 
 static uint8_t   s_cmd_buf[A7_CMD_BUF_SZ];
 static uint16_t  s_cmd_used;
@@ -337,6 +329,21 @@ static uint8_t  s_tone_db;
 
 static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
 
+/* DFBC 会话专用：A7 步不读那 3B 应答，改等回铃上升沿后直接 82（见 §23）。
+ * 由 a7_put() 决定每步的 rlen / wait_rise，a7_build_session() 按 kind 置位。
+ * ⚠ 置 1 时**只能**用于「每一步都是 A7 写、且每一步都该等回铃」的会话（目前只有 DFBC）。
+ *   下面三处依赖它对这些 kind 为 0（各自帧形状与 DFBC 步一样，语义却相反），
+ *   日后扩大 kind 判断时要一并检查：
+ *     a7_add_a2()           —— A2 无回铃，函数内强制清零
+ *     a7_add_simple_noack() —— 测听第 ③ 句，有意「不等回铃、立刻 82」
+ *     a7_add_tone()         —— 纯音，同上
+ *
+ * ⚠⚠ 2026-09-30 上板实测（开发文档 §23.6）：**DFBC 这一步的前提不成立** ——
+ *   写帧产生零边沿，DIO13 只在 82 之后 0~2ms 出现 rise+fall。所以
+ *   「等回铃再发 82」永远等不到，每步退到 200ms tick → 会话 1430ms、静音 810ms。
+ *   待办见 §23.7 方案 A（把 wait_rise 去掉，写完立刻 82，约 40ms）。 */
+static uint8_t s_sess_noack;
+
 /* 从命令缓冲切一段并挂到步骤表 */
 static uint8_t *a7_put(uint16_t len)
 {
@@ -347,10 +354,43 @@ static uint8_t *a7_put(uint16_t len)
 
     p = s_cmd_buf + s_cmd_used;
     s_cmd_used = (uint16_t)(s_cmd_used + len);
-    s_steps[s_step_cnt].data = p;
-    s_steps[s_step_cnt].len  = len;
+    s_steps[s_step_cnt].data      = p;
+    s_steps[s_step_cnt].wlen      = len;
+    s_steps[s_step_cnt].rlen      = s_sess_noack ? 0 : A7_RX_ACK;
+    s_steps[s_step_cnt].wait_ms   = 0;
+    s_steps[s_step_cnt].wait_rise = s_sess_noack;
     s_step_cnt++;
     return p;
+}
+
+/* A2 写帧 `A2 00 <reg> <val>` + 写后固定延时（A2 无 DIO13 回铃，见步骤表注释） */
+static void a7_add_a2(uint8_t reg, uint8_t val, uint16_t wait_ms)
+{
+    uint8_t *p = a7_put(4);
+
+    if (p == NULL) return;
+    p[0] = DSP7100_CMD_PARAM_WRITE; p[1] = 0x00; p[2] = reg; p[3] = val;
+    s_steps[s_step_cnt - 1].wait_ms   = wait_ms;
+    s_steps[s_step_cnt - 1].wait_rise = 0;   /* A2 没有回铃：永不等上升沿 */
+}
+
+/* A2 写帧 + 82 收尾，**不读应答**（切程序 / 调音量 / 测听 2026-09-30 起走这条）。
+ * 为什么不读：A2 的应答格式在本工程从未验证过 —— 实测 77ms 时 7100 回
+ * `65 01 00`（未就绪，签名见 dsp_7100_init.c:248），而固定长度盲读会把它
+ * 后面的事务读错位（读完 3B 再读 6B 拿到 `28 65 01 00 28 43`）。
+ * 读不出可信的东西，不如只发命令。
+ * wait_ms = 写帧后等这么久再发 82。A2 没有 DIO13 回铃（见 A7_A2_WAIT_MS），
+ * 所以只能等固定时间：切程序 / 调音量传 0（立刻发），
+ * 测听第 ① 句传 A7_PROG_LOAD_MS(80ms)、第 ② 句传 A7_A2_WAIT_MS(2ms)。
+ * 82 留着：它是本工程实验证过的解锁字节（见 dsp_7100_init.c 的 RB_SKIP_END82_IDX）。 */
+static void a7_add_a2_noack(uint8_t reg, uint8_t val, uint16_t wait_ms)
+{
+    uint16_t before = s_step_cnt;
+
+    a7_add_a2(reg, val, wait_ms);
+    if (s_step_cnt > before) {
+        s_steps[s_step_cnt - 1].rlen = 0;   /* rlen=0 → 本步不读，延时够了直接 82 */
+    }
 }
 
 /* A7 01 00 00 00 <opt> */
@@ -361,6 +401,19 @@ static void a7_add_simple(uint8_t opt)
     if (p == NULL) return;
     p[0] = 0xA7; p[1] = 0x01; p[2] = 0x00;
     p[3] = 0x00; p[4] = 0x00; p[5] = opt;
+}
+
+/* A7 01 00 00 00 <opt> + 82，**不读应答**（测听会话里的解除静音用）。
+ * 与 a7_add_simple 只差 rlen=0：写完立刻 82，既不读那 3B、也不等 A7 的回铃。
+ * ⚠ 这句原本靠等上升沿（A7 有回铃），这里是按「只砍读、不另加等待」处理的。 */
+static void a7_add_simple_noack(uint8_t opt)
+{
+    uint16_t before = s_step_cnt;
+
+    a7_add_simple(opt);
+    if (s_step_cnt > before) {
+        s_steps[s_step_cnt - 1].rlen = 0;
+    }
 }
 
 /* A7 02 00 00 00 <opt> <P> */
@@ -445,7 +498,11 @@ static void a7_add_wdrc_items(uint8_t prog, uint8_t which)
 
 /* 纯音帧：A7 07 00 00 00 2E <en> <freq16-BE> <level24-BE>
  *   出音 en=01 + 频率 + 电平；停音 en=00 + 全 0（频率电平一起清零）
- * 抓包：tone*hz*db.txt（15 条） */
+ * 抓包：tone*hz*db.txt（15 条），波形是 写帧 → 读 3B → 82。
+ *
+ * ⚠ 2026-09-30 起**不读应答**（rlen=0）：写帧完直接 82，与切程序/调音量同形。
+ *   代价同 §22 —— 命令不再被校验，ok=1 只代表 I2C 写成功。
+ *   （A7 写本来有 DIO13 回铃，可等；这里按「和切程序一样，简单优先」一并不等。） */
 static void a7_add_tone(uint8_t enable, uint16_t freq, uint32_t level)
 {
     uint8_t *p = a7_put(12);
@@ -459,6 +516,8 @@ static void a7_add_tone(uint8_t enable, uint16_t freq, uint32_t level)
     p[9]  = (uint8_t)((level >> 16) & 0xFFu);
     p[10] = (uint8_t)((level >> 8) & 0xFFu);
     p[11] = (uint8_t)(level & 0xFFu);
+
+    s_steps[s_step_cnt - 1].rlen = 0;   /* 本步不读应答，SEND 完直接 82 */
 }
 
 /* 查电平表；返回 false = 该频点没有标定值 */
@@ -509,22 +568,33 @@ static int8_t a7_eq_prev(const dsp_7100_prog_t *p, uint8_t band)
     return p->eq_high;
 }
 
+/* A2 写帧后的固定延时 —— 前提是**实测出来的协议事实**：
+ *   A2 命令 7100 不产生 DIO13 回铃（实测「A1/A2 写和纯读命令一个都不跳」，
+ *   切程序那次 32.924 写 → 33.004 之间也是零边沿）→ 只能等固定时间，不能等上升沿。
+ *   80ms = 程序加载窗口（实测该窗口内 DIO13 零边沿，纯等边沿会卡住）—— 测听第 ① 句用；
+ *   2ms  = 原 set_volume / set_tone_mode 的帧间间隔 —— 测听第 ② 句（0x2E）用。
+ * （切程序 / 调音量 / 纯音不走这两个值，它们是「写完立刻 82」。） */
+#define A7_A2_WAIT_MS     2
+#define A7_PROG_LOAD_MS   80
+
 /* 会话骨架：静音 → 选程序 → [写块] → confirm → 解除静音 →
  * 选回程序0 → commit。写块由 kind 决定。 */
 static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
 {
     s_step_cnt = 0;
     s_step_idx = 0;
-    s_step_read = false;
     s_cmd_used = 0;
     s_build_fail = false;
+    /* DFBC：A7 步不读那 3B，改等回铃上升沿后直接 82（§23）。
+     * ⚠ 本轮**只放开 DFBC**，降噪 / WDRC / EQ 仍照旧读应答 —— 验证后再推给它们。 */
+    s_sess_noack = (kind == A7_KIND_DFBC) ? 1 : 0;
 
     if (kind == A7_KIND_MUTE) {             /* 静音 / 解除静音：同样只发这一条 */
         a7_add_simple(val ? A7_OPT_MUTE : A7_OPT_UNMUTE);
         return !s_build_fail;
     }
 
-    if (kind == A7_KIND_TONE) {             /* 纯音：只发这一条，无任何公共帧 */
+    if (kind == A7_KIND_TONE) {             /* 纯音：只发这一条（写帧 + 82，不读应答） */
         if (val == A7_TONE_PLAY) {
             uint32_t lvl;
 
@@ -540,13 +610,46 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
         return !s_build_fail;
     }
 
+    if (kind == A7_KIND_VOL) {              /* 调音量：只发 A2 写帧 + 立刻 82，不读应答 */
+        a7_add_a2_noack(DSP7100_REG_VOLUME, s_volume_value[val - 1], 0);
+        return !s_build_fail;
+    }
+
+    /* 切程序：一条 A2 写帧 + 立刻 82，不读应答 */
+    if (kind == A7_KIND_PROG) {
+        a7_add_a2_noack(DSP7100_REG_PROGRAM, prog, 0);
+        return !s_build_fail;
+    }
+
+    /* 测听进入 / 退出：**三条命令编在一个会话里**，照 tonestar / tonestop 抓包的顺序：
+     *   ① 切程序   `A2 00 16 <prog>` → 等 80ms → 82
+     *        enter → DSP7100_AUDIOMETRY_PROG(3)，由 dsp_7100_audiometry() 算好传进来
+     *        exit  → 进测听前那个程序
+     *   ② 测听位   `A2 00 2E <00|58>` → 等 2ms  → 82   （00 = 进，58 = 退）
+     *   ③ 解除静音 `A7 01 00 00 00 26`        → 立刻  → 82
+     * ⚠ 2026-09-30：三句都**只发命令、不读应答**（原波形里每句后面都跟着一次读），
+     *   但**延时照留** —— 80ms 是 switch_program 的程序加载窗口，2ms 是 set_tone_mode
+     *   的帧间间隔，都取自 HEAD 原值。第 ③ 句原来靠等 A7 回铃，按「只砍读、不另加等待」
+     *   处理成写完立刻 82（与切程序 / 调音量 / 纯音一致）。 */
+    if (kind == A7_KIND_AUDIO_ENTER || kind == A7_KIND_AUDIO_EXIT) {
+        a7_add_a2_noack(DSP7100_REG_PROGRAM, prog, A7_PROG_LOAD_MS);
+        a7_add_a2_noack(DSP7100_REG_TONE_MODE,
+                        (kind == A7_KIND_AUDIO_ENTER) ? DSP7100_TONE_MODE_ON
+                                                      : DSP7100_TONE_MODE_OFF,
+                        A7_A2_WAIT_MS);
+        a7_add_simple_noack(A7_OPT_UNMUTE);
+        return !s_build_fail;
+    }
+
     a7_add_simple(A7_OPT_MUTE);
     a7_add_prog(A7_OPT_SELECT, prog);
 
     if (kind == A7_KIND_DENOISE) {          /* 降噪：块 09 + A7 27(300B) */
         a7_add_prep(A7_BLK_DENOISE, prog, 0x00, 0x01);
         a7_add_noise_block(val);
-    } else if (kind == A7_KIND_DFBC) {      /* DFBC：块 0A + A7 04(08 00 00 X) */
+    } else if (kind == A7_KIND_DFBC) {      /* DFBC：块 0A + A7 04(08 00 00 X)
+                                             * 本会话 8 步全部 rlen=0 且 wait_rise=1
+                                             * （由 s_sess_noack 在 a7_put 里置位，见 §23） */
         uint8_t *p;
         a7_add_prep(A7_BLK_DFBC, prog, 0x00, 0x00);
         p = a7_put(9);
@@ -591,14 +694,10 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     return !s_build_fail;                 /* 无溢出即构建成功 */
 }
 
-/* 会话收尾：成功后同步 RAM 参数并请求落盘（否则下次开机缓存显示旧值） */
-static void a7_session_finish(bool ok)
+/* 会话成功后把新值同步进 RAM 缓存（不写 flash）。
+ * 调用方已排除 TONE / MUTE / PROG / VOL / 测听 —— 只剩会改参数的四种。 */
+static void a7_session_sync_cache(void)
 {
-    s_sess_active = false;
-    PRINTF("[7100] --- session done ok=%u ---\r\n", ok);
-
-    if (!ok) return;
-
     if (s_sess_kind == A7_KIND_DENOISE) {
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         p->denoise_en  = 1;    /* 设档位即为开启（读回各档使能位均为 1） */
@@ -620,11 +719,6 @@ static void a7_session_finish(bool ok)
             else if (s_sess_val == A7_WDRC_P_HL) p->wdrc_hl[ch - 1] = s_wdrc_items[i].val;
             else                                 p->wdrc_ol[ch - 1] = s_wdrc_items[i].val;
         }
-    } else if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE) {
-        /* 纯音 / 静音**不改缓存里的任何参数** → 直接返回。
-         * 否则会走下面的 cache_save_request()，把整份读回缓存（4 个程序）重写一遍 flash ——
-         * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。 */
-        return;
     } else {                   /* EQ：把本次写入的 LL/HL 与 EQ 绝对值一起落到缓存 */
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         uint8_t n = s_eq_ch_n[s_sess_val];
@@ -648,38 +742,109 @@ static void a7_session_finish(bool ok)
         else if (s_sess_val == 1) p->eq_mid  = s_sess_db;
         else                      p->eq_high = s_sess_db;
     }
-    dsp_7100_cache_save_request();
 }
 
-/* 200ms tick 调：推进一条命令。发命令 → 下一 tick 读应答+82 → 进下一条 */
-void dsp_7100_cmd_tick(void)
+/* 会话收尾：成功后同步 RAM 参数并请求落盘（否则下次开机缓存显示旧值） */
+static void a7_session_finish(bool ok)
 {
-    const a7_step_t *s;
-    uint8_t ack[A7_RX_ACK];
-    bool ok;
+    s_sess_active = false;
+    PRINTF("[7100] --- session done ok=%u ---\r\n", ok);
 
-    if (!s_sess_active) return;
-    if (s_step_idx >= s_step_cnt) { a7_session_finish(true); return; }
+    if (!ok) return;
 
-    s = &s_steps[s_step_idx];
-
-    if (!s_step_read) {
-        ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->len);
-        print_w(s->data, s->len, ok);
-        if (!ok) { a7_session_finish(false); return; }
-        s_step_read = true;
+    /* 切程序 / 测听：只更新当前程序号，不碰读回缓存里的任何参数 */
+    if (s_sess_kind == A7_KIND_PROG || s_sess_kind == A7_KIND_AUDIO_ENTER ||
+        s_sess_kind == A7_KIND_AUDIO_EXIT) {
+        s_cur_prog = s_sess_prog;
+        return;
+    }
+    if (s_sess_kind == A7_KIND_VOL) {
+        s_cur_vol_level = s_sess_val;
         return;
     }
 
-    ok = i2c_7100_read(I2C_7100_ADDR, ack, sizeof(ack));
-    print_r(ack, sizeof(ack), ok);
-    if (!dsp_7100_send_end()) ok = false;
+    /* 纯音 / 静音**不改缓存里的任何参数** → 直接返回。
+     * 否则会走 cache_save_request()，把整份读回缓存（4 个程序）重写一遍 flash ——
+     * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。 */
+    if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE) return;
 
+    a7_session_sync_cache();
+    dsp_7100_cache_save_request();
+}
+
+/* 推进一步相位（只由主循环 dsp_7100_cmd_poll 调）。与读回
+ * dsp_7100_rb_seq_tick 的两相位一一对应：SEND 发帧、READ 读回并补 82。 */
+static void dsp_7100_cmd_step(void)
+{
+    const a7_step_t *s = &s_steps[s_step_idx];
+    uint8_t  rx[DSP7100_RX_LEN];
+    uint16_t rd = s->rlen;
+    bool     ok = true;
+
+    if (s_cmd_st == CMD_ST_SEND) {
+        if (s->wlen > 0) {
+            if (s->wait_ms == 0) s_cmd_wait_rise = dsp_7100_dio13_rise_cnt();
+            ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->wlen);
+            print_w(s->data, s->wlen, ok);
+            if (!ok) { a7_session_finish(false); return; }
+        }
+
+        if (s->wait_ms > 0) {
+            i2c_7100_delay_ms(s->wait_ms);
+            s_cmd_read_gate = 0;    /* A2 无回铃：延时够了直读，不等上升沿 */
+        } else if (s->wlen > 0 && (s->rlen > 0 || s->wait_rise)) {
+            s_cmd_read_gate = 1;    /* A7 写：等「7100 收到了」的上升沿
+                                     * （rlen>0 = 读完再 82；wait_rise=1 = 不读直接 82） */
+        } else {
+            s_cmd_read_gate = 0;    /* 纯读 / 纯音那种「不等回铃」的步：立刻 82 */
+        }
+        s_cmd_st = CMD_ST_READ;
+        return;
+    }
+
+    if (rd > DSP7100_RX_LEN) rd = DSP7100_RX_LEN;
+    if (rd > 0) {
+        ok = i2c_7100_read(I2C_7100_ADDR, rx, rd);
+        print_r(rx, rd, ok);
+    }
+    /* 先记下降沿数再发 82 —— 这条 82 的下降沿此刻还没到，等它到了就能立刻发下一条 */
+    s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
+    if (!dsp_7100_send_end()) ok = false;
     if (!ok) { a7_session_finish(false); return; }
 
-    s_step_read = false;
+    s_cmd_st        = CMD_ST_SEND;
+    s_cmd_send_gate = 1;            /* 下一条要等这条 82 的下降沿 */
+    s_cmd_timeout   = 0;
     s_step_idx++;
     if (s_step_idx >= s_step_cnt) a7_session_finish(true);
+}
+
+/* 200ms tick（app_process.c）调：只置超时标志，**不推进** —— 推进统一由
+ * dsp_7100_cmd_poll 做（与读回 dsp_7100_rb_tick 的分工完全相同）。 */
+void dsp_7100_cmd_tick(void)
+{
+    s_cmd_timeout = 1;
+}
+
+/* 主循环（app.c）：命令会话**唯一**的推进点，由 DIO13 边沿驱动。
+ *   SEND 等上一条 82 的**下降沿**（7100 吃下了才发下一条）
+ *   READ 等**上升沿**（7100 收到了才读），除非本步走固定延时
+ * 边沿等不到则退回 200ms tick 兜底 —— 与 dsp_7100_rb_poll 同一套写法。 */
+void dsp_7100_cmd_poll(void)
+{
+    if (!s_sess_active) { s_cmd_timeout = 0; return; }
+    /* 步骤表空了（构建失败时不会置 active，这里是兜底）：别拿越界下标去发 I2C */
+    if (s_step_idx >= s_step_cnt) { a7_session_finish(true); return; }
+
+    if (s_cmd_st == CMD_ST_SEND) {
+        if (s_cmd_send_gate && !s_cmd_timeout &&
+            dsp_7100_dio13_fall_cnt() == s_cmd_wait_fall) return;
+    } else if (s_cmd_read_gate) {
+        if (!s_cmd_timeout && dsp_7100_dio13_rise_cnt() == s_cmd_wait_rise) return;
+    }
+
+    s_cmd_timeout = 0;
+    dsp_7100_cmd_step();
 }
 
 bool dsp_7100_cmd_busy(void)
@@ -689,11 +854,15 @@ bool dsp_7100_cmd_busy(void)
 
 static const char *a7_kind_name(uint8_t kind)
 {
-    if (kind == A7_KIND_DENOISE) return "Denoise";
-    if (kind == A7_KIND_DFBC)    return "DFBC";
-    if (kind == A7_KIND_WDRC)    return "WDRC";
-    if (kind == A7_KIND_TONE)    return "Tone";
-    if (kind == A7_KIND_MUTE)    return "Mute";
+    if (kind == A7_KIND_DENOISE)     return "Denoise";
+    if (kind == A7_KIND_DFBC)        return "DFBC";
+    if (kind == A7_KIND_WDRC)        return "WDRC";
+    if (kind == A7_KIND_TONE)        return "Tone";
+    if (kind == A7_KIND_MUTE)        return "Mute";
+    if (kind == A7_KIND_PROG)        return "SwitchProgram";
+    if (kind == A7_KIND_VOL)         return "SetVolume";
+    if (kind == A7_KIND_AUDIO_ENTER) return "AudiometryOn";
+    if (kind == A7_KIND_AUDIO_EXIT)  return "AudiometryOff";
     return "EQ";
 }
 
@@ -713,9 +882,47 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
     s_sess_kind = kind;
     s_sess_val  = val;
     s_sess_active = true;
+    /* 推进状态复位：第一条命令没有前序 82 → 不等下降沿，直接发 */
+    s_cmd_st        = CMD_ST_SEND;
+    s_cmd_send_gate = 0;
+    s_cmd_read_gate = 0;
+    s_cmd_timeout   = 0;
     PRINTF("[7100] --- session start: %s prog=%u val=%u db=%d cmds=%u ---\r\n",
            a7_kind_name(kind), prog, val, s_sess_db, s_step_cnt);
     return true;
+}
+
+/* 切程序（异步）。序列：`A2 00 16 <prog>` → `82`（2 帧，不读应答）。见 §22。 */
+bool dsp_7100_switch_program(uint8_t prog)
+{
+    if (prog < 1 || prog > 4) return false;
+    PRINTF("[7100] --- SwitchProgram prog=%u ---\r\n", prog);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_PROG, prog, 0);
+}
+
+/* 调音量（异步）。序列：`A2 00 12 <0x11…0x64>` → `82`（2 帧，不读应答）。见 §22。 */
+bool dsp_7100_set_volume(uint8_t level)
+{
+    if (level < 1 || level > 6) return false;
+    PRINTF("[7100] --- SetVolume level=%u ---\r\n", level);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_VOL, dsp_7100_get_program(), level);
+}
+
+/* 测听进入 / 退出（异步）。三条命令一套会话，见 a7_build_session 的 AUDIO 分支：
+ *   enter: 切到 DSP7100_AUDIOMETRY_PROG(3) → 0x2E=00 → 解除静音
+ *   exit : 切回 prev_prog（进测听前那个程序）→ 0x2E=58 → 解除静音
+ * 三句都只发命令不读应答，延时照留（80ms / 2ms / 0）。 */
+bool dsp_7100_audiometry(bool enter, uint8_t prev_prog)
+{
+    uint8_t prog = enter ? DSP7100_AUDIOMETRY_PROG : prev_prog;
+
+    if (prog < 1 || prog > 4) return false;
+    PRINTF("[7100] --- Audiometry %s prog=%u ---\r\n", enter ? "on" : "off", prog);
+    s_sess_db = 0;
+    return a7_session_start(enter ? A7_KIND_AUDIO_ENTER : A7_KIND_AUDIO_EXIT,
+                            prog, 0);
 }
 
 bool dsp_7100_set_denoise(uint8_t prog, uint8_t level)
@@ -836,23 +1043,10 @@ bool dsp_7100_stop_tone(void)
     return a7_session_start(A7_KIND_TONE, dsp_7100_get_program(), A7_TONE_STOP);
 }
 
-/* 测听模式寄存器 `0x2E` —— A2 00 2E <val> → 读确认 → 82（同切程序/音量的三帧序列）
- *   on  → 0x2E = 0x00   进测听
- *   off → 0x2E = 0x58   退出 / 停音
+/* 测听模式寄存器 `0x2E`（`A2 00 2E 00` 进 / `A2 00 2E 58` 退）与解除静音 `A7 …26`
+ * 都是 dsp_7100_audiometry() 那个会话里的第 ② / ③ 条，**没有独立的公共入口** ——
+ * 外层不要再单独调 dsp_7100_set_mute()，会撞上「同一时刻只允许一个会话」。
  * 来源：tonestar.txt / tonestop.txt 抓包，见 docs/7100协议/纯音测听.md */
-bool dsp_7100_set_tone_mode(bool on)
-{
-    uint8_t rx[DSP7100_RX_LEN];
-    uint8_t val = on ? DSP7100_TONE_MODE_ON : DSP7100_TONE_MODE_OFF;
-
-    PRINTF("[7100] --- tone mode %s (0x2E=%02X) ---\r\n", on ? "on" : "off", val);
-
-    if (!dsp_7100_write_cmd(DSP7100_REG_TONE_MODE, val)) return false;
-    i2c_7100_delay_ms(2);
-    if (!dsp_7100_read6(rx)) return false;
-    i2c_7100_delay_ms(1);
-    return dsp_7100_send_end();
-}
 
 /* 静音 / 解除静音 —— 单命令会话（`A7 01 00 00 00 25` / `26`），无公共帧。
  * 对应 BLE 的 SetMuteData (21)：mute=true → 静音。
