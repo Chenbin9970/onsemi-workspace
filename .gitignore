@@ -4,6 +4,9 @@
 # Eclipse remote system temp
 RemoteSystemsTempFiles/
 
+# Eclipse Trace Compass 抓包工具缓存（纯 IDE 元数据，非工程内容）
+.tracecompass/
+
 # Build output
 Debug/
 Debug_G722/
@@ -42,3 +45,12 @@ __pycache__/
 # Dependency files
 *.d
 remote_mic_tx_raw/
+
+# 抓包 / 测量导出的数据（KVASER 等）
+*.kvdat
+
+# 根目录的临时数据导出 —— 只忽略根目录：
+# docs/、.claude/skills/ 等子目录下正经跟踪的 .txt/.csv 不受影响（已有 23 个）。
+# 若以后要加根目录的数据文件，用 git add -f。
+/*.txt
+/*.csv
