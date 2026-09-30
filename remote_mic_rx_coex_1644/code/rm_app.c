@@ -373,8 +373,9 @@ static void rm_trans_volume_arm(uint8_t prog)
 }
 
 /* 2s 后恢复过渡前的用户设定值。
- * 期间若已经切走（RM 重连到程序3）或用户自己改过音量，就不动当前发声，
- * 只把影子状态里的过渡值写回设定值，避免把用户设定冲成 5。 */
+ * - 用户自己改过音量（音量已不是过渡值）→ 早退：不回写，用户的新值即用户意图；
+ * - 已切走（RM 重连到程序3）→ 不动当前发声，只把影子状态写回设定值，
+ *   避免把过渡值 5 当成用户设定（会顺着断链落盘写进 Flash）。 */
 static void rm_restore_volume_cb(void)
 {
     uint8_t prog  = s_trans_vol_prog;

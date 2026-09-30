@@ -36,6 +36,7 @@ static void Button_Process(void)
     static uint32_t hold_ticks;
     static uint8_t long_fired;
     static uint8_t pending_action;
+    static uint8_t btn_started_in_rm;   /* 手势按下那一刻是否处于 RM 流中 */
 
     uint8_t i;
     uint8_t cnt_low = 0;
@@ -52,28 +53,49 @@ static void Button_Process(void)
         hold_ticks = 0;
         long_fired = 0;
         pending_action = BTN_NONE;
+        /* 起点落在 RM 流里的手势整条都不记动作：否则"压着按键时 RM 掉线"
+         * （压→断只有几百 ms 的窄窗口）会在下一轮被当成新动作执行。 */
+        btn_started_in_rm = app_env.audio_streaming;
     }
     else if (btn_now && btn_prev)
     {
         hold_ticks++;
         if (!long_fired && hold_ticks >= BTN_LONG_MS)
         {
-            long_fired = 1;
-            pending_action = BTN_LONG;
+            long_fired = 1;   /* 仍要置位：防止松手时被当成短按 */
+            if (!btn_started_in_rm)
+            {
+                pending_action = BTN_LONG;
+            }
         }
         Sys_Delay_ProgramROM(SystemCoreClock / 1000);
     }
     else if (!btn_now && btn_prev)
     {
-        if (!long_fired)
+        if (!long_fired && !btn_started_in_rm)
         {
             pending_action = BTN_SHORT;
         }
     }
     btn_prev = btn_now;
 
-    /* RM 连接(流)中按键无效 */
-    if ((pending_action != BTN_NONE) && !app_env.audio_streaming
+    /* RM 连接(流)中按键无效 —— 必须**丢弃**已挂起的动作，不能扣着等条件变好。
+     *
+     * 否则会延迟补触发：RM 流中长按 → 动作被扣住 → RM 断开时 audio_streaming
+     * 已被 RM 回调清 0（同一轮主循环里 RM_StatusHandler 先于本函数跑），而切回
+     * 原程序的会话又让 bs300_sync_is_busy() 为真 → 仍被扣住 → 会话一结束
+     * （rm_bs300_switch_done 里 bs300_active()）就补切一次程序 0→1：提示音播的是
+     * 程序2、上报 App 的却是程序1，与"返回原程序"自相矛盾，还会被下面的
+     * bs300_settings_persist() 把程序1 落盘当成用户设定。按键无效 = 不响应，
+     * 不是"稍后响应"。
+     *
+     * 这里兜的是"手势起于 RM 之前、松手时 RM 已连上"：起点不在 RM 里所以动作
+     * 已记录，落地时 RM 已接管，同样要丢掉。 */
+    if (app_env.audio_streaming)
+    {
+        pending_action = BTN_NONE;
+    }
+    else if ((pending_action != BTN_NONE)
         && !bs300_sync_is_busy()
         && bs300_driver_is_cached()
         && (bs300_get_active_prog() != 3))
