@@ -26,7 +26,10 @@
 #define DSP7100_TONE_MODE_ON     0x00   /* 进测听时的值 */
 #define DSP7100_TONE_MODE_OFF    0x58   /* 退测听时的值 */
 #define DSP7100_CMD_END          0x82
-#define DSP7100_RX_LEN           6      /* 单步读回长度上限（rx[] 缓冲与 rd 夹紧都用它） */
+
+/* 应答首字节：46 = 7100 接下了这条命令；65/00 = 未就绪 / 事务错位
+ * （签名含义见 dsp_7100_init.c 的读回注释）。路径 A 只认 46。 */
+#define DSP7100_RSP_OK           0x46
 #define DSP7100_AUDIOMETRY_PROG  3      /* 测听程序号（原 ble_rempro_cmd.c 的 AUDIOMETRY_PROG） */
 
 /* 6 档音量 → 0-100 值：round(档位 * 100 / 6) = 17/33/50/67/83/100 */
@@ -103,23 +106,51 @@ uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 
 
 /* ============================================================================
- * A7 参数设置会话（降噪 / DFBC）—— 照 remote_mic_rx_coex 已验证的 tick 模型
+ * 参数设置会话（降噪 / DFBC / EQ / WDRC / 切程序 / 调音量 / 测听 / 纯音 / 静音）
  *
- * rx_coex 的 dsp_7100_set_seq_tick()：命令表 + 200ms tick，一条命令一个 tick：
- *   发命令 → （下个 tick）读 3B 应答(46 00 00) → 写 04 82 → 进下一条
- * 会话序列（与 rx_coex 写会话骨架一致，无 0x03 状态读）：
- *   静音 → 选程序 → 写块准备 → 写块 → confirm → 解除静音 → 选回程序0 → commit
+ * 会话序列（2026-10-08 起**按抓包补齐 0x03 探测**，见开发文档 §25）：
+ *   探测 → 静音 → 选程序 → 探测 → 写块准备 → 写块 → confirm → 探测 → 探测
+ *   → 解除静音 → 选回程序0 → 探测 → commit → 探测      （DFBC = 14 条）
  *
- * ⚠ 2026-09-30 起 **DFBC 走变体**（见 §23、s_sess_noack）：不再读那 3B，
- *   改成「写帧 → 等 DIO13 上升沿 → 直接 82 → 等下降沿 → 下一条」，
- *   边沿等不到仍由 200ms tick 兜底。降噪 / WDRC / EQ 本轮**未改**，仍读应答。
+ * ⚠ 2026-09-30 起**全部异步**：命令表 + 主循环单点推进，200ms tick 只兜底。
+ * ⚠ 2026-10-08 起分两条路径（见开发文档 §24）：
+ *     路径 A 配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等 A7_ACK_WAIT_MS
+ *            → 读 3B → 校验 46 → 82 → 等下降沿；读不到 46 就补发 82 后重读
+ *     路径 B 交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）—— 写帧 → 82 → 等下降沿
+ *   分族的原因与实测依据全在开发文档 §24；一句话：**A7 写帧没有 DIO13 回铃**，
+ *   所以「等边沿再读」不可行，配置族的读只能靠固定延时定位。
  * ========================================================================== */
 
-/* 最长会话 = WDRC 全通道单参数：静音+选程序+16 通道×2 命令+确认+解除+选回+提交 = 38 条
- * （EQ 每段 2 通道 = 14 条；命令缓冲 38×10B = 380B，取 640 留余量） */
+/* 最长会话 = WDRC 全通道单参数：6 条 0x03 探测 + 静音+选程序+提交+解除+选回+commit
+ *            + 16 通道×2 命令 = 44 条
+ * （EQ 每段 2 通道 = 20 条；命令缓冲 44×10B = 440B，取 640 留余量） */
 #define A7_MAX_CMDS      56
 #define A7_CMD_BUF_SZ    640
-#define A7_RX_ACK        3      /* 应答固定 3B（46 00 00） */
+
+/* 应答长度**按步区分**（见开发文档 §25）：
+ *   setter（addr 0x0000）应答 3B：`46 00 00` = 头 + 地址回显，**零数据字节**
+ *   0x03 探测（addr 0x0003）应答 6B：`46 03 00 <x> <busy> 1A`
+ * 读少了会把尾巴留在 7100 里，下一条读就错位 —— 每步必须读满自己的长度。 */
+#define A7_RX_ACK        3
+#define A7_RX_PROBE      6
+#define A7_RX_MAX        6      /* 读缓冲上限 */
+
+/* 路径 A 读应答的两个参数（2026-10-08，依据见开发文档 §24.1、§25.2）
+ *   A7_ACK_WAIT_MS   写帧后等这么久再读。参考抓包（p0dfbc0-1.csv）实测的
+ *                    写帧→读应答间隔：setter 8 条中 6 条落在 44~50ms，另有 71ms、
+ *                    98ms 各一条；0x03 探测 94~98ms；首条 250ms（冷启动）。
+ *                    ⚠ 不是按命令族分档 —— `A7 02 … 12 01` 是 setter 却 98ms。
+ *                    ⚠ 它量的**只是参考 RSL10 自己的读节奏**（读→读间隔基本是
+ *                      50ms 台阶），不等于 7100 的应答就绪时间。
+ *                    ⚠ A7 写帧**没有** DIO13 回铃（实测），这里只能等固定时间。
+ *   A7_ACK_RETRY_MAX 一条命令最多重读几次（照读回：补发 82 后锁住，只等 200ms tick）。
+ *                    读回那边无上限（开机一次性），命令会话跑在运行期，必须封顶 ——
+ *                    否则一条命令会永久占着 I2C，读回和后续设置全被挡住。 */
+#define A7_ACK_WAIT_MS     50
+#define A7_ACK_RETRY_MAX   3
+
+#define A7_PROBE_ADDR    0x0003 /* 0x03 状态探测的目标地址（抓包：A7 01 00 03 00 02） */
+#define A7_PROBE_VAL     0x02   /* 该帧的 1 字节数据 */
 
 #define A7_OPT_MUTE      0x25
 #define A7_OPT_UNMUTE    0x26
@@ -269,24 +300,30 @@ static const uint8_t s_noise_tri[5][3] = {
 /* 一条命令 = 一个步骤，两步相位（写帧 → 读回+82），与读回
  * dsp_7100_init.c 的 RB_SEND / RB_READ 完全同构。
  *
- *   wait_ms > 0  写完固定延时这么久再读（**A2 写没有 DIO13 回铃** —— 实测
- *                「A1/A2 写和纯读命令一个都不跳」，所以不能等上升沿）
- *   wait_ms == 0 写完等 DIO13 **上升沿**（7100 收到了）再收尾（A7 命令走这条）——
- *                收尾是「先读 rlen 字节再发 82」还是「直接发 82」，看 rlen / wait_rise
- *   wlen == 0    本条不发写帧，只读（切程序第 2 条「读状态」）
+ * 2026-10-08 起分两条路径（见开发文档 §24）：步表只描述「发什么」，
+ * 读不读由**会话族**（s_sess_family）决定，每族一个执行函数。
+ *
+ *   路径 A（配置族：降噪 / DFBC / EQ / WDRC）—— 要读应答
+ *     写帧 → 等 A7_ACK_WAIT_MS → 读 rlen B → 校验 46 → 82 → 等下降沿
+ *     读到的不是 46 就重读（照读回：补发 82 后锁住，只等 200ms tick）
+ *     rlen 按步区分：setter 3B，0x03 探测 6B（见 A7_RX_ACK / A7_RX_PROBE）
+ *
+ *   路径 B（交互族：切程序 / 调音量 / 测听 / 纯音 / 静音）—— 不读应答
+ *     写帧 → 等 wait_ms（多为 0）→ 82 → 等下降沿
+ *
+ *   ⚠ 两条路径**都不能**「写完等 DIO13 上升沿再读」——
+ *     2026-10-08 上板实测：A7 写帧（7 种形状全试过）**产生零边沿**，
+ *     DIO13 只在 `82` 之后 0~2ms 出现一对 rise+fall。见开发文档 §24.1。
  */
 typedef struct
 {
     const uint8_t *data;     /* 写帧字节；NULL = 本条只读 */
     uint16_t       wlen;     /* 写帧长度；0 = 不写 */
-    uint16_t       rlen;     /* 读回长度（>0 则读完补一条 82 收尾；0 = 本步不读那 3B） */
-    uint16_t       wait_ms;  /* 写完后的固定延时（>0 时不等上升沿，延时满直接走下一步）；
-                              * 0 = 不延时 —— 有回铃就等上升沿，没回铃就立刻 82 */
-    uint8_t        wait_rise; /* 1 = 本步**不读**那 3B，但**仍要等** A7 回铃的上升沿再发 82
-                              *（DFBC 会话走这条，见 §23）。
-                              * ⚠ 与「rlen=0 且本字段=0」（纯音：不等回铃、写完立刻 82）
-                              * 语义相反 —— 两者帧形状完全一样，只能靠本字段显式区分，
-                              * 不能从 rlen 推断。 */
+    uint16_t       wait_ms;  /* 写帧后的固定延时（给 7100 消化时间）：
+                              *   路径 A 不用本字段 —— 统一走 A7_ACK_WAIT_MS
+                              *   路径 B 测听用 80 / 2，其余 0（写完立刻 82） */
+    uint8_t        rlen;     /* 路径 A 读几字节：setter = A7_RX_ACK(3)，
+                              *   0x03 探测 = A7_RX_PROBE(6)。路径 B 不用 */
 } a7_step_t;
 
 static a7_step_t s_steps[A7_MAX_CMDS];
@@ -294,19 +331,23 @@ static uint8_t   s_step_cnt;
 static uint8_t   s_step_idx;
 static bool      s_sess_active;
 
-/* ---- 推进状态（照 dsp_7100_init.c 的 s_rb_st / s_rb_wait_* / s_rb_timeout）----
+/* ---- 推进状态（照 dsp_7100_init.c 的 s_rb_st / s_rb_wait_fall / s_rb_timeout）----
  * 相位与门控：
  *   CMD_ST_SEND 发命令 —— 有前序 82 时等它的**下降沿**（7100 吃下了才发下一条）
- *   CMD_ST_READ 读应答 —— 等**上升沿**（7100 收到了），除非本步用固定延时
- * 200ms tick 只置 s_cmd_timeout 兜底，真正步进在主循环的 dsp_7100_cmd_poll()。 */
+ *   CMD_ST_READ 读应答 —— 路径 A 直接读（发帧时已阻塞等满 A7_ACK_WAIT_MS）；
+ *                         上次读失败（s_cmd_retry_lock）时只等 tick 再重读
+ * 200ms tick 只置 s_cmd_timeout 兜底，真正步进在主循环的 dsp_7100_cmd_poll()。
+ *
+ * ⚠ 命令层**只认 82 的下降沿**，不再有「等上升沿」的门 ——
+ *   A7 写帧没有上升沿（实测），原来那套 s_cmd_read_gate / s_cmd_wait_rise 已删。 */
 #define CMD_ST_SEND   0
 #define CMD_ST_READ   1
 
 static uint8_t  s_cmd_st;
 static uint8_t  s_cmd_send_gate;    /* 1 = SEND 前等上一条 82 的下降沿 */
-static uint8_t  s_cmd_read_gate;    /* 1 = READ 前等上升沿（wait_ms==0 时） */
+static uint8_t  s_cmd_retry_lock;  /* 1 = 上次读没拿到 46：本相位不再认边沿，只等 tick 重读 */
+static uint8_t  s_cmd_retry_cnt;   /* 本步已重读次数；达 A7_ACK_RETRY_MAX 判本步失败 */
 static uint8_t  s_cmd_timeout;      /* 200ms tick 兜底标志 */
-static uint32_t s_cmd_wait_rise;    /* 发本命令前记的上升沿数 */
 static uint32_t s_cmd_wait_fall;    /* 发本条 82 前记的下降沿数 */
 
 static uint8_t   s_cmd_buf[A7_CMD_BUF_SZ];
@@ -329,20 +370,18 @@ static uint8_t  s_tone_db;
 
 static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
 
-/* DFBC 会话专用：A7 步不读那 3B 应答，改等回铃上升沿后直接 82（见 §23）。
- * 由 a7_put() 决定每步的 rlen / wait_rise，a7_build_session() 按 kind 置位。
- * ⚠ 置 1 时**只能**用于「每一步都是 A7 写、且每一步都该等回铃」的会话（目前只有 DFBC）。
- *   下面三处依赖它对这些 kind 为 0（各自帧形状与 DFBC 步一样，语义却相反），
- *   日后扩大 kind 判断时要一并检查：
- *     a7_add_a2()           —— A2 无回铃，函数内强制清零
- *     a7_add_simple_noack() —— 测听第 ③ 句，有意「不等回铃、立刻 82」
- *     a7_add_tone()         —— 纯音，同上
+/* 会话族：决定这条命令读不读应答（2026-10-08，见开发文档 §24）。
+ * 由 a7_build_session() 按 kind 置位，dsp_7100_cmd_step() 据此选执行函数。
+ *   配置族（降噪 / DFBC / EQ / WDRC）→ 路径 A：读 3B、校验 46、失败重读
+ *   交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）→ 路径 B：不读
  *
- * ⚠⚠ 2026-09-30 上板实测（开发文档 §23.6）：**DFBC 这一步的前提不成立** ——
- *   写帧产生零边沿，DIO13 只在 82 之后 0~2ms 出现 rise+fall。所以
- *   「等回铃再发 82」永远等不到，每步退到 200ms tick → 会话 1430ms、静音 810ms。
- *   待办见 §23.7 方案 A（把 wait_rise 去掉，写完立刻 82，约 40ms）。 */
-static uint8_t s_sess_noack;
+ * ⚠ 两族的帧形状**完全一样**（都是「写帧 + 82」），区别只在中间有没有那一次读，
+ *   所以必须显式记族 —— §23 那版想从 rlen / wait_rise 推语义，被实测推翻了。
+ * ⚠ 为什么交互族不读：A2 的应答在本工程从未读到可信内容 —— 实测 77ms 时 7100
+ *   回 `65 01 00`（未就绪），固定长度盲读还会把后面的事务读错位。见开发文档 §22.2。 */
+#define A7_FAM_NOREAD    0
+#define A7_FAM_READ      1
+static uint8_t s_sess_family;
 
 /* 从命令缓冲切一段并挂到步骤表 */
 static uint8_t *a7_put(uint16_t len)
@@ -354,46 +393,30 @@ static uint8_t *a7_put(uint16_t len)
 
     p = s_cmd_buf + s_cmd_used;
     s_cmd_used = (uint16_t)(s_cmd_used + len);
-    s_steps[s_step_cnt].data      = p;
-    s_steps[s_step_cnt].wlen      = len;
-    s_steps[s_step_cnt].rlen      = s_sess_noack ? 0 : A7_RX_ACK;
-    s_steps[s_step_cnt].wait_ms   = 0;
-    s_steps[s_step_cnt].wait_rise = s_sess_noack;
+    s_steps[s_step_cnt].data    = p;
+    s_steps[s_step_cnt].wlen    = len;
+    s_steps[s_step_cnt].wait_ms = 0;   /* 路径 B 由调用方改写；路径 A 不用本字段 */
+    s_steps[s_step_cnt].rlen    = A7_RX_ACK;  /* 默认 setter 长度；0x03 探测由 a7_add_probe 改写 */
     s_step_cnt++;
     return p;
 }
 
-/* A2 写帧 `A2 00 <reg> <val>` + 写后固定延时（A2 无 DIO13 回铃，见步骤表注释） */
+/* A2 写帧 `A2 00 <reg> <val>` + 写后固定延时。
+ * wait_ms 给 7100 消化时间：切程序 / 调音量传 0（立刻发 82），
+ * 测听第 ① 句传 A7_PROG_LOAD_MS(80ms，程序加载窗口)、第 ② 句传 A7_A2_WAIT_MS(2ms)。
+ * A2 没有 DIO13 回铃（实测），所以只能等固定时间 —— 但**只有路径 B 用得到本函数**。 */
 static void a7_add_a2(uint8_t reg, uint8_t val, uint16_t wait_ms)
 {
     uint8_t *p = a7_put(4);
 
     if (p == NULL) return;
     p[0] = DSP7100_CMD_PARAM_WRITE; p[1] = 0x00; p[2] = reg; p[3] = val;
-    s_steps[s_step_cnt - 1].wait_ms   = wait_ms;
-    s_steps[s_step_cnt - 1].wait_rise = 0;   /* A2 没有回铃：永不等上升沿 */
+    s_steps[s_step_cnt - 1].wait_ms = wait_ms;
 }
 
-/* A2 写帧 + 82 收尾，**不读应答**（切程序 / 调音量 / 测听 2026-09-30 起走这条）。
- * 为什么不读：A2 的应答格式在本工程从未验证过 —— 实测 77ms 时 7100 回
- * `65 01 00`（未就绪，签名见 dsp_7100_init.c:248），而固定长度盲读会把它
- * 后面的事务读错位（读完 3B 再读 6B 拿到 `28 65 01 00 28 43`）。
- * 读不出可信的东西，不如只发命令。
- * wait_ms = 写帧后等这么久再发 82。A2 没有 DIO13 回铃（见 A7_A2_WAIT_MS），
- * 所以只能等固定时间：切程序 / 调音量传 0（立刻发），
- * 测听第 ① 句传 A7_PROG_LOAD_MS(80ms)、第 ② 句传 A7_A2_WAIT_MS(2ms)。
- * 82 留着：它是本工程实验证过的解锁字节（见 dsp_7100_init.c 的 RB_SKIP_END82_IDX）。 */
-static void a7_add_a2_noack(uint8_t reg, uint8_t val, uint16_t wait_ms)
-{
-    uint16_t before = s_step_cnt;
-
-    a7_add_a2(reg, val, wait_ms);
-    if (s_step_cnt > before) {
-        s_steps[s_step_cnt - 1].rlen = 0;   /* rlen=0 → 本步不读，延时够了直接 82 */
-    }
-}
-
-/* A7 01 00 00 00 <opt> */
+/* A7 01 00 00 00 <opt>（静音 25 / 解除静音 26 / 提交 0C）。
+ * 读不读由会话族决定：配置族会话里这几句照样读（抓包 p0dfbc0-1 的
+ * TX003/TX027/TX036 后面都跟着一次读，回 46 00 00）。 */
 static void a7_add_simple(uint8_t opt)
 {
     uint8_t *p = a7_put(6);
@@ -403,17 +426,23 @@ static void a7_add_simple(uint8_t opt)
     p[3] = 0x00; p[4] = 0x00; p[5] = opt;
 }
 
-/* A7 01 00 00 00 <opt> + 82，**不读应答**（测听会话里的解除静音用）。
- * 与 a7_add_simple 只差 rlen=0：写完立刻 82，既不读那 3B、也不等 A7 的回铃。
- * ⚠ 这句原本靠等上升沿（A7 有回铃），这里是按「只砍读、不另加等待」处理的。 */
-static void a7_add_simple_noack(uint8_t opt)
+/* 0x03 状态探测：`A7 01 00 03 00 02` —— 写 1 字节 0x02 到地址 0x0003，读回 6B。
+ * 配置族会话里插 6 条，位置照抓包（见开发文档 §25）：
+ *   预检 → [静音 选程序] → 等空闲 → [写块] → 等空闲 ×2 → [解除静音 选回] → 收尾前 → [commit] → 收尾
+ * 参考：p0dfbc0-1 的 TX000/009/021/024/033/039；降噪抓包同构；WDRC 设置文档 §4。
+ *
+ * 应答 `46 03 00 <x> <busy> 1A`。忙标志是哪个字节**两份文档说法不一**
+ * （WDRC §4 记第 5 字节 = <busy>；DFBC设置 §2 记作第 4 字节），未验证 ——
+ * 本版**只发不判**，6 字节原样进日志，等上板看哪个字节在主写块期间跳 01。 */
+static void a7_add_probe(void)
 {
-    uint16_t before = s_step_cnt;
+    uint8_t *p = a7_put(6);
 
-    a7_add_simple(opt);
-    if (s_step_cnt > before) {
-        s_steps[s_step_cnt - 1].rlen = 0;
-    }
+    if (p == NULL) return;
+    p[0] = 0xA7; p[1] = 0x01; p[2] = 0x00;
+    p[3] = (uint8_t)(A7_PROBE_ADDR & 0xFF); p[4] = (uint8_t)(A7_PROBE_ADDR >> 8);
+    p[5] = A7_PROBE_VAL;
+    s_steps[s_step_cnt - 1].rlen = A7_RX_PROBE;
 }
 
 /* A7 02 00 00 00 <opt> <P> */
@@ -500,9 +529,10 @@ static void a7_add_wdrc_items(uint8_t prog, uint8_t which)
  *   出音 en=01 + 频率 + 电平；停音 en=00 + 全 0（频率电平一起清零）
  * 抓包：tone*hz*db.txt（15 条），波形是 写帧 → 读 3B → 82。
  *
- * ⚠ 2026-09-30 起**不读应答**（rlen=0）：写帧完直接 82，与切程序/调音量同形。
+ * ⚠ 2026-09-30 起**不读应答**：写帧完直接 82，与切程序/调音量同形（属交互族）。
  *   代价同 §22 —— 命令不再被校验，ok=1 只代表 I2C 写成功。
- *   （A7 写本来有 DIO13 回铃，可等；这里按「和切程序一样，简单优先」一并不等。） */
+ *   （原注释写「A7 写本来有 DIO13 回铃，可等」—— **2026-10-08 实测推翻**：
+ *     A7 写帧零边沿，见开发文档 §24.1。） */
 static void a7_add_tone(uint8_t enable, uint16_t freq, uint32_t level)
 {
     uint8_t *p = a7_put(12);
@@ -516,8 +546,6 @@ static void a7_add_tone(uint8_t enable, uint16_t freq, uint32_t level)
     p[9]  = (uint8_t)((level >> 16) & 0xFFu);
     p[10] = (uint8_t)((level >> 8) & 0xFFu);
     p[11] = (uint8_t)(level & 0xFFu);
-
-    s_steps[s_step_cnt - 1].rlen = 0;   /* 本步不读应答，SEND 完直接 82 */
 }
 
 /* 查电平表；返回 false = 该频点没有标定值 */
@@ -577,17 +605,21 @@ static int8_t a7_eq_prev(const dsp_7100_prog_t *p, uint8_t band)
 #define A7_A2_WAIT_MS     2
 #define A7_PROG_LOAD_MS   80
 
-/* 会话骨架：静音 → 选程序 → [写块] → confirm → 解除静音 →
- * 选回程序0 → commit。写块由 kind 决定。 */
+/* 会话骨架（2026-10-08 起按抓包补齐 6 条 0x03 探测，见开发文档 §25）：
+ *   探测 → 静音 → 选程序 → 探测 → [写块] → confirm → 探测 → 探测
+ *   → 解除静音 → 选回程序0 → 探测 → commit → 探测
+ * 写块由 kind 决定。位置逐条对照 p0dfbc0-1 与 7100_A7协议_noise0-1（两抓包同构）。 */
 static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
 {
     s_step_cnt = 0;
     s_step_idx = 0;
     s_cmd_used = 0;
     s_build_fail = false;
-    /* DFBC：A7 步不读那 3B，改等回铃上升沿后直接 82（§23）。
-     * ⚠ 本轮**只放开 DFBC**，降噪 / WDRC / EQ 仍照旧读应答 —— 验证后再推给它们。 */
-    s_sess_noack = (kind == A7_KIND_DFBC) ? 1 : 0;
+    /* 会话族 → 走哪条路径（见文件头与开发文档 §24）。
+     * 配置族要读应答（路径 A）；切程序 / 调音量 / 测听 / 纯音 / 静音不读（路径 B）。 */
+    s_sess_family = (kind == A7_KIND_DENOISE || kind == A7_KIND_DFBC ||
+                     kind == A7_KIND_WDRC    || kind == A7_KIND_EQ)
+                    ? A7_FAM_READ : A7_FAM_NOREAD;
 
     if (kind == A7_KIND_MUTE) {             /* 静音 / 解除静音：同样只发这一条 */
         a7_add_simple(val ? A7_OPT_MUTE : A7_OPT_UNMUTE);
@@ -610,14 +642,14 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
         return !s_build_fail;
     }
 
-    if (kind == A7_KIND_VOL) {              /* 调音量：只发 A2 写帧 + 立刻 82，不读应答 */
-        a7_add_a2_noack(DSP7100_REG_VOLUME, s_volume_value[val - 1], 0);
+    if (kind == A7_KIND_VOL) {              /* 调音量：只发 A2 写帧 + 立刻 82（路径 B） */
+        a7_add_a2(DSP7100_REG_VOLUME, s_volume_value[val - 1], 0);
         return !s_build_fail;
     }
 
-    /* 切程序：一条 A2 写帧 + 立刻 82，不读应答 */
+    /* 切程序：一条 A2 写帧 + 立刻 82（路径 B） */
     if (kind == A7_KIND_PROG) {
-        a7_add_a2_noack(DSP7100_REG_PROGRAM, prog, 0);
+        a7_add_a2(DSP7100_REG_PROGRAM, prog, 0);
         return !s_build_fail;
     }
 
@@ -627,29 +659,30 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
      *        exit  → 进测听前那个程序
      *   ② 测听位   `A2 00 2E <00|58>` → 等 2ms  → 82   （00 = 进，58 = 退）
      *   ③ 解除静音 `A7 01 00 00 00 26`        → 立刻  → 82
-     * ⚠ 2026-09-30：三句都**只发命令、不读应答**（原波形里每句后面都跟着一次读），
+     * ⚠ 2026-09-30 起三句都**只发命令、不读应答**（原波形里每句后面都跟着一次读），
      *   但**延时照留** —— 80ms 是 switch_program 的程序加载窗口，2ms 是 set_tone_mode
      *   的帧间间隔，都取自 HEAD 原值。第 ③ 句原来靠等 A7 回铃，按「只砍读、不另加等待」
      *   处理成写完立刻 82（与切程序 / 调音量 / 纯音一致）。 */
     if (kind == A7_KIND_AUDIO_ENTER || kind == A7_KIND_AUDIO_EXIT) {
-        a7_add_a2_noack(DSP7100_REG_PROGRAM, prog, A7_PROG_LOAD_MS);
-        a7_add_a2_noack(DSP7100_REG_TONE_MODE,
-                        (kind == A7_KIND_AUDIO_ENTER) ? DSP7100_TONE_MODE_ON
-                                                      : DSP7100_TONE_MODE_OFF,
-                        A7_A2_WAIT_MS);
-        a7_add_simple_noack(A7_OPT_UNMUTE);
+        a7_add_a2(DSP7100_REG_PROGRAM, prog, A7_PROG_LOAD_MS);
+        a7_add_a2(DSP7100_REG_TONE_MODE,
+                  (kind == A7_KIND_AUDIO_ENTER) ? DSP7100_TONE_MODE_ON
+                                                : DSP7100_TONE_MODE_OFF,
+                  A7_A2_WAIT_MS);
+        a7_add_simple(A7_OPT_UNMUTE);
         return !s_build_fail;
     }
 
+    a7_add_probe();                       /* ① 预检（抓包恒为第一条） */
     a7_add_simple(A7_OPT_MUTE);
     a7_add_prog(A7_OPT_SELECT, prog);
+    a7_add_probe();                       /* ② 等空闲：选程序后 */
 
     if (kind == A7_KIND_DENOISE) {          /* 降噪：块 09 + A7 27(300B) */
         a7_add_prep(A7_BLK_DENOISE, prog, 0x00, 0x01);
         a7_add_noise_block(val);
     } else if (kind == A7_KIND_DFBC) {      /* DFBC：块 0A + A7 04(08 00 00 X)
-                                             * 本会话 8 步全部 rlen=0 且 wait_rise=1
-                                             * （由 s_sess_noack 在 a7_put 里置位，见 §23） */
+                                             * 本会话 14 步全走路径 A（读应答） */
         uint8_t *p;
         a7_add_prep(A7_BLK_DFBC, prog, 0x00, 0x00);
         p = a7_put(9);
@@ -687,9 +720,13 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     }
 
     a7_add_prog(A7_OPT_CONFIRM, prog);
+    a7_add_probe();                       /* ③ 等空闲：提交后 ×2（抓包连续两条） */
+    a7_add_probe();                       /* ④ */
     a7_add_simple(A7_OPT_UNMUTE);
     a7_add_prog(A7_OPT_SELECT, 1);        /* 指针复位回程序0（照抓包恒为 01） */
+    a7_add_probe();                       /* ⑤ 选回程序后、commit 前 */
     a7_add_simple(A7_OPT_COMMIT);
+    a7_add_probe();                       /* ⑥ 收尾 */
 
     return !s_build_fail;                 /* 无溢出即构建成功 */
 }
@@ -772,51 +809,100 @@ static void a7_session_finish(bool ok)
     dsp_7100_cache_save_request();
 }
 
-/* 推进一步相位（只由主循环 dsp_7100_cmd_poll 调）。与读回
- * dsp_7100_rb_seq_tick 的两相位一一对应：SEND 发帧、READ 读回并补 82。 */
-static void dsp_7100_cmd_step(void)
+/* 本步收尾：记下降沿 → 发 82 → 交给下一条。
+ * 返回 true = 会话还有下一条；false = 本步已终结（I2C 失败 / 整会话跑完），
+ * 两种情况都已经调过 a7_session_finish()，调用方直接 return 即可。 */
+static bool a7_step_advance(void)
+{
+    /* 先记下降沿数再发 82 —— 这条 82 的下降沿此刻还没到，等它到了就能立刻发下一条 */
+    s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
+    if (!dsp_7100_send_end()) { a7_session_finish(false); return false; }
+
+    s_cmd_st         = CMD_ST_SEND;
+    s_cmd_send_gate  = 1;      /* 下一条要等这条 82 的下降沿 */
+    s_cmd_retry_lock = 0;
+    s_cmd_retry_cnt  = 0;
+    s_cmd_timeout    = 0;
+    s_step_idx++;
+    if (s_step_idx >= s_step_cnt) { a7_session_finish(true); return false; }
+    return true;
+}
+
+/* ---- 路径 A：配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等 → 读 rlen B → 校验 → 82 ----
+ * 与读回 dsp_7100_rb_seq_tick 同构，只少一次 payload 读（应答本身就是读到的全部）。
+ * ⚠ 读之前只能等固定时间：A7 写帧**没有** DIO13 回铃（实测，见 §24.1）。
+ * ⚠ 读失败时**不重发写帧**，只重读 —— 与读回一致（读回失败后停在 RB_READ 重读）。 */
+static void a7_step_read(void)
 {
     const a7_step_t *s = &s_steps[s_step_idx];
-    uint8_t  rx[DSP7100_RX_LEN];
-    uint16_t rd = s->rlen;
-    bool     ok = true;
+    uint8_t rx[A7_RX_MAX];       /* 缓冲按最长算，实际读 s->rlen 字节 */
+    bool    ok;
 
     if (s_cmd_st == CMD_ST_SEND) {
         if (s->wlen > 0) {
-            if (s->wait_ms == 0) s_cmd_wait_rise = dsp_7100_dio13_rise_cnt();
             ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->wlen);
             print_w(s->data, s->wlen, ok);
             if (!ok) { a7_session_finish(false); return; }
-        }
-
-        if (s->wait_ms > 0) {
-            i2c_7100_delay_ms(s->wait_ms);
-            s_cmd_read_gate = 0;    /* A2 无回铃：延时够了直读，不等上升沿 */
-        } else if (s->wlen > 0 && (s->rlen > 0 || s->wait_rise)) {
-            s_cmd_read_gate = 1;    /* A7 写：等「7100 收到了」的上升沿
-                                     * （rlen>0 = 读完再 82；wait_rise=1 = 不读直接 82） */
-        } else {
-            s_cmd_read_gate = 0;    /* 纯读 / 纯音那种「不等回铃」的步：立刻 82 */
+            /* ⚠ 阻塞忙等、且不喂狗（见开发文档 §22.8）。50ms 与测听那条 80ms 同量级。 */
+            i2c_7100_delay_ms(A7_ACK_WAIT_MS);
         }
         s_cmd_st = CMD_ST_READ;
         return;
     }
 
-    if (rd > DSP7100_RX_LEN) rd = DSP7100_RX_LEN;
-    if (rd > 0) {
-        ok = i2c_7100_read(I2C_7100_ADDR, rx, rd);
-        print_r(rx, rd, ok);
+    ok = i2c_7100_read(I2C_7100_ADDR, rx, s->rlen);   /* 必须读满本步长度，否则 7100 里留尾巴 */
+    print_r(rx, s->rlen, ok);
+    if (ok && rx[0] == DSP7100_RSP_OK) {        /* 46 = 7100 接下了这条 */
+        (void)a7_step_advance();
+        return;
     }
-    /* 先记下降沿数再发 82 —— 这条 82 的下降沿此刻还没到，等它到了就能立刻发下一条 */
-    s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
-    if (!dsp_7100_send_end()) ok = false;
-    if (!ok) { a7_session_finish(false); return; }
 
-    s_cmd_st        = CMD_ST_SEND;
-    s_cmd_send_gate = 1;            /* 下一条要等这条 82 的下降沿 */
-    s_cmd_timeout   = 0;
-    s_step_idx++;
-    if (s_step_idx >= s_step_cnt) a7_session_finish(true);
+    /* 没拿到 46：本步补发 82 收尾（照读回 —— 失败那步的 82 也照发），再等 tick 重读 */
+    PRINTF("[7100] step%u/%u ACK FAIL hdr=%02X %02X %02X (retry %u/%u)\r\n",
+           s_step_idx, s_step_cnt, rx[0], rx[1], rx[2],
+           s_cmd_retry_cnt, A7_ACK_RETRY_MAX);
+    s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
+    if (!dsp_7100_send_end()) { a7_session_finish(false); return; }
+
+    if (s_cmd_retry_cnt >= A7_ACK_RETRY_MAX) {
+        PRINTF("[7100] step%u/%u 重读 %u 次仍无 46，会话判失败\r\n",
+               s_step_idx, s_step_cnt, (unsigned)s_cmd_retry_cnt);
+        a7_session_finish(false);
+        return;
+    }
+    s_cmd_retry_cnt++;
+    s_cmd_retry_lock = 1;       /* 停在读相位重读；本相位只等 200ms tick（同读回 s_rb_retry） */
+    s_cmd_timeout    = 0;
+    s_cmd_st         = CMD_ST_READ;
+}
+
+/* ---- 路径 B：交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）—— 写帧 → 等 wait_ms → 82 ----
+ * **不读应答**：A2 的应答读不出可信内容（见 s_sess_family 的注释与开发文档 §22.2）。
+ * 代价明确：命令不被校验，ok=1 只代表 I2C 写成功。 */
+static void a7_step_noread(void)
+{
+    const a7_step_t *s = &s_steps[s_step_idx];
+
+    if (s_cmd_st == CMD_ST_SEND) {
+        if (s->wlen > 0) {
+            bool ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->wlen);
+            print_w(s->data, s->wlen, ok);
+            if (!ok) { a7_session_finish(false); return; }
+        }
+        /* 测听第 ① 句 80ms（程序加载窗口）、第 ② 句 2ms；切程序 / 调音量 / 纯音传 0 */
+        if (s->wait_ms > 0) i2c_7100_delay_ms(s->wait_ms);
+        s_cmd_st = CMD_ST_READ;
+        return;
+    }
+
+    (void)a7_step_advance();
+}
+
+/* 推进一步相位（只由主循环 dsp_7100_cmd_poll 调）：按会话族选路径 */
+static void dsp_7100_cmd_step(void)
+{
+    if (s_sess_family == A7_FAM_READ) a7_step_read();
+    else                              a7_step_noread();
 }
 
 /* 200ms tick（app_process.c）调：只置超时标志，**不推进** —— 推进统一由
@@ -826,10 +912,14 @@ void dsp_7100_cmd_tick(void)
     s_cmd_timeout = 1;
 }
 
-/* 主循环（app.c）：命令会话**唯一**的推进点，由 DIO13 边沿驱动。
- *   SEND 等上一条 82 的**下降沿**（7100 吃下了才发下一条）
- *   READ 等**上升沿**（7100 收到了才读），除非本步走固定延时
- * 边沿等不到则退回 200ms tick 兜底 —— 与 dsp_7100_rb_poll 同一套写法。 */
+/* 主循环（app.c）：命令会话**唯一**的推进点。
+ *   SEND  等上一条 82 的**下降沿**（7100 吃下了才发下一条）—— 实测 0~2ms
+ *   READ  路径 A 读失败重试时只等 tick（不认边沿，同读回 s_rb_retry）；
+ *         其余情况直接进（写帧时已阻塞等满 A7_ACK_WAIT_MS）
+ * 边沿/tick 都等不到时退回 200ms tick 兜底 —— 与 dsp_7100_rb_poll 同一套写法。
+ *
+ * ⚠ 命令层**不再有「等上升沿」的门**：A7 写帧零边沿（实测，见 §24.1），
+ *   原来那套 s_cmd_read_gate / s_cmd_wait_rise 已删。 */
 void dsp_7100_cmd_poll(void)
 {
     if (!s_sess_active) { s_cmd_timeout = 0; return; }
@@ -839,8 +929,8 @@ void dsp_7100_cmd_poll(void)
     if (s_cmd_st == CMD_ST_SEND) {
         if (s_cmd_send_gate && !s_cmd_timeout &&
             dsp_7100_dio13_fall_cnt() == s_cmd_wait_fall) return;
-    } else if (s_cmd_read_gate) {
-        if (!s_cmd_timeout && dsp_7100_dio13_rise_cnt() == s_cmd_wait_rise) return;
+    } else if (s_cmd_retry_lock && !s_cmd_timeout) {
+        return;     /* 重读：不认边沿，只等 200ms tick —— 照读回，否则一步能自激成风暴 */
     }
 
     s_cmd_timeout = 0;
@@ -883,10 +973,11 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
     s_sess_val  = val;
     s_sess_active = true;
     /* 推进状态复位：第一条命令没有前序 82 → 不等下降沿，直接发 */
-    s_cmd_st        = CMD_ST_SEND;
-    s_cmd_send_gate = 0;
-    s_cmd_read_gate = 0;
-    s_cmd_timeout   = 0;
+    s_cmd_st         = CMD_ST_SEND;
+    s_cmd_send_gate  = 0;
+    s_cmd_retry_lock = 0;
+    s_cmd_retry_cnt  = 0;
+    s_cmd_timeout    = 0;
     PRINTF("[7100] --- session start: %s prog=%u val=%u db=%d cmds=%u ---\r\n",
            a7_kind_name(kind), prog, val, s_sess_db, s_step_cnt);
     return true;
