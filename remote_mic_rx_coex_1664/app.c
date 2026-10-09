@@ -24,6 +24,7 @@
 #include "ble_rempro_cmd.h"
 #include "dsp_7100_init.h"
 #include "dsp_7100_cmd.h"
+#include "dsp_7100_sniff.h"
 #include "i2c_7100_hal.h"
 
 int main()
@@ -82,11 +83,21 @@ int main()
      * 这条，差值就是下面 106 步引导的贡献。 */
     dsp_7100_dio13_irq_poll();
 
-    /* 7100 同步引导（A7 之前的普通步）；读回由 200ms tick 推进 */
+    /* 7100 同步引导（A7 之前的普通步）；读回由 200ms tick 推进。
+     * DSP7100_BOOT_INIT_ENABLE=0 时整段跳过（实验用，见 dsp_7100_init.h）。 */
+#if (DSP7100_BOOT_INIT_ENABLE)
     dsp_7100_boot_init();
+#else
+    PRINTF("[7100-init] boot init SKIPPED (DSP7100_BOOT_INIT_ENABLE=0)\r\n");
+#endif
 
-    /* 开机优先用 flash 缓存的读回结果；未命中才走 I2C 读回（读完自动落盘） */
+    /* 开机优先用 flash 缓存的读回结果；未命中才走 I2C 读回（读完自动落盘）。
+     * 被动监听实验（DSP7100_DIO13_SNIFF_ENABLE）期间不发起读回 —— 一次 I2C 都不发。 */
+#if (DSP7100_DIO13_SNIFF_ENABLE)
+    PRINTF("[SNIFF] 跳过 cache_try_load：本模式不发起读回\r\n");
+#else
     dsp_7100_cache_try_load();
+#endif
 
     /* 引导完：DIO11 发一个低脉冲（与开机握手那个脉冲同形）。
      *
@@ -157,11 +168,21 @@ int main()
          * 读完发了 82 等下降沿就发下一条，都不等满 200ms。边沿不来则退回 200ms tick
          * 兜底（见 dsp_7100_init.c 的 dsp_7100_rb_poll）。
          * 命令会话占着 I2C 时一律不推进读回 —— 会话的每条 82 也会产生 DIO13 边沿，
-         * 不挡住的话读回会把这些边沿当成自己的节奏，插进会话的事务里。 */
+         * 不挡住的话读回会把这些边沿当成自己的节奏，插进会话的事务里。
+         *
+         * 开了被动监听则换 dsp_7100_sniff_poll()（只等上升沿、不发命令帧），
+         * 但同样只在没会话时跑 —— 它也要读、也要发 82，与会话抢 I2C、抢边沿。 */
+#if (DSP7100_DIO13_SNIFF_ENABLE)
+        if (!dsp_7100_cmd_busy())
+        {
+            dsp_7100_sniff_poll();
+        }
+#else
         if (!dsp_7100_cmd_busy())
         {
             dsp_7100_rb_poll();
         }
+#endif
 
         /* Refresh the watchdog timer */
         Sys_Watchdog_Refresh();

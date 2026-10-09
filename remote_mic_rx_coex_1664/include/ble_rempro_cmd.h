@@ -75,6 +75,13 @@ void rempro_pending_start_next(void);
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);
 void rempro_push_volume_change(uint8_t prog, uint8_t volume);
+
+/* 7100 主动通知（DIO13 推来）→ 上报 App：
+ *   程序号 0x0016 → CMD 5，scene_id = 程序号 - 1（App 侧 0 基，同 SetCurrentScene）
+ *   音量   0x0012 → CMD 4，vol = 档位（App 侧 0-6，与 SetVolume 同号），prog = 当前程序
+ * payload = 3B `<addr_hi> <addr_lo> <值>`，解码在 dsp_7100_cmd.c 的 dsp_7100_notify_apply。
+ * BLE 未连接时两条 push 自己跳过（不用调用方判）。 */
+void rempro_push_7100_notify(const uint8_t *payload, uint8_t len);
 void rempro_push_initial_status_done(void);
 void rempro_push_audiometry_exit(void);
 

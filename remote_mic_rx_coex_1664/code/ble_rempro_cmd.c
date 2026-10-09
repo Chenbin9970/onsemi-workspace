@@ -294,6 +294,25 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume)
     hdlc_push(CMD_PUSH_VOLUME, d, 4);
 }
 
+/* 7100 主动通知（DIO13 推来）→ App 上报：见 ble_rempro_cmd.h。
+ * 解码（含更新跟踪值）在 dsp_7100_cmd.c，这里只做「7100 地址 → App 协议」的换算。
+ * ⚠ 推送经 hdlc_push 直接连发，不走应答那条 GATTC 完成事件队列；
+ *   本函数产生的帧 ≤10B（单块），与应答抢发在同一轮主循环里理论上会撞，风险很小。 */
+void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
+{
+    uint8_t what;
+    uint8_t val = 0;
+
+    what = dsp_7100_notify_apply(payload, len, &val);
+
+    if (what == DSP7100_NOTIFY_PROG) {
+        rempro_push_scene_change((uint8_t)(val - 1));          /* val = 程序号 1-4 */
+    } else if (what == DSP7100_NOTIFY_VOL) {
+        rempro_push_volume_change((uint8_t)(dsp_7100_get_program() - 1),
+                                  val);                        /* val = 档位 0-6 = App 档位 */
+    }
+}
+
 /* Active push: notify app of initial status done (CMD=6, SYS_ID=1).
  * Protocol: SYS_ID(1) + CMD_ID(2) + Device_Type(1) + Initial_Status(1)
  *   Device_Type=1 (left), Initial_Status=2 (初始化完成) */
@@ -502,7 +521,7 @@ static void cmd_getbatteryinfo_7100(void)
     hdlc_response(CMD_GETBATTERYINFO, 0, resp_data, 2);
 }
 
-/* ID:2  SetVolume — App vol 0-5 → 7100 档位 1-6（Volume_Number=5） */
+/* ID:2  SetVolume — App 档位 0-6 = 7100 档位 0-6（Volume_Number=6，同号不换算） */
 static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
 {
     uint8_t dev_type;
@@ -520,9 +539,9 @@ static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
         hdlc_response_set(CMD_SETVOLUME, true);
         return;
     }
-    if (volume > 5) volume = 5;
+    if (volume > 6) volume = 6;
 
-    level = (uint8_t)(volume + 1);          /* App 0-5 → 档位 1-6 */
+    level = volume;                         /* App 档位 0-6 = 7100 档位 0-6 */
 
     ok = dsp_7100_set_volume(level);
     PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u\r\n",
@@ -1057,7 +1076,7 @@ static void cmd_getdeviceconfig(void)
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
-    d[pos++] = 5;  /* Volume_Number（App 音量 0-5 = 6 档，对应 7100 档位 1-6） */
+    d[pos++] = 6;  /* Volume_Number（App 音量 7 档 0-6，与 7100 档位同号） */
 
     PRINTF("[REMPRO] GetDeviceConfig\r\n");
     hdlc_response(CMD_GETDEVICECONFIG, 0, d, pos);

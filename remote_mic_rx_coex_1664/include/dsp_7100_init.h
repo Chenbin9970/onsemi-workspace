@@ -32,8 +32,24 @@ typedef struct
 extern const dsp_init_step_t dsp_init_steps[];
 extern const uint16_t        dsp_init_step_cnt;
 
-/* 只跑到前 N 步用于调试；0 = 全部。 */
-#define DSP7100_INIT_MAX_STEPS  0
+/* 只跑到前 N 步用于调试；0 = 全部。
+ * 现设 96 = 跑完 pkt 13..108（末尾是那条 `82`），**不发 `83`(pkt 109) 及之后
+ * 9 条 `A2`(pkt 110..118，含 512B 块)**。
+ * 该尾段是整段引导的耗时大头：它带来的等待 ≈3.77s（615ms + 2256ms + 8×~100ms），
+ * 而前 96 步加起来只 ≈0.19s（依据 = dsp_7100_init_tables.c 每步注释里的 pkt/时间戳）。 */
+#define DSP7100_INIT_MAX_STEPS  96
+
+/* 106 步同步引导总开关。1 = 跑（默认行为），0 = 整个跳过。
+ *
+ * 实验用：验证「7100 不做 RSL10 的引导写」时会发生什么。关掉后开机时序变为
+ *   握手(DIO13/DIO11) → [无引导] → DIO11 脉冲 → flash 缓存/读回 → while(1)
+ * ⚠ 只关 I2C 引导写，**握手与 DIO11 脉冲不受影响**（DIO11 脉冲是读回必需，
+ *   见 app.c 与开发文档 §21）。
+ * ⚠ 缓存命中时读回也一并跳过（cache_try_load 会 s_rb_needed=0）——
+ *   要观察「无引导下的读回」，须先发 BLE 0xFE 擦缓存再复位。
+ * ⚠ 5s 心跳 {0x88,0x01} 仍会发出（app_process.c），本开关不涉及。
+ * 测完改回 1。当前实验改用 DSP7100_INIT_MAX_STEPS=96（部分截断），本项保持 1。 */
+#define DSP7100_BOOT_INIT_ENABLE    1
 
 /* DIO13 边沿中断：把 7100 的「A7 响应就绪」边沿变成可观测事件（上升+下降都数）。
  * 1 = 开（ISR 只置计数，主循环打印），0 = 关（不装中断）。
