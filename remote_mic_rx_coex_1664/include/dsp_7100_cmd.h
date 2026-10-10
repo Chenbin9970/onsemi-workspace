@@ -40,9 +40,8 @@ bool dsp_7100_switch_program(uint8_t prog);
 /* 调音量档位 L（0-6，与 App 档位同号）。返回 true = 已受理。 */
 bool dsp_7100_set_volume(uint8_t level);
 
-/* 当前程序 / 当前音量档位（供查询/推送使用） */
+/* 当前程序号 1-4（供查询/推送使用） */
 uint8_t dsp_7100_get_program(void);
-uint8_t dsp_7100_get_volume_level(void);
 
 /* ---- 7100 主动通知解码（DIO13 推来的 payload）----
  * payload = `<addr_hi> <addr_lo> <值>` —— 16 位寄存器地址 + 值，与写命令

@@ -246,25 +246,12 @@ uint32_t dsp_7100_dio13_fall_cnt(void)
 #define RB_HL_OFF     14         /* HighLevelGain  8bit 有符号 */
 #define RB_OL_OFF     22         /* OutputLimit    8bit 有符号 */
 
-/* ★ 一次性实验（2026-09-29）：读回时故意漏发第 N 条命令的 0x82。
- * 验证假设「0x82 = 主机确认读走 → 7100 释放读缓冲」。判据是**下一条**命令：
- *   漏发后第 N+1 条拿不到 0x46（一直 retry 或返回 65）→ 假设成立，0x82 是解锁字节；
- *   照样拿到 0x46 且一轮跑完 → 0x82 只是事务收尾的礼节字节，不承担解锁职责。
- * 判据只认**签名**：基线偶发重试返回 65 01 00（7100 明说未就绪），而漏发 82 后拿到的是
- * 00 00 00（7100 完全不响应）—— 复现这个新签名才算数，光看「重试了一次」分不开，
- * 一轮里本来就会偶尔重试。
- *
- * **实验已结束，假设成立**（漏第 4 条、漏第 11 条各复现一次 00 00 00，补发即愈）。
- * 设 >= 28（RB_PROGS*7）即等于关闭 —— 关闭后这段实验分支永久不进入。 */
-#define RB_SKIP_END82_IDX   28
-
 static dsp_7100_rb_bufs_t s_rb_bufs;
 
 enum { RB_SEND, RB_READ };
 static uint8_t  s_rb_st  = RB_SEND;
 static uint16_t s_rb_idx = 0;
 static uint8_t  s_rb_done = 0;
-static uint8_t  s_rb_needed = 1;    /* 1 = 需走 I2C 读回（缓存未命中） */
 static uint8_t  s_save_pending = 0; /* 1 = 读回完成，待主循环落盘 */
 static uint8_t  s_rb_timeout = 0;   /* 200ms tick 置位：边沿没来，poll 无条件走一步当兜底 */
 static uint8_t  s_rb_retry = 0;     /* 1 = 上次读失败过：RB_READ 相位不再认边沿，只等 tick */
@@ -391,7 +378,6 @@ void dsp_7100_rb_seq_tick(void)
     bool okh, okp = true;
     bool pass = false;
 
-    if (!s_rb_needed) return;      /* flash 缓存命中，无需 I2C 读回 */
     if (s_rb_done) return;
     if (dsp_rb_cmd_cnt == 0) return;
     g = &dsp_rb_cmds[s_rb_idx];
@@ -428,12 +414,7 @@ void dsp_7100_rb_seq_tick(void)
      * 记在发之前是必须的 —— 记在之后万一边沿快到来不及，这一步就永远等不到「新的」下降沿。 */
     s_rb_wait_fall = dsp_7100_dio13_fall_cnt();
 
-    if (s_rb_idx == RB_SKIP_END82_IDX) {
-        /* ★ 实验步：漏发 04 82。看下一条命令还能不能拿到 46（见 RB_SKIP_END82_IDX） */
-        PRINTF("[RB] %u/%u ★实验：本步漏发 04 82\r\n", s_rb_idx + 1, dsp_rb_cmd_cnt);
-    } else {
-        (void)dsp_7100_send_end();      /* 04 82 收尾（共享原语，自己打印） */
-    }
+    (void)dsp_7100_send_end();      /* 04 82 收尾（共享原语，自己打印） */
 
     /* 校验：首字节 46（7100 接下了）+ **长度**（头里的 len16 必须等于该块的字节数）。
      * 长度这一条是读回独有、也是它**唯一**能发现读错位的手段（375/306/174B 的内容本身
@@ -529,7 +510,7 @@ void dsp_7100_rb_tick(void)
  * 连等 DSP7100_WAIT_RISE_MAX_TICKS 拍线仍低时**盲读一次**降级（同命令族的路径 A）。 */
 void dsp_7100_rb_poll(void)
 {
-    if (s_rb_done || !s_rb_needed) {
+    if (s_rb_done) {
         s_rb_timeout = 0;
         return;
     }
@@ -584,22 +565,10 @@ bool dsp_7100_rb_done(void)
     return s_rb_done != 0;
 }
 
-bool dsp_7100_prog_valid(uint8_t prog)
-{
-    if (prog >= RB_PROGS) return false;
-    return s_rb_bufs.valid[prog] != 0;
-}
-
 const dsp_7100_prog_t *dsp_7100_get_prog(uint8_t prog)
 {
     if (prog >= RB_PROGS || !s_rb_bufs.valid[prog]) return NULL;
     return &s_rb_bufs.prog[prog];
-}
-
-/* ---- flash 缓存：开机读一次，读全落盘，之后开机直接用 ---- */
-bool dsp_7100_rb_needed(void)
-{
-    return s_rb_needed != 0;
 }
 
 /* 2026-10-09 起：flash 缓存**不再短路开机**，读回每次都走。
@@ -620,7 +589,6 @@ void dsp_7100_cache_try_load(void)
         PRINTF("[7100-cache] flash 无有效旧值（首次开机？）\r\n");
     }
 
-    s_rb_needed = 1;            /* 恒为真：每次开机都读回 */
     /* 以当前下降沿数为基准：引导期已攒了一堆（握手 1 次 + 106 步里的 82），
      * 不设基准的话第一条命令会被当成「新边沿到了」立刻发出去。 */
     s_rb_wait_fall = dsp_7100_dio13_fall_cnt();

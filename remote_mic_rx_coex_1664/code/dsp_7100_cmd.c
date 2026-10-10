@@ -110,7 +110,6 @@ bool dsp_7100_send_end(void)
  * 定义在文件后半段（与其它 set_* 入口放一起）。 */
 
 uint8_t dsp_7100_get_program(void)      { return s_cur_prog; }
-uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 
 /* 值 → 音量档位 0-6：与 s_volume_value 逐个比，取最接近的一档（**下标即档位**）。
  * 实测值只可能是那 7 个（`00 12 11`），取最近是为了容忍 7100 侧四舍五入的 ±1。 */

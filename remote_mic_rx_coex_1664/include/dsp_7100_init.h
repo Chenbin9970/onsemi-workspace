@@ -163,11 +163,6 @@ dsp_7100_rb_bufs_t *dsp_7100_rb_bufs(void);
 /* 一轮读回是否已完成 */
 bool dsp_7100_rb_done(void);
 
-/* 是否需要 I2C 读回。⚠ 2026-10-09 起**恒为 true**：读回不再被 flash 缓存短路
- * （每次开机都读回、再与 flash 对比决定要不要覆盖）。保留此接口是为了「是否需要
- * 读回」这个语义本身；判读回是否结束用 dsp_7100_rb_done()。 */
-bool dsp_7100_rb_needed(void);
-
 /* 开机调：把 flash 里的旧值载入 RAM（供读回后对比 + 提供读回不覆盖的字段，
  * 如 eq_low/mid/high），并置好读回基准 —— **不再短路读回**，详见实现处注释。 */
 void dsp_7100_cache_try_load(void);
@@ -177,9 +172,6 @@ void dsp_7100_process_deferred(void);
 
 /* 请求把当前 RAM 参数落盘（运行时改了参数后调，实际擦写由 process_deferred 做）。 */
 void dsp_7100_cache_save_request(void);
-
-/* 指定程序参数是否有效（prog 越界返回 false） */
-bool dsp_7100_prog_valid(uint8_t prog);
 
 /* 取指定程序参数（prog 越界或无效返回 NULL） */
 const dsp_7100_prog_t *dsp_7100_get_prog(uint8_t prog);
