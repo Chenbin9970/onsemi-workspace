@@ -45,8 +45,8 @@ extern const uint16_t        dsp_init_step_cnt;
  *   握手(DIO13/DIO11) → [无引导] → DIO11 脉冲 → flash 缓存/读回 → while(1)
  * ⚠ 只关 I2C 引导写，**握手与 DIO11 脉冲不受影响**（DIO11 脉冲是读回必需，
  *   见 app.c 与开发文档 §21）。
- * ⚠ 缓存命中时读回也一并跳过（cache_try_load 会 s_rb_needed=0）——
- *   要观察「无引导下的读回」，须先发 BLE 0xFE 擦缓存再复位。
+ * ⚠ 读回**每次都跑**（2026-10-09 起 flash 缓存不再短路读回，缓存只参与读回后的
+ *   「差异覆盖」判据）—— 要观察「无引导下的读回」不必先擦缓存。
  * ⚠ 5s 心跳 {0x88,0x01} 仍会发出（app_process.c），本开关不涉及。
  * 测完改回 1。当前实验改用 DSP7100_INIT_MAX_STEPS=96（部分截断），本项保持 1。 */
 #define DSP7100_BOOT_INIT_ENABLE    1
@@ -106,7 +106,16 @@ void dsp_7100_rb_seq_tick(void);
 void dsp_7100_rb_tick(void);
 
 /* 主循环调（app.c）：读回唯一的推进点 —— 两个相位都由 DIO13 边沿驱动
- * （RB_SEND 等下降沿、RB_READ 等上升沿），边沿不来则由 dsp_7100_rb_tick 的超时兜底。 */
+ * （RB_SEND 等下降沿、RB_READ 等上升沿），边沿不来则由 dsp_7100_rb_tick 的超时兜底。
+ *
+ * ⚠ 2026-10-09：三条兜底规则与命令会话（dsp_7100_cmd.c 的 dsp_7100_cmd_poll）**统一** ——
+ *   读相位在放行前**还要求 DIO13 是高的**（线低 = 回执还没出来，读了只会拿到 `00 00 00`
+ *   还白发一条 82），连等 DSP7100_WAIT_RISE_MAX_TICKS 拍仍低则**盲读一次**降级；
+ *   SEND 相位门开了但线高 → 先兜底读掉那帧（rb_rescue_read，每步 ≤DSP7100_RESCUE_MAX 次）；
+ *   一轮跑完时同样兜底读到线落低/到上限。读法与发 82 走共享原语
+ *   （dsp_7100_read_frame / dsp_7100_send_end，见 dsp_7100_cmd.h）。
+ *   ⚠ 与命令会话**只差**：读回校验应答首字节与**长度**（`hlen == dlen`，dlen 取自读命令的
+ *     16 位块地址 = 块字节数），且读失败**不封顶**（开机一次性，照旧重试到成功）。 */
 void dsp_7100_rb_poll(void);
 
 /* ---- 读回规模 ---- */
@@ -154,10 +163,13 @@ dsp_7100_rb_bufs_t *dsp_7100_rb_bufs(void);
 /* 一轮读回是否已完成 */
 bool dsp_7100_rb_done(void);
 
-/* 是否需要 I2C 读回（flash 缓存命中则为 false）。boot 后由 cache_try_load 设定。 */
+/* 是否需要 I2C 读回。⚠ 2026-10-09 起**恒为 true**：读回不再被 flash 缓存短路
+ * （每次开机都读回、再与 flash 对比决定要不要覆盖）。保留此接口是为了「是否需要
+ * 读回」这个语义本身；判读回是否结束用 dsp_7100_rb_done()。 */
 bool dsp_7100_rb_needed(void);
 
-/* 开机调：尝试从 flash 载入读回缓存；命中则后续不再走 I2C 读回。 */
+/* 开机调：把 flash 里的旧值载入 RAM（供读回后对比 + 提供读回不覆盖的字段，
+ * 如 eq_low/mid/high），并置好读回基准 —— **不再短路读回**，详见实现处注释。 */
 void dsp_7100_cache_try_load(void);
 
 /* 主循环调：读回跑完一轮后把结果落盘（flash 擦写不在定时器上下文做）。 */

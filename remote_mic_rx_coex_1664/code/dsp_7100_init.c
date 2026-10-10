@@ -5,11 +5,18 @@
  * 各由一条 DIO13 边沿驱动（发完等上升沿、读完等下降沿），app_process.c 的
  * dsp_7100_rb_tick() 只置 200ms 超时标志兜底。一轮完成后解析打印并停止。
  *
+ * ⚠ 2026-10-09：**时序与底层原语都和命令会话（dsp_7100_cmd.c）统一了** ——
+ *   读相位放行前要求 DIO13 是高的、SEND 门线高就先兜底读、收尾也兜底读到线低；
+ *   读一帧 / 发 82 都走共享原语（dsp_7100_read_frame / dsp_7100_send_end）。
+ *   与命令会话剩下的差别**只有**：多校验一个长度（`hlen == dlen`）、读失败不封顶。
+ *
  * 读路径只读不写；写路径（动态 A7 编码 / 会话状态机）留待阶段二。
  * 延时 ≥1ms 分段喂狗。 */
 
 #include "dsp_7100_init.h"
 #include "dsp_7100_storage.h"
+#include "dsp_7100_cmd.h"     /* dsp_7100_read_frame / dsp_7100_send_end / 门限常量（两边共用） */
+#include "ble_rempro_cmd.h"   /* rempro_push_7100_notify()：兜底读到的通知顺手上报（BLE 未连内部跳过） */
 #include "app.h"
 #include "i2c_7100_hal.h"
 #include <printf.h>
@@ -48,8 +55,8 @@ static bool is_a7_query(const dsp_init_step_t *s)
  *   DSP_DUMP_MAX×3+4 必须远小于 200（32 → 100 字符）。
  *   调用点的行首前缀（含 wait=/len=/ok=）实测上限约 51 字符，
  *   整行最坏 ≈151B < 200：加大 dump 或往前缀里塞字段时须重新核算。
- *   ⚠ 读回 HDR 行（RB_DUMP data + 82 三段合起来最长）实测上界 ≈175B < 200，
- *     余量只剩 25B —— 再往这行加字段或调大 DSP_DUMP_MAX 必须重新核算。 */
+ *   ⚠ 读回 HDR 行（前缀 + RB_DUMP data 两段，82 已挪走）实测上界 ≈165B < 200，
+ *     余量只剩 35B —— 再往这行加字段或调大 DSP_DUMP_MAX 必须重新核算。 */
 #define DSP_DUMP_MAX    32
 static void dump_hex(const uint8_t *p, uint16_t len)
 {
@@ -72,7 +79,9 @@ static void dump_hex(const uint8_t *p, uint16_t len)
     PRINTF("%s", line);
 }
 
-/* 读回过程中把**真发到线上**的字节打出来（tag = I2C 首字节：写 04 / 读 05 / 收尾 82）。
+/* 读回过程中把**真发到线上**的字节打出来（tag = I2C 首字节，如写帧的 04 / 读到的 data）。
+ * ⚠ 收尾的 `82` **不走这里**了（2026-10-09）：由共享原语 dsp_7100_send_end() 自己打
+ *   （`[7100] W (1B ok=1): 82`）—— 读回原先裸发字节，那行日志就只此一家，不好对齐。
  * 1 = 开。⚠ 串口 115200：一轮多出约 4KB ≈ 0.35s，
  *   **开着时的时间戳不能用来比较调速效果**（会把 1.0s 的一轮拖到 1.4s 上下）。测速前改回 0。 */
 #define RB_DUMP_BYTES   1
@@ -82,10 +91,6 @@ static void dump_hex(const uint8_t *p, uint16_t len)
 #else
 #define RB_DUMP(tag, p, n)   ((void)0)
 #endif
-
-/* I2C 上的收尾字节 0x82（HAL 会在前面补一个地址字节 → 线上是 04 82）。
- * 读回每条命令读完后发一条收尾。 */
-static const uint8_t s_end82[] = { 0x82 };
 
 void dsp_7100_boot_init(void)
 {
@@ -265,6 +270,8 @@ static uint8_t  s_rb_timeout = 0;   /* 200ms tick 置位：边沿没来，poll �
 static uint8_t  s_rb_retry = 0;     /* 1 = 上次读失败过：RB_READ 相位不再认边沿，只等 tick */
 static uint32_t s_rb_wait_rise;     /* 发命令前记的上升沿数：RB_READ 相位等它变（方案 B） */
 static uint32_t s_rb_wait_fall;     /* 发 82 前记的下降沿数：RB_SEND 相位等它变（方案 A） */
+static uint8_t  s_rb_low_ticks = 0; /* 本步「tick 放行但线低」连吞了几拍（同命令族，见 rb_poll） */
+static uint8_t  s_rb_rescue_cnt = 0;/* 本步已做的兜底读次数（DSP7100_RESCUE_MAX 封顶，同命令族） */
 
 dsp_7100_rb_bufs_t *dsp_7100_rb_bufs(void)
 {
@@ -338,14 +345,50 @@ static void rb_parse_print(void)
     }
 }
 
+/* 兜底读一帧（线高 = 7100 压着一帧）：读头 3B + 按 len16 补读 payload → 打印 → 上报通知
+ * → 82。与命令会话的 a7_rescue_read() **同形、同原语**（2026-10-09 统一）：
+ * 读走那帧就是还 credit，不做这一步它会被后面的 rebase / 下一相位吞掉。
+ * 计数与封顶由调用方管（每步 DSP7100_RESCUE_MAX 次），本函数不管循环。
+ * 只在 I2C 正常时进来，故这里不再重复判 ok —— 就地照实打印。 */
+static void rb_rescue_read(void)
+{
+    uint8_t  rx[DSP_INIT_RX_BUF];
+    uint16_t hlen = 0;
+    uint8_t  rd;
+
+    PRINTF("[RB] %u/%u 线高（7100 压着一帧）→ 兜底读 #%u\r\n",
+           s_rb_idx + 1, dsp_rb_cmd_cnt, (unsigned)s_rb_rescue_cnt);
+
+    rd = dsp_7100_read_frame(rx, DSP_INIT_RX_BUF, &hlen);   /* 头 rx[0..2] + payload rx[3..] */
+    if (rd == DSP7100_RDF_ERR_HDR) {
+        PRINTF("[RB] 兜底读失败（头）—— 不发 82（没读到就不欠 credit）\r\n");
+        return;
+    }
+    PRINTF("[RB] 兜底 HDR %02X %02X %02X len16=%u ok=%u\r\n",
+           rx[0], rx[1], rx[2], hlen, (unsigned)(rd != DSP7100_RDF_ERR_PAY));
+    if (hlen > 0) {
+        PRINTF("[RB] 兜底 data:");
+        dump_hex(rx + 3, hlen);
+        PRINTF("\r\n");
+    }
+
+    if (rd == DSP7100_RDF_OK && hlen > 0) {
+        /* 7100 本地按键改程序/音量走的也是这条通道，顺手解一次别丢（同 sniff / 命令会话） */
+        rempro_push_7100_notify(rx + 3, (uint8_t)((hlen > 3u) ? 3u : hlen));
+    }
+
+    s_rb_wait_fall = dsp_7100_dio13_fall_cnt();   /* 先记沿：这条 82 的下降沿还没到 */
+    (void)dsp_7100_send_end();
+}
+
 void dsp_7100_rb_seq_tick(void)
 {
     const dsp_a7_cmd_t *g;
-    uint8_t hdr[3];
-    uint8_t rx[DSP_INIT_RX_BUF];
-    uint16_t dlen, hlen, rd;
+    uint8_t  rx[DSP_INIT_RX_BUF] = {0};   /* 头 3B 在 rx[0..2]，payload 从 rx+3 起（读法 = 共享原语）
+                                           * 清零：读失败时别把栈上的垃圾当数据打出来（同命令族） */
+    uint16_t dlen, hlen;
+    uint8_t  rd_code;               /* dsp_7100_read_frame 的结果码 DSP7100_RDF_* */
     bool okh, okp = true;
-    bool ok82 = false;             /* 本步是否真发了 04 82（漏发实验时置假，打印据此如实反映） */
     bool pass = false;
 
     if (!s_rb_needed) return;      /* flash 缓存命中，无需 I2C 读回 */
@@ -360,6 +403,8 @@ void dsp_7100_rb_seq_tick(void)
          * 同 RB_READ 里记下降沿的道理：必须记在动作之前。 */
         s_rb_wait_rise = dsp_7100_dio13_rise_cnt();
         s_rb_retry = 0;                /* 新命令：这个相位重新认上升沿 */
+        s_rb_low_ticks = 0;            /* 本步等待计数清零（tick 兜底连吞多少拍，见 rb_poll） */
+        s_rb_rescue_cnt = 0;           /* 本步兜底读次数清零（DSP7100_RESCUE_MAX 是**每步**上限） */
         bool okw = i2c_7100_write(I2C_7100_ADDR, g->wr, g->wl);
         (void)okw;
         PRINTF("[RB] %u/%u TX ok=%u (dlen=%u)", s_rb_idx + 1,
@@ -372,13 +417,12 @@ void dsp_7100_rb_seq_tick(void)
         return;
     }
 
-    okh = i2c_7100_read(I2C_7100_ADDR, hdr, sizeof(hdr));
-    hlen = (uint16_t)hdr[1] + ((uint16_t)hdr[2] << 8);
-    rd = 0;
-    if (hlen > 0) {
-        rd = (hlen > DSP_INIT_RX_BUF) ? DSP_INIT_RX_BUF : hlen;
-        okp = i2c_7100_read(I2C_7100_ADDR, rx, rd);
-    }
+    /* 读法与命令会话共用（dsp_7100_read_frame）：头 3B + 按 len16 补读 payload。
+     * 打印保持本模块的分块形状 —— 375B 合成一行会冲爆 printf 的 200B 缓冲。 */
+    rd_code = dsp_7100_read_frame(rx, DSP_INIT_RX_BUF, &hlen);
+    okh = (rd_code != DSP7100_RDF_ERR_HDR);
+    okp = (rd_code != DSP7100_RDF_ERR_PAY);
+
     /* 先记下当前下降沿数，再发 82：这条 82 的下降沿此刻还没到，等它到了
      * dsp_7100_rb_poll 就会立刻发下一条，不必等满 200ms（方案 A，只加速这半场）。
      * 记在发之前是必须的 —— 记在之后万一边沿快到来不及，这一步就永远等不到「新的」下降沿。 */
@@ -388,38 +432,55 @@ void dsp_7100_rb_seq_tick(void)
         /* ★ 实验步：漏发 04 82。看下一条命令还能不能拿到 46（见 RB_SKIP_END82_IDX） */
         PRINTF("[RB] %u/%u ★实验：本步漏发 04 82\r\n", s_rb_idx + 1, dsp_rb_cmd_cnt);
     } else {
-        (void)i2c_7100_write(I2C_7100_ADDR, s_end82, sizeof(s_end82));   /* 04 82 收尾 */
-        ok82 = true;    /* 下面打在 HDR 行尾，让「写了 82 / 故意漏发」在日志里一目了然 */
+        (void)dsp_7100_send_end();      /* 04 82 收尾（共享原语，自己打印） */
     }
 
-    if (okh && okp && hdr[0] == 0x46 && hlen == dlen) pass = true;
+    /* 校验：首字节 46（7100 接下了）+ **长度**（头里的 len16 必须等于该块的字节数）。
+     * 长度这一条是读回独有、也是它**唯一**能发现读错位的手段（375/306/174B 的内容本身
+     * 不校验；历史上头错位一字节 → hlen 被夹到 700 → 第 28 步永久卡死）。
+     * dlen 取自读命令里的 16 位块地址（`A7 01 00 77 01` → 0x0177 = 375），恰好是字节数。 */
+    if (okh && okp && rx[0] == DSP7100_RSP_OK && hlen == dlen) pass = true;
 
     /* 每程序 7 条命令：0=选程序 1/3/5=选模块 2/4/6=读 WDRC/DFBC/降噪。
-     * 读到即解析成参数，原始块读完即弃。 */
-    if (pass && rd >= dlen) {
+     * 读到即解析成参数，原始块读完即弃。payload 在 rx+3 起（头 3B 在 rx[0..2]）。 */
+    if (pass && hlen >= dlen) {
         uint8_t prog = (uint8_t)(s_rb_idx / 7u);
         uint8_t off  = (uint8_t)(s_rb_idx % 7u);
 
         if (off == 2) {
-            rb_parse_wdrc(prog, rx);        /* read 77 01 → LL/HL/OL */
+            rb_parse_wdrc(prog, rx + 3);        /* read 77 01 → LL/HL/OL */
         } else if (off == 4) {
-            rb_parse_dfbc(prog, rx);        /* read 32 01 → 开关 */
+            rb_parse_dfbc(prog, rx + 3);        /* read 32 01 → 开关 */
         } else if (off == 6) {
-            rb_parse_noise(prog, rx);       /* read AE 00 → 使能/档位，本程序解析完 */
+            rb_parse_noise(prog, rx + 3);       /* read AE 00 → 使能/档位，本程序解析完 */
             s_rb_bufs.valid[prog] = 1;
         }
     }
 
     PRINTF("[RB] %u/%u HDR %02X %02X %02X dlen=%u DATA%uB ok=%u %s",
-           s_rb_idx + 1, dsp_rb_cmd_cnt, hdr[0], hdr[1], hdr[2], dlen,
-           rd, okp, pass ? "PASS->next" : "retry");
-    if (rd > 0) RB_DUMP("data", rx, rd);          /* 读到的 payload，超 32B 截断打 .. */
-    if (ok82)   RB_DUMP("82", s_end82, sizeof(s_end82));
+           s_rb_idx + 1, dsp_rb_cmd_cnt, rx[0], rx[1], rx[2], dlen,
+           hlen, okp, pass ? "PASS->next" : "retry");
+    if (hlen > 0) RB_DUMP("data", rx + 3, hlen);   /* 读到的 payload，超 32B 截断打 .. */
     PRINTF("\r\n");
 
     if (pass) {
         s_rb_idx++;
         if (s_rb_idx >= dsp_rb_cmd_cnt) {   /* 一轮完成，停止并解析 */
+            /* 收尾兜底读（同命令会话 a7_session_finish）：跑完时线还高 = 7100 压着一帧，
+             * 先读掉再收尾，否则那一帧从此没人读（读回一 done，rb_poll 就永远不再进来）。
+             * 要**读到线落回低或到上限**为止，不能只兜一次 —— 线高说明它手上还有帧。
+             * ⚠ 同步循环，约 30ms 不喂 BLE/音频（同命令会话的收尾兜底）。 */
+            if (DIO_DATA->ALIAS[13] == 1) {
+                s_rb_rescue_cnt = 0;        /* 收尾这一轮单独计数，上限同每步的 DSP7100_RESCUE_MAX */
+                while (DIO_DATA->ALIAS[13] == 1 && s_rb_rescue_cnt < DSP7100_RESCUE_MAX) {
+                    s_rb_rescue_cnt++;
+                    rb_rescue_read();
+                }
+                if (DIO_DATA->ALIAS[13] == 1) {
+                    PRINTF("[RB] 收尾兜底读已满 %u 次线仍高 → 到此为止\r\n",
+                           (unsigned)DSP7100_RESCUE_MAX);
+                }
+            }
             s_rb_done = 1;
             s_save_pending = 1;             /* 交主循环落盘（勿在定时器上下文擦写 flash） */
             PRINTF("[RB] round done, parse:\r\n");
@@ -453,15 +514,19 @@ void dsp_7100_rb_tick(void)
 /* 主循环（app.c）：读回唯一的推进点。两个相位都由 DIO13 边沿驱动（方案 B）。
  *
  *   RB_SEND 等**下降沿** —— 读完了、82 也发了，下降沿表示「7100 吃下了这条事务」，
- *                            可以立刻发下一条。
+ *                            可以立刻发下一条。**还要线是低的**：线高 = 7100 又抬线
+ *                            压着一帧 → 先兜底读掉再发（2026-10-09，同命令会话的 SEND 门）。
  *   RB_READ 等**上升沿** —— 命令刚发出去，上升沿表示「7100 收到了」，可以试着读。
+ *                            **放行时还要求线是高的**：线低 = 回执还没出来，读了只会拿到
+ *                            `00 00 00` 还白发一条 82（2026-10-09 起，同命令会话）。
  *
  * 为什么 RB_READ 读失败后（s_rb_retry）不再认边沿：82 自己就带一个上升沿，
  * 认了会自激（见 dsp_7100_rb_seq_tick 失败分支）。锁上之后重试只走 tick，
- * 200ms 一次，这是刻意的。
+ * 200ms 一次，这是刻意的 —— 读回**不封顶**重试（开机一次性，照旧重试到成功）。
  *
  * 这样安排的兜底性质：万一「上升沿到了」时响应其实还没备好，读会空一次 → retry →
- * 退回 tick 节奏，这条命令退化成方案 A 的 ~210ms，**不会比 A 更差**。 */
+ * 退回 tick 节奏，这条命令退化成方案 A 的 ~210ms，**不会比 A 更差**。
+ * 连等 DSP7100_WAIT_RISE_MAX_TICKS 拍线仍低时**盲读一次**降级（同命令族的路径 A）。 */
 void dsp_7100_rb_poll(void)
 {
     if (s_rb_done || !s_rb_needed) {
@@ -471,10 +536,42 @@ void dsp_7100_rb_poll(void)
 
     if (s_rb_st == RB_SEND) {
         if (!s_rb_timeout && dsp_7100_dio13_fall_cnt() == s_rb_wait_fall) return;
+        /* 门开（下降沿到了，或 tick 兜底）——**还要线是低的**才发下一条。
+         * 线高 = 那条 82 之后 7100 又抬了线，它压着一帧：先把那帧读掉再回来发。
+         * ⚠ 读回**第一条**命令前面没有 82，它的 s_rb_wait_fall 基准是
+         *   dsp_7100_cache_try_load() 里设的 —— 第一条同样走这道门，照旧（实测
+         *   28 步 1.029s 就含它开头那一拍 200ms）。 */
+        if (DIO_DATA->ALIAS[13] == 1) {
+            if (s_rb_rescue_cnt < DSP7100_RESCUE_MAX) {
+                s_rb_rescue_cnt++;
+                s_rb_timeout = 0;      /* 这一拍已经做了事，清掉 tick 标志免得连烧 */
+                rb_rescue_read();
+                return;                /* 回到本相位：等这条 82 的下降沿 + 线低 */
+            }
+            PRINTF("[RB] %u/%u 兜底读已满 %u 次线仍高 → 照发下一条\r\n",
+                   s_rb_idx + 1, dsp_rb_cmd_cnt, (unsigned)DSP7100_RESCUE_MAX);
+        }
     } else if (s_rb_retry) {
         if (!s_rb_timeout) return;     /* 重试中：不认边沿，只等 200ms 兜底 */
     } else {
         if (!s_rb_timeout && dsp_7100_dio13_rise_cnt() == s_rb_wait_rise) return;
+        /* 到这里 = 沿到了，或 tick 兜底放行。两种来源**都要求线是高的**才读：
+         *   沿放行但线低 —— 抬过又落回，那不是本步要读的帧（比如上一条 82 的回声沿）；
+         *   tick 放行但线低 —— 7100 还没把回执放出来，**不读**（读了只会拿到 00 00 00
+         *                       还白发一条 82，真正的回执稍后抬线却没人读 → 滞留）。
+         * 吞掉这一拍继续等，连等 DSP7100_WAIT_RISE_MAX_TICKS 拍仍线低 → 盲读一次降级
+         * （照命令族路径 A：有 46 + 长度双校验兜着，读到空帧只会走 retry，不会当成功）。 */
+        if (DIO_DATA->ALIAS[13] == 0) {
+            if (!s_rb_timeout) return;                 /* 沿放了又落回：等下一个 */
+            if (++s_rb_low_ticks >= DSP7100_WAIT_RISE_MAX_TICKS) {
+                PRINTF("[RB] %u/%u 等抬线超时（%u 拍线仍低）→ 盲读一次\r\n",
+                       s_rb_idx + 1, dsp_rb_cmd_cnt, (unsigned)s_rb_low_ticks);
+            } else {
+                s_rb_timeout = 0;                      /* 吞掉这一拍，等下一拍/下一个沿 */
+                return;
+            }
+        }
+        s_rb_low_ticks = 0;
     }
 
     s_rb_timeout = 0;
@@ -505,20 +602,29 @@ bool dsp_7100_rb_needed(void)
     return s_rb_needed != 0;
 }
 
+/* 2026-10-09 起：flash 缓存**不再短路开机**，读回每次都走。
+ *   读回结果与 flash 槽逐字节对比（storage 层），有差异才覆盖、无差异不碰 flash。
+ * flash 旧值仍要载入：
+ *   ① 读回解析**不碰** eq_low/mid/high（见 rb_parse_*），这三个字段唯一来源就是 flash
+ *      槽 —— 不载入则每次开机归零，与 flash 必然判成「有差异」（每次都擦写），
+ *      且 App 的 EQ 增量（a7_build_session 的 s_eq_delta）跟着算错。
+ *   ② 读回中途失败时 RAM 里还留着能用的一份旧值。
+ * ⚠ s_rb_done **不能**在这里置 1：app.c 一见 done 就把 DIO13 交给被动监听，
+ *   读回就再也跑不动了（读回唯一的推进点是 dsp_7100_rb_poll）。 */
 void dsp_7100_cache_try_load(void)
 {
     if (dsp_7100_cache_load()) {
-        s_rb_needed = 0;
-        s_rb_done   = 1;        /* 视同读回已完成 */
-        PRINTF("[7100-cache] hit: 用 flash 缓存，跳过 I2C 读回\r\n");
-        rb_parse_print();       /* 缓存命中：把存的参数打印出来 */
+        PRINTF("[7100-cache] flash 旧值已载入（本次仍走读回对比）\r\n");
+        rb_parse_print();       /* 旧值先打一遍，便于与读回后的新值对照 */
     } else {
-        s_rb_needed = 1;
-        /* 以当前下降沿数为基准：引导期已攒了一堆（握手 1 次 + 106 步里的 82），
-         * 不设基准的话第一条命令会被当成「新边沿到了」立刻发出去。 */
-        s_rb_wait_fall = dsp_7100_dio13_fall_cnt();
-        PRINTF("[7100-cache] miss: 走 I2C 读回，完成后落盘\r\n");
+        PRINTF("[7100-cache] flash 无有效旧值（首次开机？）\r\n");
     }
+
+    s_rb_needed = 1;            /* 恒为真：每次开机都读回 */
+    /* 以当前下降沿数为基准：引导期已攒了一堆（握手 1 次 + 106 步里的 82），
+     * 不设基准的话第一条命令会被当成「新边沿到了」立刻发出去。 */
+    s_rb_wait_fall = dsp_7100_dio13_fall_cnt();
+    PRINTF("[7100-cache] 走 I2C 读回（28 步），完成后与 flash 对比\r\n");
 }
 
 /* 运行时改了参数后请求落盘（实际擦写留给主循环 process_deferred） */
@@ -527,15 +633,14 @@ void dsp_7100_cache_save_request(void)
     s_save_pending = 1;
 }
 
-/* 主循环调：读回跑完一轮 → 落盘（flash 擦写阻塞且关中断，不能放定时器上下文） */
+/* 主循环调：读回跑完一轮 → 落盘（flash 擦写阻塞且关中断，不能放定时器上下文）。
+ * 逐槽结论（覆盖/跳过/失败）由 dsp_7100_cache_save 自己打，这里只报总失败。 */
 void dsp_7100_process_deferred(void)
 {
     if (!s_save_pending) return;
     s_save_pending = 0;
 
-    if (dsp_7100_cache_save()) {
-        PRINTF("[7100-cache] saved to flash\r\n");
-    } else {
+    if (!dsp_7100_cache_save()) {
         PRINTF("[7100-cache] save FAIL\r\n");
     }
 }

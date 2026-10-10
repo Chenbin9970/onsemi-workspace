@@ -92,12 +92,9 @@ int main()
 #endif
 
     /* 开机优先用 flash 缓存的读回结果；未命中才走 I2C 读回（读完自动落盘）。
-     * 被动监听实验（DSP7100_DIO13_SNIFF_ENABLE）期间不发起读回 —— 一次 I2C 都不发。 */
-#if (DSP7100_DIO13_SNIFF_ENABLE)
-    PRINTF("[SNIFF] 跳过 cache_try_load：本模式不发起读回\r\n");
-#else
+     * ⚠ 被动监听（DSP7100_DIO13_SNIFF_ENABLE）**不再**跳过这里：它现在的语义是
+     *   「读回收工后接管空闲期的推帧」，不是「从不读回」（见 dsp_7100_sniff.h）。 */
     dsp_7100_cache_try_load();
-#endif
 
     /* 引导完：DIO11 发一个低脉冲（与开机握手那个脉冲同形）。
      *
@@ -170,19 +167,24 @@ int main()
          * 命令会话占着 I2C 时一律不推进读回 —— 会话的每条 82 也会产生 DIO13 边沿，
          * 不挡住的话读回会把这些边沿当成自己的节奏，插进会话的事务里。
          *
-         * 开了被动监听则换 dsp_7100_sniff_poll()（只等上升沿、不发命令帧），
-         * 但同样只在没会话时跑 —— 它也要读、也要发 82，与会话抢 I2C、抢边沿。 */
-#if (DSP7100_DIO13_SNIFF_ENABLE)
-        if (!dsp_7100_cmd_busy())
-        {
-            dsp_7100_sniff_poll();
-        }
-#else
+         * 读回跑完之后，空闲期 DIO13 上再抬起来的帧改由被动监听 dsp_7100_sniff_poll()
+         * 接管（只等上升沿、只读、只回那条 82，不发命令帧）。不接管的话读回一收工就
+         * 再没人看 DIO13 —— 7100 之后推的帧（实测读回结束 ≈1.6s 后那记上升沿，
+         * 疑似 5s 心跳 {0x88,0x01} 的回执）会一直压在 7100 里，下一次会话的第一条命令
+         * 就会先读到这帧陈货。
+         * ⚠ 2026-10-09 起读回**每次开机都跑**（与 flash 对比，见 dsp_7100_cache_try_load），
+         *   所以这里只需等 dsp_7100_rb_done() —— 不再有「缓存命中即换手」那条路。
+         * 两者都由 `!dsp_7100_cmd_busy()` 挡着：会话自己也要读、也要发 82。 */
         if (!dsp_7100_cmd_busy())
         {
             dsp_7100_rb_poll();
-        }
+#if (DSP7100_DIO13_SNIFF_ENABLE)
+            if (dsp_7100_rb_done())
+            {
+                dsp_7100_sniff_poll();
+            }
 #endif
+        }
 
         /* Refresh the watchdog timer */
         Sys_Watchdog_Refresh();

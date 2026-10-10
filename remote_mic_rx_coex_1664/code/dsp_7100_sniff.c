@@ -42,7 +42,9 @@ static uint32_t s_pre_fall;    /* 发 82 之前记的下降沿数（用来认 82
 static uint8_t  s_echo_ms;     /* SN_ECHO 已等了几 ms */
 static uint32_t s_n;           /* 已完成的轮次 */
 
-/* 基准必须在引导 + DIO11 脉冲**之后**取：那两段的边沿不属于「7100 自己发的」。 */
+/* 基准必须在引导 + DIO11 脉冲 + **整轮 I2C 读回**之后取：那些边沿（含我们自己发的
+ * 82 的回声）都不属于「7100 自己推的帧」。2026-10-09 起本模块在读回收工后才被调，
+ * 首次 poll 落在这里，基准自然就跳过了读回那段 —— 见 dsp_7100_sniff.h 的开关说明。 */
 static void sniff_start(void)
 {
     s_base_rise = dsp_7100_dio13_rise_cnt();

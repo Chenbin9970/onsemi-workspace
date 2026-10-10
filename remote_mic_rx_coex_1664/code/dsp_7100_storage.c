@@ -7,7 +7,8 @@
  *   0x0015E000  Program 2   2KB
  *   0x0015E800  Program 3   2KB
  *
- * 每程序只写一槽 864B（216 word），保存时整扇区擦除后重写。
+ * 每程序只写一槽 64B（16 word）；保存时按程序擦该程序的扇区后重写，
+ * 与 flash 现有内容逐字节一致的槽**跳过**（不擦不写，见 dsp_7100_cache_save）。
  * 槽内布局见 include/dsp_7100_storage.h。
  *
  * 另有 Settings 扇区 0x0015F000（在链接区 380K 上界之外，代码不会压到），
@@ -171,12 +172,19 @@ bool dsp_7100_cache_load(void)
     return (hit == DSP7100_CACHE_PROGS);   /* 4 个程序全命中才算成功 */
 }
 
+/* 把 RAM 里的读回结果写进 flash：**逐槽与 flash 现有内容对比，一致就跳过**
+ * （2026-10-09，配合「每次开机都读回」——无差异时一次擦写都不做）。
+ * 比的是整槽 64B（含 magic/ver/valid/CRC）：比 CRC16 严（CRC 有碰撞、memcmp 没有），
+ * 且槽本来就要在 RAM 里打包好，零新增状态。槽无效/空（全 0xFF）时必然不等 → 照写。 */
 bool dsp_7100_cache_save(void)
 {
     dsp_7100_rb_bufs_t *b = dsp_7100_rb_bufs();
     uint32_t buf[CACHE_SLOT_WORDS];
     uint8_t *sb = (uint8_t *)buf;
     uint8_t prog;
+    uint8_t written = 0;
+    uint8_t skipped = 0;
+    uint8_t failed  = 0;
     bool all_ok = true;
 
     for (prog = 0; prog < DSP7100_CACHE_PROGS; prog++) {
@@ -209,6 +217,13 @@ bool dsp_7100_cache_save(void)
         sb[CACHE_CRC_OFF + 1] = (uint8_t)(crc >> 8);
 
         base = CACHE_BASE[prog];
+
+        if (memcmp((const void *)base, sb, CACHE_SLOT_BYTES) == 0) {
+            skipped++;
+            PRINTF("[7100-cache] prog %u 与 flash 一致，跳过\r\n", prog);
+            continue;
+        }
+
         main_flash_unlock();
 
         Sys_Watchdog_Refresh();
@@ -217,6 +232,7 @@ bool dsp_7100_cache_save(void)
             __enable_irq();
             PRINTF("[7100-cache] prog %u erase FAIL\r\n", prog);
             all_ok = false;
+            failed++;
             continue;
         }
         Sys_Watchdog_Refresh();
@@ -225,12 +241,17 @@ bool dsp_7100_cache_save(void)
             __enable_irq();
             PRINTF("[7100-cache] prog %u write FAIL\r\n", prog);
             all_ok = false;
+            failed++;
             continue;
         }
         __enable_irq();
 
+        written++;
         PRINTF("[7100-cache] prog %u saved (crc=%04X)\r\n", prog, crc);
     }
+
+    PRINTF("[7100-cache] done: 覆盖 %u 槽 / 跳过 %u 槽 / 失败 %u\r\n",
+           written, skipped, failed);
 
     return all_ok;
 }

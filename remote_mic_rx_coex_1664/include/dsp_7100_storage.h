@@ -40,10 +40,13 @@ extern "C" {
 
 #define DSP7100_CACHE_PROGS      4
 
-/* 读全部 4 个程序到 RAM。全部无效则返回 false（调用方应改走 I2C 读回）。 */
+/* 读全部 4 个程序到 RAM。全部无效则返回 false。
+ * ⚠ 2026-10-09 起调用方**总是**接着走 I2C 读回（读回结果与 flash 对比后决定覆盖），
+ *   本函数不再有「命中即跳过读回」的含义。 */
 bool dsp_7100_cache_load(void);
 
-/* 把当前 RAM 中的读回结果全部写入 flash。任一程序写失败返回 false。 */
+/* 把当前 RAM 中的读回结果写入 flash：**逐槽与 flash 现有内容对比，一致就跳过**
+ * （不擦不写）。任一槽擦/写失败返回 false；「无差异跳过」不算失败。 */
 bool dsp_7100_cache_save(void);
 
 /* 擦除全部 4 个程序 sector（0xFE 重启重读时用）。 */

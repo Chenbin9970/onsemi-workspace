@@ -29,9 +29,6 @@
 #define DSP7100_TONE_MODE_OFF    0x58   /* 退测听时的值 */
 #define DSP7100_CMD_END          0x82
 
-/* 应答首字节：46 = 7100 接下了这条命令；65/00 = 未就绪 / 事务错位
- * （签名含义见 dsp_7100_init.c 的读回注释）。路径 A 只认 46。 */
-#define DSP7100_RSP_OK           0x46
 #define DSP7100_AUDIOMETRY_PROG  3      /* 测听程序号（原 ble_rempro_cmd.c 的 AUDIOMETRY_PROG） */
 
 /* 音量 7 档（App 档位 0-6 = 7100 档位 0-6）→ 0-100 值：round(档位 * 100 / 6)
@@ -94,8 +91,9 @@ static void print_i2c(char dir, const uint8_t *d, uint16_t len, bool ok)
 #define print_w(p, l, ok)   print_i2c('W', (p), (l), (ok))
 #define print_r(p, l, ok)   print_i2c('R', (p), (l), (ok))
 
-/* 发一帧结束 82，并打印。82 = 「这一帧我读完了，缓冲区还你」（两条路径都调） */
-static bool dsp_7100_send_end(void)
+/* 发一帧结束 82，并打印。82 = 「这一帧我读完了，缓冲区还你」（两条路径都调）。
+ * 2026-10-09 起**非 static**：开机读回（dsp_7100_init.c）也走这里，声明见 dsp_7100_cmd.h。 */
+bool dsp_7100_send_end(void)
 {
     uint8_t end = DSP7100_CMD_END;
     bool ok = i2c_7100_write(I2C_7100_ADDR, &end, sizeof(end));
@@ -177,14 +175,16 @@ uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_
  *   → 解除静音 → 选回程序0 → 探测 → commit → 探测      （DFBC = 14 条）
  *
  * ⚠ 2026-09-30 起**全部异步**：命令表 + 主循环单点推进，200ms tick 只兜底。
- * ⚠ 2026-10-08 起分两条路径（依据见开发文档 §24、§26）：
- *     路径 A 配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等 A7_ACK_WAIT_MS
- *            → 读 3B → 校验 46 → 82 → 等下降沿；读不到 46 就补发 82 后重读
- *     路径 B 交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）—— 写帧 → 等最短间隔
- *            → 等 7100 抬线 → 读头 3B + 按 len16 补读 → 82 → 等下降沿（只当门，不校验）
- *   两族**都读、都发 82**（82 = 「这一帧我读完了」），差别只在「何时读」与「认不认内容」。
- *   分族的依据全在开发文档 §24 / §26；一句话：**A7 写帧没有 DIO13 回铃**（§24.1 实测），
- *   所以配置族等不到沿、读只能靠固定延时定位。
+ * ⚠ 2026-10-08 起分两条路径，**2026-10-09 起两族的时序已统一**（依据见 §24 / §26 / §26.9）：
+ *     两族都是：写帧 → 等 7100 抬线的**上升沿** → 读头 3B + 按 len16 补读 → 82 → 等下降沿
+ *     差别**只剩「认不认内容」和「等不到沿怎么收场」**：
+ *       路径 A 配置族（降噪 / DFBC / EQ / WDRC）—— 校验首字节 46，不是就补发 82 重读（≤3 次）；
+ *              等不到沿（连等 DSP7100_WAIT_RISE_MAX_TICKS 拍线仍低）时**盲读一次**降级收场
+ *       路径 B 交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）—— 只当门用，读到什么照发 82；
+ *              等不到沿就判本步失败
+ *   ⚠ 配置族原先走「固定 50ms 盲读」，依据是「A7 写帧没有 DIO13 回铃」（§24.1 实测）——
+ *     该依据**已被推翻**：§26.9（+47ms）与 §26.11 两轮上板都看到 A7 写帧 ~10~58ms 抬线，
+ *     那 50ms 只是与沿**碰巧同相**，还让每步白背一次不喂狗的忙等（WDRC n=16 累计 2.3s）。
  * ========================================================================== */
 
 /* 最长会话 = WDRC 全通道单参数：6 条 0x03 探测 + 静音+选程序+提交+解除+选回+commit
@@ -193,15 +193,14 @@ uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_
 #define A7_MAX_CMDS      56
 #define A7_CMD_BUF_SZ    640
 
-/* 应答长度**按步区分**（见开发文档 §25）：
- *   setter（addr 0x0000）应答 3B：`46 00 00` = 头 + 地址回显，**零数据字节**
- *   0x03 探测（addr 0x0003）应答 6B：`46 03 00 <x> <busy> 1A`
- * 读少了会把尾巴留在 7100 里，下一条读就错位 —— 每步必须读满自己的长度。 */
-#define A7_RX_ACK        3
-#define A7_RX_PROBE      6
-#define A7_RX_MAX        6      /* 读缓冲上限 */
+/* 读缓冲上限（头 3B + payload 3B）。
+ * 读长度**不再按步区分**（2026-10-09）：头里的 len16 就是长度，payload 由它定。
+ * 旧版按步硬编码的 A7_RX_ACK(3) / A7_RX_PROBE(6) 已删 —— 那两个固定值就是在这两个应答
+ * 形状上凑出来的，与 len16 逐条相符（setter `46 00 00` → len16=0；0x03 探测
+ * `46 03 00 <x> <busy> 1A` → len16=3），见开发文档 §25 / §26.9。 */
+#define A7_RX_MAX        6
 
-/* 路径 B 一次读的**两截**（头 3B + payload）合成**一行**打（2026-10-09）。
+/* 一次读的**两截**（头 3B + payload）合成**一行**打（2026-10-09，调用点 a7_read_frame，两族共用）。
  * 为什么必须合：串口工具按自己的轮询周期收行，分两行打会凭空多出一个时间戳 ——
  * 实测同一段代码给出过「同一毫秒」和「差 12ms」两种结果，拿去量协议时序会看错；
  * 而且每行 @115200 ≈2.5ms 的传输时间也会把后面的 82 推后。
@@ -223,27 +222,27 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
            hlen, okh, hx, plen, okp, px);
 }
 
-/* 路径 A 读应答的两个参数（2026-10-08，依据见开发文档 §24.1、§25.2）
- *   A7_ACK_WAIT_MS   写帧后等这么久再读。参考抓包（p0dfbc0-1.csv）实测的
- *                    写帧→读应答间隔：setter 8 条中 6 条落在 44~50ms，另有 71ms、
- *                    98ms 各一条；0x03 探测 94~98ms；首条 250ms（冷启动）。
- *                    ⚠ 不是按命令族分档 —— `A7 02 … 12 01` 是 setter 却 98ms。
- *                    ⚠ 它量的**只是参考 RSL10 自己的读节奏**（读→读间隔基本是
- *                      50ms 台阶），不等于 7100 的应答就绪时间。
- *                    ⚠ A7 写帧**没有** DIO13 回铃（实测），这里只能等固定时间。
+/* 路径 A 读应答的参数（2026-10-08，依据见开发文档 §24.1、§25.2）
  *   A7_ACK_RETRY_MAX 一条命令最多重读几次（照读回：补发 82 后锁住，只等 200ms tick）。
  *                    读回那边无上限（开机一次性），命令会话跑在运行期，必须封顶 ——
- *                    否则一条命令会永久占着 I2C，读回和后续设置全被挡住。 */
-#define A7_ACK_WAIT_MS     50
+ *                    否则一条命令会永久占着 I2C，读回和后续设置全被挡住。
+ * ⚠ 原来的 A7_ACK_WAIT_MS(50) 已删除（2026-10-09）：写帧→读应答的间隔不再靠固定延时定位，
+ *   改成等 7100 抬线的上升沿（同路径 B）。那 50ms 的由来留档：参考抓包 p0dfbc0-1.csv 里
+ *   setter 8 条中 6 条落在 44~50ms（另有 71 / 98ms 各一条）、0x03 探测 94~98ms、
+ *   首条 250ms（冷启动）—— 它量的**只是参考 RSL10 自己的读节奏**（读→读基本 50ms 台阶），
+ *   不等于 7100 的应答就绪时间。 */
 #define A7_ACK_RETRY_MAX   3
 
-/* 路径 B 等 7100 抬线的上限（2026-10-09）：tick 兜底放行时若线**还是低的**，说明 7100
- * 还没把回执放出来 —— 不再盲读（实测盲读会读到 `00 00 00` 还照发 82，之后真正的回执
- * 抬了线却没人读，那帧就滞留在 7100 里）。吞掉这一拍继续等，连等这么多拍（×200ms）
- * 仍线低才判本步失败。5 拍 = 1s：正常回执最慢也就 80~90ms（程序加载窗口）。 */
-#define A7_WAIT_RISE_MAX_TICKS  5
+/* 等 7100 抬线的上限（拍数 ×200ms）—— **值在 dsp_7100_cmd.h 的 DSP7100_WAIT_RISE_MAX_TICKS**，
+ * 2026-10-09 起命令会话与开机读回共用（读回原先没有这道门）。下面是它的来历：
+ * tick 兜底放行时若线**还是低的**，说明 7100 还没把回执放出来 —— 不立刻读（实测盲读会读到
+ * `00 00 00` 还照发 82，之后真正的回执抬了线却没人读，那帧就滞留在 7100 里）。吞掉这一拍
+ * 继续等，连等这么多拍仍线低时：**路径 B 判本步失败**（没读就不欠 credit，不发 82）；
+ * **路径 A 盲读一次**降级 —— 它有 46 校验兜底，读到空帧只会走「补发 82 + 重读」，
+ * 不会像路径 B 那样把空帧当成功。5 拍 = 1s：正常回执最慢也就 80~90ms（程序加载窗口）。 */
 
-/* SEND 门的兜底读上限（2026-10-09，开发者定值 10）。
+/* SEND 门的兜底读上限（开发者定值 10）—— **值在 dsp_7100_cmd.h 的 DSP7100_RESCUE_MAX**，
+ * 2026-10-09 起命令会话与开机读回共用。下面是它的来历：
  *
  * 门的规则：上一条 82 的**下降沿**到了，还要求 DIO13 是**低的**才发下一条。线高说明这条
  * 82 之后 7100 又抬了线 —— 它压着一帧（日志 `rise +1/47 fall +1/46`，而人家要的是那帧被
@@ -252,9 +251,9 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
  * ⚠ 上限是**必须**的（防 7100 持续有帧时把会话拖死）。语义已定案（11:05，见 §26.6）：
  *   线高 = 7100 手上真有帧，帧抽干后那条 82 只产生**下降沿**、线落回低 → 循环自然停。
  *   实测切程序后是 2 帧（0x2A/0x2E），所以正常只需兜 1~2 次，10 基本用不到。
- * ⚠ 只在路径 B（A7_FAM_EDGE）的 SEND 门上用；第一条命令前面没有 82，不套这个门。
- *   会话**收尾**也用同一个上限，但不看族别，而且要循环到线低（见 a7_session_finish）。 */
-#define A7_RESCUE_MAX   10
+ * ⚠ **两族共用**（2026-10-09 起，SEND 门不再分族）；第一条命令前面没有 82，不套这个门。
+ *   会话**收尾**也用同一个上限，而且要循环到线低（见 a7_session_finish）。
+ *   读回的 SEND 门与收尾兜底读用同两个上限（见 dsp_7100_init.c 的 dsp_7100_rb_poll）。 */
 
 #define A7_PROBE_ADDR    0x0003 /* 0x03 状态探测的目标地址（抓包：A7 01 00 03 00 02） */
 #define A7_PROBE_VAL     0x02   /* 该帧的 1 字节数据 */
@@ -407,35 +406,29 @@ static const uint8_t s_noise_tri[5][3] = {
 /* 一条命令 = 一个步骤，两步相位（写帧 → 读回 / 收尾，按族不同），与读回
  * dsp_7100_init.c 的 RB_SEND / RB_READ 完全同构。
  *
- * 2026-10-08 起分两条路径（见开发文档 §24）：步表只描述「发什么」，
- * 读不读由**会话族**（s_sess_family）决定，每族一个执行函数。
+ * 2026-10-08 起分两条路径（见开发文档 §24），**2026-10-09 起时序统一**：
+ * 步表只描述「发什么」，两族都走「写帧 → 等 7100 抬线的**上升沿** → 读头 3B + 按 len16
+ * 补读 → 82 → 等下降沿」。读不读由**会话族**（s_sess_family）决定，每族一个执行函数。
  *
- *   路径 A（配置族：降噪 / DFBC / EQ / WDRC）—— 要读应答
- *     写帧 → 等 A7_ACK_WAIT_MS → 读 rlen B → 校验 46 → 82 → 等下降沿
- *     读到的不是 46 就重读（照读回：补发 82 后锁住，只等 200ms tick）
- *     rlen 按步区分：setter 3B，0x03 探测 6B（见 A7_RX_ACK / A7_RX_PROBE）
+ *   路径 A（配置族：降噪 / DFBC / EQ / WDRC）—— 要读应答、**认内容**
+ *     读到的首字节不是 46 就重读（照读回：补发 82 后锁住，只等 200ms tick，≤3 次）；
+ *     沿等不到（连等 DSP7100_WAIT_RISE_MAX_TICKS 拍线仍低）时**盲读一次**降级收场。
  *
- *   路径 B（交互族：切程序 / 调音量 / 测听 / 纯音 / 静音）—— 2026-10-08 晚起也走完整握手
- *     写帧 → 等 7100 抬线的**上升沿** → 读头 3B + 按 len16 补读
- *     → 82 → 等下降沿 → 下一条（只当门用，不校验内容；沿等不到就等 tick，
- *       且**线高才读** —— 不再盲读，见 dsp_7100_cmd_poll）
+ *   路径 B（交互族：切程序 / 调音量 / 测听 / 纯音 / 静音）—— 也读、也发 82，只当门用
+ *     不校验内容；沿等不到就判本步失败（没读就不欠 credit，不发 82）。
  *     写后**没有固定延时**（2026-10-09 去掉）：沿一到就读，7100 的抬线本身就是「回执就绪」。
  *
  *   ⚠ 为什么路径 B 也必须读 + 发 82：82 = 「这一帧我读完了，缓冲区还你」。不读就是不还
  *     credit，7100 会把那帧一直压着（以前是 sniff 替它还的，sniff 一关就轮到后面第一个
  *     要读的踩雷 —— 这曾表现为「配置族命令紧跟交互族命令时读不到 46」）。见 §26。
- *   ⚠ 路径 A 仍**不走**「写完等上升沿再读」，但**理由已作废**：当初的依据是
- *     「A7 写帧产生零边沿」（2026-10-08 测的，见开发文档 §24.1），而 2026-10-08 测听 ③
- *     与 2026-10-09 两轮上板都看到写帧 ~10ms 抬线（见 §26.11）—— 该依据**已被推翻**。
- *     现状是沿用「固定 50ms 盲读」这条**已上板验证过**的基线；要不要改成等沿，等定夺。
+ *   ⚠ 路径 A 原先「固定 50ms 盲读」的依据（「A7 写帧产生零边沿」，2026-10-08 见 §24.1）
+ *     **已被推翻**：2026-10-08 测听 ③ 与 2026-10-09 两轮上板都看到 A7 写帧 +47~58ms 抬线
+ *     （§26.9 / §26.11），那 50ms 只是与沿碰巧同相。此处即 2026-10-09 那次统一改动。
  */
 typedef struct
 {
     const uint8_t *data;     /* 写帧字节；NULL = 本条只读 */
     uint16_t       wlen;     /* 写帧长度；0 = 不写 */
-    uint8_t        rlen;     /* 路径 A 读几字节：setter = A7_RX_ACK(3)，
-                              *   0x03 探测 = A7_RX_PROBE(6)。
-                              *   路径 B 不用 —— 头 3B 里的 len16 就是长度 */
 } a7_step_t;
 
 static a7_step_t s_steps[A7_MAX_CMDS];
@@ -446,16 +439,14 @@ static bool      s_sess_active;
 /* ---- 推进状态（照 dsp_7100_init.c 的 s_rb_st / s_rb_wait_rise / s_rb_timeout）----
  * 相位与门控：
  *   CMD_ST_SEND      发命令 —— 有前序 82 时等它的**下降沿**（7100 吃下了才发下一条）
- *   CMD_ST_WAIT_RISE **只有路径 B**：发完等 7100 抬线的**上升沿**（回执到了才去读）。
+ *   CMD_ST_WAIT_RISE 发完等 7100 抬线的**上升沿**（回执到了才去读）—— **两族都走**。
  *                    200ms tick 兜底时**还要求线高**；线低就继续等（最多
- *                    A7_WAIT_RISE_MAX_TICKS 拍），**_不盲读_** —— 见 dsp_7100_cmd_poll。
- *   CMD_ST_READ      读应答 —— 路径 A 直接读（发帧时已阻塞等满 A7_ACK_WAIT_MS）；
- *                    路径 B 读头 3B + 按 len16 补读；上次读失败（s_cmd_retry_lock）只等 tick 重读
+ *                    DSP7100_WAIT_RISE_MAX_TICKS 拍），到点后路径 B 判失败、路径 A 盲读一次。
+ *   CMD_ST_READ      读头 3B + 按 len16 补读（两族同）；上次读失败（s_cmd_retry_lock）
+ *                    只等 tick 重读 —— 只有路径 A 会置它（它才校验 46，才有失败可言）
  * 200ms tick 只置 s_cmd_timeout 兜底，真正步进在主循环的 dsp_7100_cmd_poll()。
  *
- * ⚠ 路径 A 的相位表里**没有** WAIT_RISE：它沿用「固定 50ms 盲读」这条已验证基线
- *   （原依据「A7 写帧零边沿」已被 §26.11 推翻，改不改待定）。
- *   路径 B 认上升沿，但**必须在本步发 82 之前**等 —— 82 自己也可能带沿（§23.6），
+ * ⚠ 等上升沿**必须在本步发 82 之前** —— 82 自己也可能带沿（§23.6），
  *   混在一起就分不清是 7100 抬的还是我们自己发出来的。 */
 #define CMD_ST_SEND       0
 #define CMD_ST_WAIT_RISE  1
@@ -467,9 +458,9 @@ static uint8_t  s_cmd_retry_lock;  /* 1 = 上次读没拿到 46：本相位不�
 static uint8_t  s_cmd_retry_cnt;   /* 本步已重读次数；达 A7_ACK_RETRY_MAX 判本步失败 */
 static uint8_t  s_cmd_timeout;      /* 200ms tick 兜底标志 */
 static uint8_t  s_cmd_low_ticks;    /* WAIT_RISE 里吞掉的「tick 到了但线还是低」拍数 */
-static uint8_t  s_cmd_rescue_cnt;   /* 本步已做的兜底读次数（A7_RESCUE_MAX 封顶） */
+static uint8_t  s_cmd_rescue_cnt;   /* 本步已做的兜底读次数（DSP7100_RESCUE_MAX 封顶） */
 static uint32_t s_cmd_wait_fall;    /* 发本条 82 前记的下降沿数 */
-static uint32_t s_cmd_wait_rise;    /* 写完本条后记的上升沿数（**路径 B 的进门基准**） */
+static uint32_t s_cmd_wait_rise;    /* 写完本条后记的上升沿数（**两族的进门基准**） */
 
 static uint8_t   s_cmd_buf[A7_CMD_BUF_SZ];
 static uint16_t  s_cmd_used;
@@ -491,15 +482,18 @@ static uint8_t  s_tone_db;
 
 static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
 
-/* 会话族：决定「怎么等这一次读」（2026-10-08 晚，见开发文档 §26）。
+/* 会话族：决定「**认不认**读到的内容」和「等不到沿怎么收场」（2026-10-08 晚，见 §26）。
  * 由 a7_build_session() 按 kind 置位，dsp_7100_cmd_step() 据此选执行函数。
- *   配置族（降噪 / DFBC / EQ / WDRC）  → A7_FAM_ACK ：固定等 50ms 后盲读，认 46、失败重读
- *   交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）→ A7_FAM_EDGE：等 7100 抬线再读，只当门
+ *   配置族（降噪 / DFBC / EQ / WDRC）  → A7_FAM_ACK ：校验首字节 46，不是就补发 82 重读；
+ *                                        等不到沿则盲读一次降级
+ *   交互族（切程序 / 调音量 / 测听 / 纯音 / 静音）→ A7_FAM_EDGE：只当门，读到什么照发 82；
+ *                                        等不到沿判本步失败
  *
- * ⚠ 两族**都读、都发 82**（收尾的 82 不再分族，见 a7_step_advance）—— 差别只剩「何时读」
- *   和「认不认内容」。§23 那版想从 rlen / wait_rise 推语义，被实测推翻了，所以显式记族。
- * ⚠ 为什么配置族不换成等沿：它是**已上板验证过**的基线，不轻易动（原依据「A7 写帧零边沿」
- *   已被 §26.11 推翻，改不改待定）。 */
+ * ⚠ 两族**都读、都发 82**（收尾的 82 不再分族，见 a7_step_advance）、等沿/等下降沿的时序
+ *   完全一致（2026-10-09 统一）—— 差别只剩上面那两条。§23 那版想从 rlen / wait_rise 推语义，
+ *   被实测推翻了，所以显式记族。
+ * ⚠ 配置族原来的「固定 50ms 盲读」依据「A7 写帧零边沿」**已被推翻**（实测 +47~58ms 抬线，
+ *   §26.9 / §26.11），那 50ms 只是与沿碰巧同相。 */
 #define A7_FAM_EDGE      0
 #define A7_FAM_ACK       1
 static uint8_t s_sess_family;
@@ -516,7 +510,6 @@ static uint8_t *a7_put(uint16_t len)
     s_cmd_used = (uint16_t)(s_cmd_used + len);
     s_steps[s_step_cnt].data    = p;
     s_steps[s_step_cnt].wlen    = len;
-    s_steps[s_step_cnt].rlen    = A7_RX_ACK;  /* 默认 setter 长度；0x03 探测由 a7_add_probe 改写 */
     s_step_cnt++;
     return p;
 }
@@ -559,7 +552,6 @@ static void a7_add_probe(void)
     p[0] = 0xA7; p[1] = 0x01; p[2] = 0x00;
     p[3] = (uint8_t)(A7_PROBE_ADDR & 0xFF); p[4] = (uint8_t)(A7_PROBE_ADDR >> 8);
     p[5] = A7_PROBE_VAL;
-    s_steps[s_step_cnt - 1].rlen = A7_RX_PROBE;
 }
 
 /* A7 02 00 00 00 <opt> <P> */
@@ -587,9 +579,14 @@ static void a7_add_prep(uint8_t blk, uint8_t prog, uint8_t a, uint8_t b)
  *   A7 04 00 00 00 08 00 00 <val> */
 static void a7_add_wdrc_param(uint8_t prog, uint16_t addr, uint8_t val)
 {
-    uint8_t *p = a7_put(9);
+    uint8_t *p;
 
+    /* ⚠ 顺序不能反：a7_put 按**调用顺序**把帧排进队列，must 先 prep（选地址）
+     *   再写值。写反了每个值都会落到**上一条 prep 选的地址**上，7100 照样 ack
+     *   （会话报 ok=1，日志看不出问题）—— 2026-10-09 上板实测的就是这个：
+     *   EQ +5 后读回，P1 两条通道的 LL/HL 整体错位一格。 */
     a7_add_prep(A7_BLK_WDRC, prog, (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF));
+    p = a7_put(9);
     if (p == NULL) return;
     p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
     p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val;
@@ -727,8 +724,8 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
     s_cmd_used = 0;
     s_build_fail = false;
     /* 会话族 → 走哪条路径（见文件头与开发文档 §24 / §26）。
-     * 两族都读、都发 82；差别是配置族（路径 A）只能靠固定 50ms 定位读时机、且校验 46，
-     * 交互族（路径 B）等 7100 抬线的上升沿再读、读到的内容只进日志。 */
+     * 两族都读、都发 82、都等 7100 抬线再读（2026-10-09 统一）；差别是配置族（路径 A）
+     * **校验 46**（失败补 82 重读）、等不到沿时盲读一次降级，交互族（路径 B）读到的内容只进日志。 */
     s_sess_family = (kind == A7_KIND_DENOISE || kind == A7_KIND_DFBC ||
                      kind == A7_KIND_WDRC    || kind == A7_KIND_EQ)
                     ? A7_FAM_ACK : A7_FAM_EDGE;
@@ -902,7 +899,7 @@ static void a7_session_sync_cache(void)
  *
  * ⚠ 没读到（头那 3B 传输层就失败）**不发 82**：没读到就不欠 credit —— 与路径 B 的
  *   READ 分支一致；也不判会话失败（这是旁路动作，调用方自己决定怎么继续）。
- * ⚠ 调用方负责封顶（A7_RESCUE_MAX / 收尾只做一次），本函数不管循环。 */
+ * ⚠ 调用方负责封顶（DSP7100_RESCUE_MAX / 收尾只做一次），本函数不管循环。 */
 static void a7_rescue_read(void)
 {
     uint8_t  rx[A7_RX_MAX];
@@ -957,14 +954,14 @@ static void a7_session_finish(bool ok)
      *   约 30ms；上限 10 是防 7100 一直有帧那种异常。若嫌长，可以让会话多留一拍、
      *   每次 pass 兜一次（要加状态，先别做）。 */
     if (ok && DIO_DATA->ALIAS[13] == 1) {
-        s_cmd_rescue_cnt = 0;       /* 收尾这一轮单独计数，上限同 A7_RESCUE_MAX（每步的上限） */
-        while (DIO_DATA->ALIAS[13] == 1 && s_cmd_rescue_cnt < A7_RESCUE_MAX) {
+        s_cmd_rescue_cnt = 0;       /* 收尾这一轮单独计数，上限同 DSP7100_RESCUE_MAX（每步的上限） */
+        while (DIO_DATA->ALIAS[13] == 1 && s_cmd_rescue_cnt < DSP7100_RESCUE_MAX) {
             s_cmd_rescue_cnt++;
             a7_rescue_read();
         }
         if (DIO_DATA->ALIAS[13] == 1) {
             PRINTF("[7100] 收尾兜底读已满 %u 次线仍高 → 到此为止（随后 rebase，归 sniff）\r\n",
-                   (unsigned)A7_RESCUE_MAX);
+                   (unsigned)DSP7100_RESCUE_MAX);
         }
     }
 
@@ -1030,39 +1027,97 @@ static bool a7_step_advance(void)
     return true;
 }
 
-/* ---- 路径 A：配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等 → 读 rlen B → 校验 → 82 ----
- * 与读回 dsp_7100_rb_seq_tick 同构，只少一次 payload 读（应答本身就是读到的全部）。
- * ⚠ 读之前只能等固定时间：A7 写帧**没有** DIO13 回铃（实测，见 §24.1）。
+/* ---- 读一帧回执（**命令会话与开机读回共用**，声明见 dsp_7100_cmd.h）----
+ * 头 3B = status + len16(小端)，再按 len16 补读 payload（上限 cap − 3）。
+ * 只读不打印：命令族要**合成一行**（下面的 a7_read_frame），读回要分块 dump（375B 一行
+ * 会冲爆 pack printf 的 200B 静态缓冲）—— 打印形状是调用方的事。 */
+uint8_t dsp_7100_read_frame(uint8_t *rx, uint16_t cap, uint16_t *pay_out)
+{
+    uint16_t room = (cap > 3u) ? (uint16_t)(cap - 3u) : 0u;
+    uint16_t pay  = 0;
+    bool     okh, okp = true;
+
+    okh = i2c_7100_read(I2C_7100_ADDR, rx, 3);
+    if (okh) {
+        pay = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
+        /* setter `46 00 00` → len16 = 0（零数据字节）；0x03 探测 `46 03 00 <x> <busy> 1A`
+         * → len16 = 3；`43 03 00` 那类也是 3（开发文档 §25.2 的旧固定长度即由此而来）。
+         * 读回那三条是 375 / 306 / 174B（read 命令里的 16 位块地址就是字节数）。 */
+        if (pay > room) pay = room;
+        if (pay > 0) okp = i2c_7100_read(I2C_7100_ADDR, rx + 3, pay);
+    }
+
+    *pay_out = pay;
+    if (!okh) return DSP7100_RDF_ERR_HDR;
+    if (!okp) return DSP7100_RDF_ERR_PAY;
+    return DSP7100_RDF_OK;
+}
+
+/* 命令族这一侧的薄封装：传本族的读缓冲上限 A7_RX_MAX，并把**两截合成一行**打。
+ * 为什么必须合一行：串口工具按自己的轮询周期收行，分两行打会凭空多出一个时间戳 ——
+ * 实测同一段代码给出过「同一毫秒」和「差 12ms」两种结果，拿去量协议时序会看错；
+ * 而且每行 @115200 ≈2.5ms 的传输时间也会把后面的 82 推后。
+ * 头里的 len16 为 0（pay == 0）时退化成原来的单行头，日志形状与改造前一致。
+ * ⚠ 读回不套这层（它的 payload 有 375B，合一行要 1150 字符 > 200B 缓冲）。 */
+static uint8_t a7_read_frame(uint8_t *rx, uint16_t *pay_out)
+{
+    uint8_t rd = dsp_7100_read_frame(rx, A7_RX_MAX, pay_out);
+
+    print_r2(rx, 3, rd != DSP7100_RDF_ERR_HDR, rx + 3, *pay_out,
+             rd != DSP7100_RDF_ERR_PAY);
+    return rd;
+}
+
+/* ---- 路径 A：配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等抬线 → 读 → 校验 46 → 82 ----
+ * 与路径 B（a7_step_edge）**只差两处**：读完要校验首字节是 46（不是就补发 82 重读，≤3 次），
+ * 以及等不到抬线时盲读一次降级（见 dsp_7100_cmd_poll）。
+ * ⚠ 2026-10-09 之前这里是「写帧 → 阻塞等 A7_ACK_WAIT_MS(50) → 按步读固定长度」；依据
+ *   「A7 写帧没有 DIO13 回铃」（§24.1）**已被推翻**（实测 +47~58ms 抬线，§26.9 / §26.11），
+ *   那 50ms 只是与沿碰巧同相，还让每步白背一次不喂狗的忙等（WDRC n=16 累计 2.3s）。
  * ⚠ 读失败时**不重发写帧**，只重读 —— 与读回一致（读回失败后停在 RB_READ 重读）。 */
 static void a7_step_read(void)
 {
     const a7_step_t *s = &s_steps[s_step_idx];
-    uint8_t rx[A7_RX_MAX];       /* 缓冲按最长算，实际读 s->rlen 字节 */
-    bool    ok;
+    uint8_t  rx[A7_RX_MAX] = {0};   /* 读失败时别把栈上的垃圾当数据打出来 */
+    uint16_t pay;
+    uint8_t  rd;
+    bool     ok;
 
     if (s_cmd_st == CMD_ST_SEND) {
+        /* 基准必须在**写帧之前**记死（同 a7_step_edge）：回执沿可能就在写完之后几毫秒里。
+         * 此刻上一条 82 的下降沿已经在 SEND 门那里等到了，窗口里的沿只能是本步 7100 的。 */
+        s_cmd_wait_rise  = dsp_7100_dio13_rise_cnt();
+        s_cmd_low_ticks  = 0;    /* 本步等待计数清零（tick 兜底连等多少拍，见 cmd_poll） */
+        s_cmd_rescue_cnt = 0;    /* 本步兜底读次数清零（DSP7100_RESCUE_MAX 是**每步**的上限） */
         if (s->wlen > 0) {
             ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->wlen);
             print_w(s->data, s->wlen, ok);
             if (!ok) { a7_session_finish(false); return; }
-            /* ⚠ 阻塞忙等、且不喂狗（见开发文档 §22.8）。50ms 与测听那条 80ms 同量级。 */
-            i2c_7100_delay_ms(A7_ACK_WAIT_MS);
         }
+        s_cmd_st = CMD_ST_WAIT_RISE;
+        return;
+    }
+
+    if (s_cmd_st == CMD_ST_WAIT_RISE) {     /* 走到这里 = 沿到了，或 tick 兜底（盲读降级） */
         s_cmd_st = CMD_ST_READ;
         return;
     }
 
-    ok = i2c_7100_read(I2C_7100_ADDR, rx, s->rlen);   /* 必须读满本步长度，否则 7100 里留尾巴 */
-    print_r(rx, s->rlen, ok);
-    if (ok && rx[0] == DSP7100_RSP_OK) {        /* 46 = 7100 接下了这条 */
+    /* 读相位。重读走 s_cmd_retry_lock 分支：那时不等沿、只等 tick，读到的是我们补发 82
+     * 之后 7100 重新放出来的同一条。 */
+    rd = a7_read_frame(rx, &pay);
+    if (rd == DSP7100_RDF_OK && rx[0] == DSP7100_RSP_OK) {    /* 46 = 7100 接下了这条 */
         (void)a7_step_advance();
         return;
     }
 
-    /* 没拿到 46：本步补发 82 收尾（照读回 —— 失败那步的 82 也照发），再等 tick 重读 */
-    PRINTF("[7100] step%u/%u ACK FAIL hdr=%02X %02X %02X (retry %u/%u)\r\n",
-           s_step_idx, s_step_cnt, rx[0], rx[1], rx[2],
-           s_cmd_retry_cnt, A7_ACK_RETRY_MAX);
+    /* 没拿到 46（或压根没读成）：本步补发 82 收尾（照读回 —— 失败那步的 82 也照发），
+     * 再等 tick 重读 */
+    PRINTF("[7100] step%u/%u ACK FAIL hdr=%02X %02X %02X pay=%u (retry %u/%u)%s\r\n",
+           s_step_idx, s_step_cnt, rx[0], rx[1], rx[2], (unsigned)pay,
+           s_cmd_retry_cnt, A7_ACK_RETRY_MAX,
+           (rd == DSP7100_RDF_ERR_HDR) ? " [读头失败]" :
+           (rd == DSP7100_RDF_ERR_PAY) ? " [读payload失败]" : "");
     s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
     if (!dsp_7100_send_end()) { a7_session_finish(false); return; }
 
@@ -1089,14 +1144,15 @@ static void a7_step_read(void)
  *   sniff 一关就轮到后面第一个要读的踩雷。见开发文档 §26。
  * ⚠ **只当门用、不校验内容**：读到什么（`43 03 00 …` / `46 00 00`）都照发 82 放行。
  *   沿等不到时 200ms tick 兜底**但仍要求线高**（2026-10-09 起）：线低说明 7100 还没把回执
- *   放出来，那就继续等，连等 A7_WAIT_RISE_MAX_TICKS 拍才判本步失败 —— **不盲读**。
+ *   放出来，那就继续等，连等 DSP7100_WAIT_RISE_MAX_TICKS 拍才判本步失败 —— **不盲读**。
  * 代价仍在：命令**不被校验**，日志里能看出的只有「读到了/没读到」。 */
 static void a7_step_edge(void)
 {
     const a7_step_t *s = &s_steps[s_step_idx];
-    uint8_t  rx[A7_RX_MAX];
+    uint8_t  rx[A7_RX_MAX] = {0};   /* 读失败时别把栈上的垃圾当数据打出来 */
     uint16_t pay;
-    bool     ok, okh, okp;
+    uint8_t  rd;
+    bool     ok;
 
     if (s_cmd_st == CMD_ST_SEND) {
         /* 写完**不等任何固定时间**，直接去等 7100 抬线 —— 那个沿就是「回执已就绪」，
@@ -1109,7 +1165,7 @@ static void a7_step_edge(void)
          * 此刻上一条 82 的下降沿已经在 SEND 门那里等到了，窗口里的沿只能是本步 7100 的。 */
         s_cmd_wait_rise = dsp_7100_dio13_rise_cnt();
         s_cmd_low_ticks = 0;    /* 本步等待计数清零（tick 兜底连等多少拍，见 cmd_poll） */
-        s_cmd_rescue_cnt = 0;   /* 本步兜底读次数清零（A7_RESCUE_MAX 是**每步**的上限） */
+        s_cmd_rescue_cnt = 0;   /* 本步兜底读次数清零（DSP7100_RESCUE_MAX 是**每步**的上限） */
         if (s->wlen > 0) {
             ok = i2c_7100_write(I2C_7100_ADDR, s->data, s->wlen);
             print_w(s->data, s->wlen, ok);
@@ -1124,30 +1180,15 @@ static void a7_step_edge(void)
         return;
     }
 
-    okh = i2c_7100_read(I2C_7100_ADDR, rx, 3);      /* 头 3B：status + len16(小端) */
-    okp = true;
-    pay = 0;
-    if (okh) {
-        pay = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
-        if (pay > (A7_RX_MAX - 3)) pay = A7_RX_MAX - 3; /* 实测最长 3B（`43 03 00` + 地址+值） */
-        if (pay > 0) {
-            okp = i2c_7100_read(I2C_7100_ADDR, rx + 3, (uint8_t)pay);
+    rd = a7_read_frame(rx, &pay);                   /* 头 3B + 按 len16 补读，打印合成一行 */
+
+    if (rd != DSP7100_RDF_OK) {                           /* 传输层失败 → 显式判失败，不装看不见 */
+        if (rd == DSP7100_RDF_ERR_HDR) {
+            PRINTF("[7100] step%u/%u 读回执失败（头）\r\n", s_step_idx, s_step_cnt);
+        } else {
+            PRINTF("[7100] step%u/%u 读回执失败（payload %uB）\r\n",
+                   s_step_idx, s_step_cnt, (unsigned)pay);
         }
-    }
-
-    /* 打印一律挪到**两截都读完**之后、且**合成一行**：串口 @115200 一行约 30 字符，
-     * 夹在两次读中间等于给这一帧开一个 2~3ms 的口子；分两行则除了传输时间，串口工具
-     * 还会按自己的轮询周期给出一个假的行间隔（2026-10-09 实测过同段代码 0ms 与 12ms 两种）。 */
-    print_r2(rx, 3, okh, rx + 3, (uint16_t)pay, okp);
-
-    if (!okh) {                                     /* 传输层失败 → 显式判失败，不装看不见 */
-        PRINTF("[7100] step%u/%u 读回执失败（头）\r\n", s_step_idx, s_step_cnt);
-        a7_session_finish(false);
-        return;
-    }
-    if (!okp) {
-        PRINTF("[7100] step%u/%u 读回执失败（payload %uB）\r\n",
-               s_step_idx, s_step_cnt, (unsigned)pay);
         a7_session_finish(false);
         return;
     }
@@ -1178,21 +1219,21 @@ void dsp_7100_cmd_tick(void)
 }
 
 /* 主循环（app.c）：命令会话**唯一**的推进点。
- *   SEND      等上一条 82 的**下降沿**（7100 吃下了才发下一条）—— 实测 0~2ms，两条路径共用。
- *             **路径 B 再加一条**：还要 DIO13 是低的。线高 = 那条 82 之后 7100 又抬了线，
- *             它压着一帧 → 不发起下一条，先兜底读掉（a7_rescue_read，每步上限 A7_RESCUE_MAX）
- *   WAIT_RISE **路径 B 专有**：等 7100 抬线的**上升沿**（回执到了才去读）。
+ *   SEND      等上一条 82 的**下降沿**（7100 吃下了才发下一条）—— 实测 0~2ms，两族共用。
+ *             **再加一条**：还要 DIO13 是低的。线高 = 那条 82 之后 7100 又抬了线，
+ *             它压着一帧 → 不发起下一条，先兜底读掉（a7_rescue_read，每步上限 DSP7100_RESCUE_MAX）
+ *   WAIT_RISE 等 7100 抬线的**上升沿**（回执到了才去读）—— **两族共用**（2026-10-09 起）。
  *             200ms tick 只用来兜底，且**必须线高才放行**（2026-10-09，见下）；
- *             连等 A7_WAIT_RISE_MAX_TICKS 拍仍线低则判本步失败，不再盲读。
+ *             连等 DSP7100_WAIT_RISE_MAX_TICKS 拍仍线低时：路径 B 判本步失败（不盲读），
+ *             路径 A 盲读一次降级（它认 46，读到空帧会走「补 82 + 重读」而不是当成功）。
  *   READ      路径 A 读失败重试时只等 tick（不认边沿，同读回 s_rb_retry）；
- *             其余情况直接进（路径 A 写帧时已阻塞等满 A7_ACK_WAIT_MS）
+ *             其余情况直接进。
  *
- * ⚠ **不再盲读**（2026-10-09 上板实测）：以前 tick 到点就无条件读，读到的是 `00 00 00`
- *   （7100 还没把回执放出来），却照样 `82` 出去 —— 之后真正的回执才抬线，可会话已经收尾，
- *   没人读它 → 线停在高、那帧滞留在 7100（日志 `session done ok=1 D13=1`）。
- *   加了电平门后读永远发生在 7100 抬线之后，也就不会再有「读空还报 ok=1」。
- * ⚠ 路径 A 那条相位表里**没有** WAIT_RISE：沿用固定 50ms 盲读的已验证基线
- *   （原依据「A7 写帧零边沿」已被 §26.11 推翻，改不改待定）。 */
+ * ⚠ **不再无条件盲读**（2026-10-09 上板实测）：以前 tick 到点路径 B 就无条件读，读到的是
+ *   `00 00 00`（7100 还没把回执放出来），却照样 `82` 出去 —— 之后真正的回执才抬线，可会话
+ *   已经收尾，没人读它 → 线停在高、那帧滞留在 7100（日志 `session done ok=1 D13=1`）。
+ *   加了电平门后读永远发生在 7100 抬线之后，也就不会再有「读空还报 ok=1」（路径 A 那次
+ *   降级盲读例外，但它有 46 校验兜着）。 */
 void dsp_7100_cmd_poll(void)
 {
     if (!s_sess_active) { s_cmd_timeout = 0; return; }
@@ -1207,9 +1248,8 @@ void dsp_7100_cmd_poll(void)
          * fall +1/46` 那次就是）：不该继续往下发，先把那帧读掉。
          * s_cmd_send_gate 只在本步**有前序 82** 时为 1 —— 会话第一条命令前面没有 82，
          * 不套这个门（否则会话开头就会先白读一轮）。 */
-        if (s_sess_family == A7_FAM_EDGE && s_cmd_send_gate &&
-            DIO_DATA->ALIAS[13] == 1) {
-            if (s_cmd_rescue_cnt < A7_RESCUE_MAX) {
+        if (s_cmd_send_gate && DIO_DATA->ALIAS[13] == 1) {
+            if (s_cmd_rescue_cnt < DSP7100_RESCUE_MAX) {
                 s_cmd_rescue_cnt++;
                 s_cmd_timeout = 0;          /* 这一拍已经做了事（兜底读）——tick 标志清掉，
                                              * 免得后面几拍都不等沿、10 次一口气烧完 */
@@ -1218,7 +1258,7 @@ void dsp_7100_cmd_poll(void)
             }
             /* 到上限还是高（正常见不到；线高=有帧，帧抽干会落回低）：不再兜，照常发下一条 */
             PRINTF("[7100] step%u/%u 兜底读已满 %u 次线仍高 → 照发下一条\r\n",
-                   s_step_idx, s_step_cnt, (unsigned)A7_RESCUE_MAX);
+                   s_step_idx, s_step_cnt, (unsigned)DSP7100_RESCUE_MAX);
         }
     } else if (s_cmd_st == CMD_ST_WAIT_RISE) {
         if (!s_cmd_timeout &&
@@ -1229,18 +1269,27 @@ void dsp_7100_cmd_poll(void)
          *   沿放行但线低 —— 抬过又落回，那不是本步要读的帧（比如上一条 82 自己的回声沿）；
          *   tick 放行但线低 —— 7100 还没把回执放出来，**不读**（实测盲读读到 00 00 00，
          *                       还照发了 82；真正的回执稍后才抬线，没人读 → 滞留）。
-         * 吞掉这一拍继续等，连等 A7_WAIT_RISE_MAX_TICKS 拍仍线低才判本步失败
-         * （**不发 82**：没读就不欠 credit）。 */
+         * 吞掉这一拍继续等，连等 DSP7100_WAIT_RISE_MAX_TICKS 拍仍线低的收场见下。 */
         if (DIO_DATA->ALIAS[13] == 0) {
             if (!s_cmd_timeout) return;                 /* 沿放了又落回：等下一个 */
-            if (++s_cmd_low_ticks >= A7_WAIT_RISE_MAX_TICKS) {
-                PRINTF("[7100] step%u/%u 等抬线超时（%u 拍线仍低，判本步失败）\r\n",
+            if (++s_cmd_low_ticks >= DSP7100_WAIT_RISE_MAX_TICKS) {
+                if (s_sess_family != A7_FAM_ACK) {
+                    /* 路径 B：没读到就不欠 credit → 不发 82，直接判本步失败 */
+                    PRINTF("[7100] step%u/%u 等抬线超时（%u 拍线仍低，判本步失败）\r\n",
+                           s_step_idx, s_step_cnt, (unsigned)s_cmd_low_ticks);
+                    a7_session_finish(false);
+                    return;
+                }
+                /* 路径 A 降级：等不到沿也读一次。它有 46 校验兜底 —— 读到空帧只是走
+                 * 「补发 82 + 重读」，不会像路径 B 那样把空帧当成功，所以这里敢读。
+                 * 不 return：落到下面的 s_cmd_timeout = 0 + cmd_step() 就进读相位，
+                 * 主循环转得很快，不会为此再等一拍 200ms。 */
+                PRINTF("[7100] step%u/%u 等抬线超时（%u 拍线仍低）→ 配置族盲读一次\r\n",
                        s_step_idx, s_step_cnt, (unsigned)s_cmd_low_ticks);
-                a7_session_finish(false);
+            } else {
+                s_cmd_timeout = 0;                      /* 吞掉这一拍，等下一拍/下一个沿 */
                 return;
             }
-            s_cmd_timeout = 0;                          /* 吞掉这一拍，等下一拍/下一个沿 */
-            return;
         }
         s_cmd_low_ticks = 0;
     } else if (s_cmd_retry_lock && !s_cmd_timeout) {
