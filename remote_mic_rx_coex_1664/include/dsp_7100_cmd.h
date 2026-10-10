@@ -40,8 +40,13 @@ bool dsp_7100_switch_program(uint8_t prog);
 /* 调音量档位 L（0-6，与 App 档位同号）。返回 true = 已受理。 */
 bool dsp_7100_set_volume(uint8_t level);
 
-/* 当前程序号 1-4（供查询/推送使用） */
+/* 当前程序号 1-4（供查询/推送使用）。
+ * ⚠ 切程序会话进行中返回**切换目标**（见 dsp_7100_cmd.c 定义处）：App 收到 CMD16
+ *   应答后 ~70ms 就问 CMD15，那时 s_cur_prog 还没落值，会回上一个程序。 */
 uint8_t dsp_7100_get_program(void);
+
+/* 当前音量档位 0-6（与 App 档位同号，供查询/推送使用） */
+uint8_t dsp_7100_get_volume_level(void);
 
 /* ---- 7100 主动通知解码（DIO13 推来的 payload）----
  * payload = `<addr_hi> <addr_lo> <值>` —— 16 位寄存器地址 + 值，与写命令
@@ -56,6 +61,14 @@ uint8_t dsp_7100_get_program(void);
 #define DSP7100_NOTIFY_PROG  1
 #define DSP7100_NOTIFY_VOL   2
 uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_val);
+
+/* ---- 开机「读配置」阶段的两条配置记录（Volume / Memory）----
+ * 记录形如 `42 1C 00 A0 0N <20B 名字> <值> 00`，值恒在**倒数第 2 字节**：
+ *   N=02「Volume」= 当前音量值 0-100、N=03「Memory」= 当前程序号 1-4。
+ * 认出就把 s_cur_vol_level / s_cur_prog 更新掉（内部复用
+ * dsp_7100_notify_apply 的档位换算与越界检查）。认不出就不动。
+ * 参数是原样的读回应答（含投给 init 的打印缓冲），长度是实际读到的字节数。 */
+void dsp_7100_track_cfg_record(const uint8_t *rx, uint16_t len);
 
 /* ---- 7100 一帧回执的读法与收尾（命令会话与开机读回**共用**，2026-10-09）----
  *

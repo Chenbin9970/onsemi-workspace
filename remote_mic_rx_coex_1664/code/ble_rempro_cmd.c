@@ -632,6 +632,72 @@ static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
     hdlc_response_set(CMD_SETFEEDBACKONOFF, ok);   /* 立即应答：Flag=0 = 已受理 */
 }
 
+/* ID:34  GetFeedbackOnOff — 从 7100 读回缓存取该程序的 DFBC 开关
+ * （`dsp_7100_prog_t.dfbc_en`，源自 0x32 payload[0] bit7）。
+ * 左右耳同值，与 33 号 GetDeviceOnOff 一致；Device_Type 不参与取值。
+ * 该程序尚未读回（valid[prog]=0）或 Scene_ID 越界 → Flag=1，不编造状态。 */
+static void cmd_getfeedbackonoff(const uint8_t *data, uint8_t len)
+{
+    const dsp_7100_prog_t *p;
+    uint8_t prog;
+    uint8_t onoff;
+    uint8_t resp[2];
+
+    if (len < 2) { hdlc_response(CMD_GETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    prog = data[1];                        /* Scene_ID，0 起 */
+    p = dsp_7100_get_prog(prog);           /* 越界 / 未读回 → NULL */
+    if (p == NULL) { hdlc_response(CMD_GETFEEDBACKONOFF, 1, NULL, 0); return; }
+
+    onoff = p->dfbc_en ? 1 : 0;
+    resp[0] = onoff;                       /* Left_OnOff */
+    resp[1] = onoff;                       /* Right_OnOff */
+
+    PRINTF("[REMPRO] GetFeedbackOnOff: prog=%u onoff=%u\r\n", prog, onoff);
+    hdlc_response(CMD_GETFEEDBACKONOFF, 0, resp, 2);
+}
+
+/* ID:15  GetCurrentScene — 回当前程序 + 音量 + 降噪等级 + 均衡器。
+ * 语义是"回当前"，无请求参数；值全部取自 7100 读回缓存。
+ * 均衡器是 App 的 int8 线格式（±dB，与 10 号 SetEqualizer 的 data[2] 同一编码），
+ * 原样回、不换算。左右耳各一套字段，单 7100 设备填同值（同 33 号 GetDeviceOnOff）。
+ * 当前程序尚未读回（valid[prog]=0）→ Flag=1，不编造状态。 */
+static void cmd_getcurrentscene(void)
+{
+    const dsp_7100_prog_t *p;
+    uint8_t prog = dsp_7100_get_program();     /* 1-4 */
+    uint8_t vol;
+    uint8_t resp[11];
+
+    if (prog < 1 || prog > DSP7100_RB_PROGS) {
+        hdlc_response(CMD_GETCURRENTSCENE, 1, NULL, 0);
+        return;
+    }
+    p = dsp_7100_get_prog((uint8_t)(prog - 1));   /* 未读回 → NULL */
+    if (p == NULL) {
+        hdlc_response(CMD_GETCURRENTSCENE, 1, NULL, 0);
+        return;
+    }
+
+    vol = dsp_7100_get_volume_level();         /* 档位 0-6，与 App 同号 */
+
+    resp[0]  = (uint8_t)(prog - 1);            /* Left_Scene_ID（App 0 基） */
+    resp[1]  = resp[0];                        /* Right_Scene_ID */
+    resp[2]  = vol;                            /* Volume_Left 0-6 */
+    resp[3]  = vol;                            /* Volume_Right */
+    resp[4]  = p->denoise_lvl;                 /* Denoise 0-4 */
+    resp[5]  = (uint8_t)p->eq_low;             /* Left_Equalizer_Low    int8 */
+    resp[6]  = (uint8_t)p->eq_mid;             /* Left_Equalizer_Middle */
+    resp[7]  = (uint8_t)p->eq_high;            /* Left_Equalizer_High */
+    resp[8]  = resp[5];                        /* Right_Equalizer_Low */
+    resp[9]  = resp[6];                        /* Right_Equalizer_Middle */
+    resp[10] = resp[7];                        /* Right_Equalizer_High */
+
+    PRINTF("[REMPRO] GetCurrentScene: scene=%u vol=%u den=%u eq=%d/%d/%d\r\n",
+           prog - 1, vol, p->denoise_lvl, p->eq_low, p->eq_mid, p->eq_high);
+    hdlc_response(CMD_GETCURRENTSCENE, 0, resp, 11);
+}
+
 /* ID:10  SetEqualizer — App: {Device_Type, Equalizer_Type 0低/1中/2高, Value}
  * Value 0-100 = 正 dB；Value > 100 → Value-256 得负值（均衡器减小）。
  * 映射到当前程序的 WDRC LL/HL（按通道频率分段，1dB/LSB）。 */
@@ -1330,9 +1396,16 @@ void rempro_cmd_process(void)
             hdlc_response_set(cmd_id, false);
             break;
 
-        /* ---- 读取类：待实现，回 Flag=1 ---- */
         case CMD_GETFEEDBACKONOFF:
+            if (data) cmd_getfeedbackonoff(data, data_len);
+            else hdlc_response(CMD_GETFEEDBACKONOFF, 1, NULL, 0);
+            break;
+
         case CMD_GETCURRENTSCENE:
+            cmd_getcurrentscene();
+            break;
+
+        /* ---- 读取类：待实现，回 Flag=1 ---- */
         case CMD_GETFITTINGDATA:
             PRINTF("[REMPRO] CMD=%u 待实现（7100 读路径）\r\n", cmd_id);
             hdlc_response(cmd_id, 1, NULL, 0);

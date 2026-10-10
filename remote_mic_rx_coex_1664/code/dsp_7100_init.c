@@ -119,6 +119,11 @@ void dsp_7100_boot_init(void)
                    i + 1, n, (unsigned)st->delay_us, st->len, ok);
             dump_hex(rx, st->len);
             PRINTF("\r\n");
+            /* Volume / Memory 两条配置记录就藏在这批「读配置」里：认出就把
+             * 「当前音量档位」「当前程序号」更新掉（读失败不解析脏缓冲）。 */
+            if (ok) {
+                dsp_7100_track_cfg_record(rx, st->len);
+            }
         }
 
         /* 逐条打印 DIO13 边沿增量（只在计数变化时输出）：定位是哪条命令让它跳。

@@ -785,7 +785,7 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 
 | 命令 ID | 处理 | 映射 |
 |---------|------|------|
-| `CMD_SETVOLUME` (2) | `cmd_setvolume_7100` | App vol 0-5 → 7100 档位 1-6（`+1`） |
+| `CMD_SETVOLUME` (2) | `cmd_setvolume_7100` | App vol 0-6 → 7100 档位 **0-6（同号，不换算）**（§28.4） |
 | `CMD_SETCURRENTSCENE` (16) | `cmd_setcurrentscene_7100` | App scene 0-3 → 7100 程序 1-4（`+1`） |
 | `CMD_SETDENOISE` (9) | `cmd_setdenoise_7100` | prog 0-3 → 程序 1-4；level 0-4（>4 钳位并告警） |
 | `CMD_SETFEEDBACKONOFF` (5) | `cmd_setfeedbackonoff_7100` | prog 0-3 → 程序 1-4；onoff 即 DFBC |
@@ -802,11 +802,13 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 | `CMD_SETSTOPVOICE` (14) | `cmd_setstopvoice_7100` | 停音（§7.4.4） |
 | `CMD_SETAUDIOMETRYSTATUS` (40) | `cmd_setaudiometrystatus` | 0=进测听 / 1=退测听（§7.4.4） |
 | `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | `BAT_ADC_ENABLE=1` → **实采 DIO0**（§3.2）；`=0` → 固定回 100/100（回 flag=1 会导致 App 连不上） |
+| `CMD_GETCURRENTSCENE` (15) | `cmd_getcurrentscene` | 读回缓存 → 当前程序 + 音量档位 + 降噪等级 + EQ 三段（§28.2）；**切程序会话进行中回切换目标**（§28.3） |
+| `CMD_GETFEEDBACKONOFF` (34) | `cmd_getfeedbackonoff` | 读回缓存 `dfbc_en`（请求带 `Scene_ID`）（§28.2） |
 
-`GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=5**（原 3 / 1 / 9）。
+`GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=6**
+（原 3 / 1 / 9；音量 7 档 0-6 见 §28.4）。
 
-> 其余 4 个 Rempro 命令（SetCompressRatio (8) / GetCurrentScene (15) /
-> GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`。
+> 其余 2 个 Rempro 命令（SetCompressRatio (8) 按需求不做 / GetFittingData (17) 待实现）仍回 `flag=1`。
 
 **RM 推流期间全部指令被丢弃**：`app.c` 主循环里 `app_env.audio_streaming` 为真时只调
 `rempro_reasm_reset()`，**不调** `rempro_cmd_process()` —— 所有 BLE 指令（含 §19 的 88/89）
@@ -941,10 +943,11 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 ## 12. 已知问题 / 待办
 
-1. **阶段二进行中**：剩余 4 个 Rempro 命令（SetCompressRatio (8) /
-   GetCurrentScene (15) / GetFeedbackOnOff (34) / GetFittingData (17)）仍回 `flag=1`，见 §17。
+1. **阶段二进行中**：剩余 2 个 Rempro 命令（SetCompressRatio (8) 按需求不做 /
+   GetFittingData (17)）仍回 `flag=1`，见 §17。
    已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音 + 开关机**（**均已上板验证**）、
-   EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）。
+   EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）、
+   **GetCurrentScene (15) / GetFeedbackOnOff (34)** 与**开机读回当前程序 / 音量**（**均未上板**，见 §28）。
    纯音的 App 侧仍在完善中。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
 3. `rempro_push_volume_change()` 无调用者（按键删除的副作用）。保留与否待定。
@@ -1194,10 +1197,10 @@ Flash 预算（RSL10 共 384KB = `0x00100000~0x00160000`）：
    | SetAudiometryStatus (40) / SetPlayVoice (13) / SetStopVoice (14) / SetMuteData (21) | **已完成 + 已上板** — §7.4.4 / §22（App 侧完善中）|
    | SetGain (6) / SetMPO (7) / SetHighLevelGainData (29) | **已完成，未上板** — §7.4.3 |
    | GetGainData (22) / GetMPOData (23) / GetHighLevelGainData (30) | **已完成，未上板** — §7.4.3 |
-   | GetCurrentScene (15) | 待实现：选程序 `A7 02 00 00 00 12 <P>` + 读回解析 |
+   | GetCurrentScene (15) | **已完成，未上板** — 读回缓存（当前程序 / 音量 / 降噪 / EQ），§28.2 |
    | GetFittingData (17) | 待实现：读回解析（缓存已就绪，见 §7.2） |
    | SetDeviceOnOff (3) | **已完成 + 已上板** — 映射到 unmute/mute，与 21 号共用 `s_device_on`（§7.4.4）|
-   | GetFeedbackOnOff (34) | 待实现 |
+   | GetFeedbackOnOff (34) | **已完成，未上板** — 读回缓存 `dfbc_en`，§28.2 |
    | SetCompressRatio (8) | **按需求不做** |
 
 **接下来**
@@ -2998,5 +3001,116 @@ A7 04 00 00 00 08 00 00 F9  (-7)
 
 ⚠ 无论选哪个，**已写进设备的那两条通道不会自动回到新映射上**（增量模型只动它自己那两条通道），
 要恢复得用 WDRC 绝对值重写，或重载一版程序。
+
+---
+
+## 28. 2026-10-10：当前程序/音量的来源、读类命令实装、CMD 15 竞态
+
+> ⚠ **本批 28.1 ~ 28.3 均未上板验证**（只做过离线比对/日志反推），验证清单见 28.5。
+
+### 28.1 开机读回 Volume / Memory → 当前音量档位 / 程序号（不再存 flash）
+
+开机初始化第 30 / 32 步的两条「读配置」应答里就带着当前状态：
+
+```text
+[7100-init] 30/96 RX len=31: 42 1C 00 A0 02 01 66 06 3C 56 6F 6C 75 6D 65 00 ... 64 00
+                                                          "Volume"                ↑值
+[7100-init] 32/96 RX len=31: 42 1C 00 A0 03 01 66 06 3C 4D 65 6D 6F 72 79 00 ... 01 00
+                                                          "Memory"                ↑值
+```
+
+- 定长 31B：`42 1C 00 A0 <0N> 01 66 06 3C <20B 名字> 00 00 00 00 00 00 <值> 00`，
+  **值恒在倒数第 2 字节**（最初只看 ASCII 名字、把尾部那个值字节漏了，故一度答成"没读"）
+- `N=02`「Volume」= 音量值 0-100（→ 档位）；`N=03`「Memory」= 程序号 1-4
+- 这两条读在参数写（`A1 00 12` / `A1 00 16`）**之前** → 拿到的是 7100 **掉电保存**的值
+- 旁证：`p2star.txt` 与 `p3star.txt`（程序 2 / 3 两轮抓包）逐包比对只差 4 处，其中就有这两条 A0 记录的值
+
+⇒ 1664 侧**不需要**为「当前程序号 / 音量档位」存 flash，每次上电直接从 7100 读。
+
+**实现**（`dsp_7100_track_cfg_record()`，`code/dsp_7100_cmd.c` + `dsp_7100_init.c` 的 RX 分支）：
+
+- 只在 `i2c_7100_read()` 成功（`ok`）时解析 —— 读失败不解析脏缓冲
+- 就地拼成 `00 <reg> <val>` 复用 `dsp_7100_notify_apply()`：音量→档位的换算
+  （`vol_value_to_level()`，取最接近档）与程序号 1-4 的越界检查都在那边，**不另写解析**
+- **按记录内容匹配、不按步号** → 96 步表以后增删不会错位
+
+### 28.2 读类命令实装：GetCurrentScene (15) / GetFeedbackOnOff (34)
+
+两者都只读缓存、不碰 I2C；`dsp_7100_get_prog()` 越界或该程序 `valid=0` → `Flag=1`，不编造状态。
+
+| 命令 | 应答 |
+|---|---|
+| 15 GetCurrentScene（无请求参数，语义是"回当前"） | `Left/Right_Scene_ID`（App 0 基）、`Volume_Left/Right`（档位 0-6）、`Denoise`、`Left/Right_Equalizer_Low/Middle/High` |
+| 34 GetFeedbackOnOff（请求 `{Device_Type, Scene_ID}`） | `Left_OnOff` + `Right_OnOff` = 该程序 `dfbc_en`（0x32 payload[0] bit7） |
+
+- 15 号的 EQ 字段是 App 的 **int8 线格式（±dB）**，与 10 号 SetEqualizer 的 `data[2]` 同一编码，
+  **原样回、不换算**；单 7100 设备左右耳填同值（同 33 号 GetDeviceOnOff）
+- ⚠ 15 号的音量字段**不随程序变** —— 7100 的音量是**全局单值**（见 §28.4），
+  别照瑞听文档 ID:12 `GetSceneInfo` 的「每场景一套 Volume_Left/Right」做成每程序一份
+
+### 28.3 CMD 15 竞态：切程序后 ~70ms 内答的是**上一个**程序
+
+**现象**（2026-10-10 16:24 上板日志）：App 切场景 0，随即问 15 号，回 `scene=1`。
+
+```text
+05.280 CMD=16 len=2                             App: 切场景 0
+05.290 SetCurrentScene7100: scene=0 -> prog=1   写 A2 00 16 01
+05.300 TX frame: 7E 00 10 00 00 01 11 7E        应答 Flag=0 = **已受理**（不是已完成）
+05.310 W (4B ok=1): A2 00 16 01
+05.368 CMD=15 len=0                             App: 当前是哪个场景？
+05.380 GetCurrentScene: scene=1 vol=6           ← **答早了**，s_cur_prog 还是切换前的 2
+05.400 R 43 03 00 | 00 16 01                    7100 自己确认已是程序 1 → s_cur_prog 才落 1
+05.400 push scene=0                             同一帧解码后补推
+05.450 --- session done ok=1 ---
+```
+
+**根因**：`dsp_7100_get_program()` 原来直接返回 `s_cur_prog`，而它只在会话收尾
+（`a7_session_finish()` 的 `s_cur_prog = s_sess_prog`）才更新。切程序是异步会话
+（写帧 → 等 7100 抬线 → 读回执 → 82 → 等下降沿，**200~400ms**），App 收到「已受理」应答后
+仅 **~70ms** 就来问 15 号 → 读到的是**切换前**的程序。切换本身没错（7100 回的就是 `00 16 01`）。
+
+**修法**（`code/dsp_7100_cmd.c`，1 处）：**切程序会话进行中返回会话目标**：
+
+```c
+uint8_t dsp_7100_get_program(void)
+{
+    if (s_sess_active && s_sess_kind == A7_KIND_PROG) return s_sess_prog;
+    return s_cur_prog;
+}
+```
+
+- 会话成功/失败收尾后自然回到 `s_cur_prog`，**不需要失败回滚**
+  （`a7_session_finish()` 里 `s_sess_active` 先清零、再落 `s_cur_prog`）
+- 定义从文件前部**挪到会话状态之后**（原位置看不到 `s_sess_active` / `s_sess_prog` / `A7_KIND_PROG`），
+  原位留一行指针注释
+- ⚠ **音量那条没动**：`dsp_7100_get_volume_level()` 仍是 `s_cur_vol_level` —— App 设完音量后
+  ~200ms 内的 15 号仍会回旧档位（同一竞态，本批不改）
+- 连带影响：15 号查的是**目标程序**的缓存槽位，目标若 `valid=0` 会回 `Flag=1`（原来回旧程序的参数）；
+  10 号 `SetEqualizer` 取"当前程序"落点，切完程序 70ms 内设 EQ 现在落到**新**程序
+
+### 28.4 补记：音量档位 0-6 同号（2026-10-08 定案，**已上板**）
+
+§22.1 里"App vol 0-5 → 档位 1-6（`+1`）"是 10-08 之前的写法（该节是当时的历史记录，未回改）。当前实现：
+
+| App 档位 | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|---|
+| 值（`A2 00 12 <值>`） | 0 | 17 | 33 | 50 | 67 | 83 | 100 |
+
+即 `s_volume_value[7] = {0x00,0x11,0x21,0x32,0x43,0x53,0x64}`，`vol_value_to_level()` 取最接近档
+（**下标即档位，不再 +1**），`GetDeviceConfig` 的 `Volume_Number` 5 → **6**。
+
+- 音量是**全程序共用的一个值**（换程序 `A2 00 16 <prog>` 不改音量），`dsp_7100_prog_t` 与
+  flash 槽位里**都没有** volume 字段 —— 这是对的
+- 上板实测（2026-10-08）：App 设音量 / 7100 本地按键上报**两向正常**
+- ⚠ 唯一没逐项确认的：**写值 0（`A2 00 12 00`）7100 收不收** —— 只见过它**报** 0
+
+### 28.5 待上板验证清单
+
+1. 开机 `30/96`「Volume」、`32/96`「Memory」两条被解析 → 当前音量档位 / 程序号与 7100 实际一致；
+   断电重启后取的是 7100 里存的值（不是编译期默认）
+2. 切场景 0 → 15 号**立即**回 `scene=0`（不再回上一个）；连续快切 0→1→0→1 每回都跟手
+3. 会话被拒（`上一会话未完成，忽略本次设置`）或 `session done ok=0` 后再问 15 号 → 回**真实**的旧程序
+4. 34 号：请求带各 `Scene_ID` → 回该程序 `dfbc_en`；未读回的程序 → `Flag=1`
+5. 回归：切完程序后设 EQ 落到新程序；App 设音量 / 场景两向不受影响
 
 

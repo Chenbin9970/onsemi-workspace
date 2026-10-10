@@ -109,7 +109,10 @@ bool dsp_7100_send_end(void)
 /* dsp_7100_set_volume / dsp_7100_switch_program 已改成异步会话，
  * 定义在文件后半段（与其它 set_* 入口放一起）。 */
 
-uint8_t dsp_7100_get_program(void)      { return s_cur_prog; }
+/* dsp_7100_get_program() 挪到会话状态之后 —— 它要看会话进行中的切换目标值，
+ * 定义处（s_build_fail 下面）有完整说明。 */
+
+uint8_t dsp_7100_get_volume_level(void) { return s_cur_vol_level; }
 
 /* 值 → 音量档位 0-6：与 s_volume_value 逐个比，取最接近的一档（**下标即档位**）。
  * 实测值只可能是那 7 个（`00 12 11`），取最近是为了容忍 7100 侧四舍五入的 ±1。 */
@@ -163,6 +166,32 @@ uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_
     }
 
     return DSP7100_NOTIFY_NONE;   /* 不认识的属性（如常态帧）：不更新、不上报 */
+}
+
+/* 开机「读配置」阶段的两条配置记录 → 当前音量档位 / 当前程序号。
+ * 记录形如 `42 1C 00 A0 0N <20B 名字> <值> 00`（31B 定长）：
+ *   N=02「Volume」尾值 = 音量值 0-100 → 寄存器 0x0012
+ *   N=03「Memory」尾值 = 程序号 1-4   → 寄存器 0x0016
+ * 值恒在**倒数第 2 字节**。就地拼成 `00 <reg> <val>` 复用
+ * dsp_7100_notify_apply()：音量值→档位的换算（vol_value_to_level，取最接近档）
+ * 与程序号 1-4 的越界检查都在那边，这里不另写解析。
+ * 这两条读在参数写（`A1 00 12` / `A1 00 16`）**之前**，拿到的是 7100 自己
+ * 掉电保存的值 —— 所以 1664 侧不需要为「当前程序号 / 音量档位」存 flash。
+ * 匹配按**记录内容**而非步号：96 步表以后增删不会错位。 */
+void dsp_7100_track_cfg_record(const uint8_t *rx, uint16_t len)
+{
+    uint8_t payload[3];
+    uint8_t val;
+
+    if (rx == NULL || len < 5)        { return; }
+    if (rx[0] != 0x42 || rx[3] != 0xA0) { return; }
+    if (rx[4] != 0x02 && rx[4] != 0x03) { return; }
+
+    payload[0] = 0x00;
+    payload[1] = (rx[4] == 0x02) ? DSP7100_REG_VOLUME : DSP7100_REG_PROGRAM;
+    payload[2] = rx[len - 2];
+
+    (void)dsp_7100_notify_apply(payload, 3, &val);
 }
 
 
@@ -480,6 +509,24 @@ static uint16_t s_tone_freq;
 static uint8_t  s_tone_db;
 
 static bool s_build_fail;           /* 命令表/缓冲放不下时置位 */
+
+/* 当前程序号 1-4（供查询/推送使用）。
+ * ⚠ **切程序会话进行中返回会话目标 s_sess_prog**，不是 s_cur_prog：
+ *   切程序是异步会话（写帧 → 等 7100 抬线 → 读回执 → 82 → 等下降沿，200~400ms），
+ *   s_cur_prog 要等 a7_session_finish 才落成新值；而 App 收到 CMD16 的「已受理」
+ *   应答后 ~70ms 就来问 CMD15，那时 s_cur_prog 还是**切换前**的程序。
+ *   实测 2026-10-10 16:24：切场景 0（写 `A2 00 16 01`），CMD15 在 .380 就答了
+ *   scene=1，.400 才从 7100 读回 `00 16 01`，.450 会话收尾 —— 答早了 70ms，
+ *   看起来就像「回的永远是上一个程序」。
+ *   会话成功/失败收尾后本函数自然回到 s_cur_prog，**不需要额外的失败回滚**
+ *   （a7_session_finish 里 s_sess_active 先清零、再落 s_cur_prog，两者不打架）。 */
+uint8_t dsp_7100_get_program(void)
+{
+    if (s_sess_active && s_sess_kind == A7_KIND_PROG) {
+        return s_sess_prog;
+    }
+    return s_cur_prog;
+}
 
 /* 会话族：决定「**认不认**读到的内容」和「等不到沿怎么收场」（2026-10-08 晚，见 §26）。
  * 由 a7_build_session() 按 kind 置位，dsp_7100_cmd_step() 据此选执行函数。
