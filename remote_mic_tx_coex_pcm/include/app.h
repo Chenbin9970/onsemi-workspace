@@ -146,12 +146,40 @@ extern "C"
 #endif    /* if (SIMUL == 1) */
 #define TIMER_REGUL                     2
 
-/* PCM receive configuration. The source (CM108B in I2S master mode) drives a
- * 48 kHz LRCK with 64 SCLK per period, i.e. two 32-bit slots per frame, each
- * carrying a 16-bit sample MSB-first one SCLK after the frame edge. Using
- * 32-bit words makes one DMA word equal one channel slot, and MULTIWORD_2
- * makes the frame exactly one LRCK period. Standard I2S drives data on the
- * falling edge, so the input is sampled on the rising edge. */
+/* PCM input source. The two supported hosts differ only in the frame format,
+ * which is two slots per frame either way:
+ *   1 = 16 kHz LRCK, 32 BCLK per frame, two 16-bit slots    (current host)
+ *   0 = CM108B,   48 kHz LRCK, 64 BCLK per frame, two 32-bit slots */
+#define PCM_HOST_16K                    1
+
+/* PCM receive configuration, one per host. Both are I2S, so the input is
+ * sampled on the rising edge, and both carry two slots in one LRCK period via
+ * MULTIWORD_2.
+ *  - 16 kHz host: WORD_SIZE_16 gives 16 x 2 = 32 BCLK, the source's 32 BCLK.
+ *    The source delays its MSB by one SCLK after the frame edge, so the slot
+ *    has to be the bits ending at the frame edge: FRAME_ALIGN_LAST, which is
+ *    what the manual's I2S row of the PCM table prescribes. The received word
+ *    then lands in the low 16 bits of PCM_RX_DATA (verified on hardware: every
+ *    DMA word reads 0x0000xxxx), i.e. no unpack shift.
+ *  - CM108B: WORD_SIZE_32 gives 32 x 2 = 64 BCLK, the CM108B's 64 SCLK.
+ *    FRAME_ALIGN_FIRST starts the slot at the frame edge, so the same one-SCLK
+ *    delay leaves the sample at bits 30..15 of the slot, shift 15. */
+#if (PCM_HOST_16K == 1)
+#define PCM_CFG_RX                      (PCM_SAMPLE_RISING_EDGE | \
+                                         PCM_BIT_ORDER_MSB_FIRST | \
+                                         PCM_TX_ALIGN_LSB |        \
+                                         PCM_WORD_SIZE_16 |        \
+                                         PCM_FRAME_ALIGN_LAST |    \
+                                         PCM_FRAME_WIDTH_LONG |    \
+                                         PCM_MULTIWORD_2 |         \
+                                         PCM_SUBFRAME_ENABLE |     \
+                                         PCM_CONTROLLER_DMA |      \
+                                         PCM_DISABLE |             \
+                                         PCM_SELECT_SLAVE)
+
+/* Right shift down to a 16-bit sample, see PCM_CFG_RX above. */
+#define PCM_UNPACK_SHIFT                0
+#else    /* if (PCM_HOST_16K == 1) */
 #define PCM_CFG_RX                      (PCM_SAMPLE_RISING_EDGE | \
                                          PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
@@ -163,6 +191,10 @@ extern "C"
                                          PCM_CONTROLLER_DMA |      \
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
+
+/* Right shift down to a 16-bit sample, see PCM_CFG_RX above. */
+#define PCM_UNPACK_SHIFT                15
+#endif   /* if (PCM_HOST_16K == 1) */
 
 #define TX_DMA_SPI                      (DMA_DEST_SPI0 |            \
                                          DMA_TRANSFER_M_TO_P |      \
@@ -359,12 +391,17 @@ extern "C"
 #define PCM_FRAME_SYNC                  9
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
 /* DIO0 is the only pad proven bad on this board — the source's LRCK dies as
- * soon as it is wired there, even with the PCM block completely off. Only the
- * frame sync moves (to DIO9); the data and clock stay on DIO2/DIO3. */
+ * soon as it is wired there, even with the PCM block completely off. The data
+ * and clock stay on DIO2/DIO3 on both hosts; only the frame sync moves, and the
+ * two hosts have it wired to a different pad. */
 #define PCM_SER_DI                      2
 #define PCM_SER_DO                      1
 #define PCM_CLK_DO                      3
+#if (PCM_HOST_16K == 1)
+#define PCM_FRAME_SYNC                  10
+#else    /* if (PCM_HOST_16K == 1) */
 #define PCM_FRAME_SYNC                  9
+#endif   /* if (PCM_HOST_16K == 1) */
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_RX_RAW_SOURCE == AUDIO_CODEC_SHIELD) */
 
 #define BUTTON_DIO                      5
@@ -405,10 +442,14 @@ extern "C"
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #define SUBFRAME_LENGTH                 16
 
-/* The PCM source runs at PCM_DECIM_RATIO times the encoder rate (48 kHz in,
- * 16 kHz out), so PCM_DECIM_RATIO raw samples are averaged into one encoder
- * sample. */
+/* The PCM source runs at PCM_DECIM_RATIO times the encoder rate, so this many
+ * raw samples are averaged into one encoder sample. The 16 kHz host carries the
+ * encoder rate itself, the CM108B runs at 48 kHz, three times as fast. */
+#if (PCM_HOST_16K == 1)
+#define PCM_DECIM_RATIO                 1
+#else    /* if (PCM_HOST_16K == 1) */
 #define PCM_DECIM_RATIO                 3
+#endif   /* if (PCM_HOST_16K == 1) */
 
 /* Encoder samples per channel per DMA half block. The DMA runs circular, so a
  * half must be consumed while the DMA fills the other one — otherwise the read

@@ -521,15 +521,16 @@ void Asrc_reconfig(void)
  * Function      : int16_t Pcm_unpack_sample(uint32_t word)
  * ----------------------------------------------------------------------------
  * Description   : Convert one 32-bit PCM channel slot into a 16-bit sample.
- *                 The source sends 16-bit data MSB first, one SCLK after the
- *                 frame edge, so the sample occupies bits 30..15 of the slot.
+ *                 Both hosts send 16-bit data MSB first; PCM_UNPACK_SHIFT is
+ *                 how far the sample sits from the top of the slot, and depends
+ *                 on the slot width — see PCM_CFG_RX in app.h.
  * Inputs        : word - one PCM slot as received
  * Outputs       : return value - the 16-bit sample
  * Assumptions   : None
  * ------------------------------------------------------------------------- */
 static int16_t Pcm_unpack_sample(uint32_t word)
 {
-    return ((int16_t)(word >> 15));
+    return ((int16_t)(word >> PCM_UNPACK_SHIFT));
 }
 
 /* ----------------------------------------------------------------------------

@@ -101,8 +101,8 @@ void APP_RM_Init(uint8_t side)
     app_env.rm_param.radio_rate         = 2000;
     app_env.rm_param.scan_time          = 6500;
     app_env.rm_param.preamble           = 0x55;
-    app_env.rm_param.accessword         = (0x00cde629 | (0xf2 << 24));
-
+    app_env.rm_param.accessword         = (0x00cde629 | (0xF2 << 24));
+    //app_env.rm_param.accessword         = 0xA98AC729;
     app_env.rm_param.payloadFlowRequest = APP_RM_DATA_REQUEST_TYPE;
     app_env.rm_param.renderDelay        = 200;
 
