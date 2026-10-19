@@ -1751,6 +1751,13 @@ int bs300_switch_program_async(uint8_t new_prog_idx, void (*on_done)(void))
      * clobber abort_requested and leave the I2C hardware in an
      * unknown state. */
     if (bs300_sync_is_busy()) {
+        /* 新请求没带 on_done 时，继承被中止会话的收尾回调。
+         * 否则 RM 断链返回会话被 App 的 SetCurrentScene(NULL) 抢断后：
+         * rm_bs300_switch_done 见 pending 提前返回，排队会话又无回调，
+         * 没人调 bs300_active() → 永久静音。 */
+        if (on_done == NULL && g_bs300_sync_on_done != NULL) {
+            on_done = g_bs300_sync_on_done;
+        }
         g_bs300_sync.abort_requested = true;
         s_pending_switch = (int8_t)new_prog_idx;
         s_pending_switch_on_done = on_done;

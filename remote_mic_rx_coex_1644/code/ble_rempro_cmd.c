@@ -548,6 +548,14 @@ static void cmd_setcurrentscene(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetCurrentScene: dev=%u active=%u -> %u\r\n",
            dev_type, bs300_get_active_prog(), scene_id);
 
+    /* 程序 3 是 RM 音频专用程序，只能由 RM 建链流程切入（它没有独立音源，
+     * 离开 RM 后停在程序 3 只会静音）。App 直接切 3 一律拒绝。 */
+    if (scene_id == 3) {
+        PRINTF("[REMPRO] SetCurrentScene: scene 3 rejected (RM-only)\r\n");
+        hdlc_response(CMD_SETCURRENTSCENE, 1, NULL, 0);
+        return;
+    }
+
     if (scene_id < 4) {
         bs300_switch_program_async(scene_id, NULL);
     }
