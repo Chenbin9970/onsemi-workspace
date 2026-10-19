@@ -14,6 +14,8 @@
 > 原 BS300 子系统**（BS300 文件已删）。含上电握手、106 步引导、4 程序读回、flash 缓存、5s 心跳。
 > **阶段二（写路径 + Rempro 验配命令重映射）进行中**：写会话状态机、写后回写缓存、
 > 降噪 / DFBC / EQ / **WDRC（增益/MPO/HighLevel）** 及其读回、**纯音测听（CMD 40/13/14/21）** 均已实现。
+> **GetFittingData (31)**（一次给全 Gain/Compress/MPO/HighLevel，Compress 表不发）与
+> **SetFittingStatus (37)**（ACK-only）已实装，**均未上板**，见 §29；17 号仍待实现。
 > **切程序 / 调音量 / 测听（进入·出音·停音·退出）已上板验证通过**（见 §22.6）；
 > App 侧尚在完善；**EQ 的写帧顺序已上板验证（§27）**，但**三段→通道映射**与 **WDRC 独立会话**仍未验证，详见 §7.4.2 / §7.4.3 / §7.4.4 与 §17。
 > 引脚按「音频输出关闭 + I2C 用 DIO0/DIO1」定案（见 §5）。
@@ -31,6 +33,7 @@
 | `b6365f2` | Rempro 切模式 / 调音量接 7100 运行时命令 |
 | （未提交） | 降噪 / DFBC 写入（tick 模型）+ GetBatteryInfo 回 100% + I2C 收发日志 |
 | （未提交） | **音频出口改 PCM 从机**（DIO2/3/4/14，24k），见 §3.4 / §6 |
+| （未提交） | **Rempro 31 GetFittingData / 37 SetFittingStatus 实装、26 号 Chip_Type=8、WDRC 值转换集中**，见 §29 |
 
 1664 与 1644 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1644 逐字节一致
 （仅行尾符差异）。
@@ -713,6 +716,28 @@ b2 / b3 = 逐通道常量，与 OL 无关
 数据取读回缓存 `dsp_7100_get_prog()`；**读回未完成或程序无效时回 `Flag=1`**，App 需重试。
 （Get 类应答按协议文档**不带 status**，与设置类不同。）
 
+> **值转换只在一处定义**（`ble_rempro_cmd.c` 的 `wdrc_app_offset()` / `wdrc_to_app_u8()`）：
+> 写族（6/29/7）与读族（22/30/23/31）共用同一张偏移表 —— LL/HL `App = dB + 30`、
+> OL `App = dB + 60`。本地缓存与 7100 I2C 帧**恒为 dB**，偏移只存在于 BLE 线格式里，
+> 不落缓存。均衡器（10 号）不适用（线格式本身是 int8 ±dB）。
+
+**`GetFittingData` (31) —— 一次给全四张表**（2026-10-16 新增，`cmd_getfittingdata_hl()`）：
+
+请求 `{ Device_Type, Scene_ID }`；应答 `Flag + Scene_ID + LeftOrRight + Turn_Number
++ Gain_Number + Compress_Number + MPO_Number + HighLevel_Number
++ Gain[] + Compress[] + MPO[] + HighLevel[]`。
+
+| 项 | 取值 |
+|---|---|
+| 表宽 | **16**（= `DSP7100_WDRC_CH`，`Index 0` 起 = 7100 通道号 − 1），与上面三条同口径 |
+| 值编码 | 沿用上面三条：Gain / HighLevel = dB + 30（0~90）、MPO = dB + 60（0~60）⇒ App 可把回值直接回灌 SetGain / SetMPO |
+| `Compress_Number` | 恒 **0**、**不发** Compress 表 —— 1664 无压缩比数据源（8 号按需求不做、0x177 读回只解出 LL/HL/OL）；协议文档允许该数量置 0 |
+| `Turn_Number` | 恒 0 —— 协议响应表只声明了计数、没有拐点数组 |
+| `LeftOrRight` | 恒 0（左）—— 单 7100 左右同值，同 15 / 33 号 |
+| 缓存未就绪 | `Flag=1`（同上面三条） |
+
+> ⚠ 与 **17 号**不是一回事：17 号（无 High Level）**仍是"待实现"**、仍回 `Flag=1`（§12），本次只补了 31。
+
 > 协议细节（payload 布局、SYS_ID 命名空间陷阱）：`docs/7100协议/瑞听设置指令.md`；
 > 7100 侧帧格式、参数号实测、OL 默认表：`docs/7100协议/WDRC/7100_WDRC设置.md`。
 
@@ -801,12 +826,15 @@ CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音�
 | `CMD_SETPLAYVOICE` (13) | `cmd_setplayvoice_7100` | Spectrum 0-16 → 250…8000 Hz；dB 20-100（§7.4.4） |
 | `CMD_SETSTOPVOICE` (14) | `cmd_setstopvoice_7100` | 停音（§7.4.4） |
 | `CMD_SETAUDIOMETRYSTATUS` (40) | `cmd_setaudiometrystatus` | 0=进测听 / 1=退测听（§7.4.4） |
+| `CMD_SETFITTINGSTATUS` (37) | `cmd_setfittingstatus` | **只回 ACK**（`Flag=0` + `status=1`），不做动作 |
 | `CMD_GETBATTERYINFO` (4) | `cmd_getbatteryinfo_7100` | `BAT_ADC_ENABLE=1` → **实采 DIO0**（§3.2）；`=0` → 固定回 100/100（回 flag=1 会导致 App 连不上） |
 | `CMD_GETCURRENTSCENE` (15) | `cmd_getcurrentscene` | 读回缓存 → 当前程序 + 音量档位 + 降噪等级 + EQ 三段（§28.2）；**切程序会话进行中回切换目标**（§28.3） |
 | `CMD_GETFEEDBACKONOFF` (34) | `cmd_getfeedbackonoff` | 读回缓存 `dfbc_en`（请求带 `Scene_ID`）（§28.2） |
 
-`GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=6 (E7160SL)、Volume_Number=6**
+`GetDeviceConfig` 改为 7100 取值：**Program_Num=4、Chip_Type=8、Volume_Number=6**
 （原 3 / 1 / 9；音量 7 档 0-6 见 §28.4）。
+> `Chip_Type` 2026-10-16 由 **6（E7160SL）** 改为 **8**（App 侧要求，左右耳两处同改）；
+> 8 在协议文档里只写"芯片类型编号"、无对照表，含义待 App 侧确认。
 
 > 其余 2 个 Rempro 命令（SetCompressRatio (8) 按需求不做 / GetFittingData (17) 待实现）仍回 `flag=1`。
 
@@ -947,6 +975,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
    GetFittingData (17)）仍回 `flag=1`，见 §17。
    已完成：切程序 / 音量 / 降噪 / DFBC / **纯音测听 + 静音 + 开关机**（**均已上板验证**）、
    EQ 与 **WDRC（SetGain / SetMPO / SetHighLevelGainData 及其读回）**（**均未上板**，见 §7.4.2 / §7.4.3）、
+   **GetFittingData (31)**（**未上板**，见 §7.4.3；与 17 号不是一回事 —— 17 号仍待实现）、
    **GetCurrentScene (15) / GetFeedbackOnOff (34)** 与**开机读回当前程序 / 音量**（**均未上板**，见 §28）。
    纯音的 App 侧仍在完善中。
 2. **上电握手无超时**（照 rx_coex）：板上无 7100 时卡在 `while(DIO_DATA->ALIAS[13] == 1)`，不退出。
@@ -1199,8 +1228,10 @@ Flash 预算（RSL10 共 384KB = `0x00100000~0x00160000`）：
    | GetGainData (22) / GetMPOData (23) / GetHighLevelGainData (30) | **已完成，未上板** — §7.4.3 |
    | GetCurrentScene (15) | **已完成，未上板** — 读回缓存（当前程序 / 音量 / 降噪 / EQ），§28.2 |
    | GetFittingData (17) | 待实现：读回解析（缓存已就绪，见 §7.2） |
+   | GetFittingData (31) | **已完成，未上板** — 一次给全四张表（表宽 16，Compress 恒 0），§7.4.3 |
    | SetDeviceOnOff (3) | **已完成 + 已上板** — 映射到 unmute/mute，与 21 号共用 `s_device_on`（§7.4.4）|
    | GetFeedbackOnOff (34) | **已完成，未上板** — 读回缓存 `dfbc_en`，§28.2 |
+   | SetFittingStatus (37) | **已完成，未上板** — 只回 ACK（`Flag=0` + `status=1`），**不做动作**；1644 那边的 RM 挂起/恢复未移植（RM 语义不同）|
    | SetCompressRatio (8) | **按需求不做** |
 
 **接下来**
@@ -3112,5 +3143,75 @@ uint8_t dsp_7100_get_program(void)
 3. 会话被拒（`上一会话未完成，忽略本次设置`）或 `session done ok=0` 后再问 15 号 → 回**真实**的旧程序
 4. 34 号：请求带各 `Scene_ID` → 回该程序 `dfbc_en`；未读回的程序 → `Flag=1`
 5. 回归：切完程序后设 EQ 落到新程序；App 设音量 / 场景两向不受影响
+6. 31 号：请求带各 `Scene_ID` → 回 `Flag=0` + 55B（7 头 + 16×3 表，`Compress_Number=0` 不发该表）；
+   同一程序下 31 号的 Gain/MPO/HighLevel 三段应与 22 / 23 / 30 逐项一致；未读回的程序 → `Flag=1`
+
+## 29. 2026-10-16 ~ 10-19：GetFittingData (31) / SetFittingStatus (37) 实装、Chip_Type=8、WDRC 值转换集中
+
+四项改动。前两项的细节已就近写进 §7.4.3 / §7.4.5 / §12，这里汇总决策与**没做的事**。
+
+### 29.1 ID:31 GetFittingData（带 High Level Gain）
+
+`cmd_getfittingdata_hl()` —— 一次给全 Gain / Compress / MPO / HighLevel 四张表，数据全取读回缓存，
+**不碰 I2C**（同 15/34 号）。
+
+| 项 | 取值 | 理由 |
+|---|---|---|
+| 表宽 | **16**（`DSP7100_WDRC_CH`）| 与 22/23/30 同口径；1664 读回只有 16 通道 |
+| 值编码 | LL/HL = dB+30、OL = dB+60 | 与 22/23/30 共用 `wdrc_to_app_u8()`，App 可回灌 6/7/29 |
+| `Compress_Number` | **0**，不发该表 | 1664 无压缩比数据源（8 号按需求不做；0x177 只解出 LL/HL/OL）；协议文档允许置 0 |
+| `Turn_Number` | **0** | 协议响应表只声明计数、没有拐点数组 |
+| `LeftOrRight` | **0（左）** | 单颗 7100 左右同值，同 15/33 号；⚠ 1644 的 17 号是回显 `Device_Type`，若 App 配右耳发 2 并期待回 1，这里要改 |
+| 缓存未就绪 | `Flag=1` | 同 22/23/30，不编造状态 |
+
+请求 `{Device_Type, Scene_ID}`；payload **55B** = 7 头（`scene, 00, 00, 10, 00, 10, 10`）+ 三张表，
+整帧 60B（无转义时），`TX_BUF_SIZE=200` 够用（最坏转义 ~122B）。
+
+> **17 号（无 High Level）仍是待实现**，仍回 `Flag=1` —— 31 不是 17 的替代品，两者独立。
+
+### 29.2 ID:37 SetFittingStatus（只回 ACK）
+
+`cmd_setfittingstatus()`：请求 `{Device_Type, Fitting_Status}`，应答 `Flag=0` + `status=1`，
+`len<2` → `Flag=1` + 0B。**无任何副作用**（不碰 I2C / RM / 音频）。
+
+- 与 1644 的差异：**没有移植** `fitting_rm_disable/enable` —— 1644 的 RM 是 7100 侧配置，验配要
+  独占 DSP 才停；1664 的 RM 是片内 PCM 通路（`rm_app.c`），语义不同，按需求只回包
+- 已知局限：RM 推流期间主循环整体跳过 `rempro_cmd_process()`（§7.4.5），**推流中 37 同样不应答**
+
+### 29.3 Chip_Type：6 → 8
+
+`GetDeviceConfig`（26 号）响应里左右耳两处 `Chip_Type` 由 **6（E7160SL）** 改为 **8**（App 侧要求）。
+协议文档只写"芯片类型编号"、无对照表，**8 的具体含义待 App 侧确认**；
+`Product_Type`(21) / `Program_Num`(4) / `Volume_Number`(6) 未动。
+
+> ⚠ `docs/7100协议.md` §7 的 26 号摘要还是旧值（`Product_Type=20 / Chip_Type=6 /
+> Volume_Number=5`，三个字段都过期），本次**未回改**，以本节为准。
+
+### 29.4 WDRC 值转换集中到一处
+
+原先把 ±30 / ±60 散在各调用点（6/29/7 传 `-30/-60`，22/30/23 传 `+30/+60`，31 又写一遍）。
+现在只在 `ble_rempro_cmd.c` 定义一次：
+
+| 函数 | 作用 |
+|---|---|
+| `wdrc_app_offset(which)` | OL → 60，LL/HL → 30 |
+| `wdrc_to_app_u8(val_db, which)` | 本地 dB + 偏移 → App 值（<0 / >255 饱和） |
+
+- **本地侧恒为 dB**：`dsp_7100_prog_t` / flash 缓存 / 7100 I2C 帧都不变；偏移只存在于 BLE 线格式，
+  **不落缓存**（`rb_field()` 的 7bit 解码也不动）
+- 写族 `cmd_setwdrc_7100()` 的参数由 `val_offset` 改为 `which`，内部 `- wdrc_app_offset(which)`
+- 读族去掉偏移参数，循环里改调 `wdrc_to_app_u8()`（钳位也并进去，只留一份）
+- **线上字节与改前完全一致**（纯重构，六个调用点逐项核对过）
+- ⚠ 均衡器（10 号）**不适用**：线格式是 int8 的 ±dB，本身无偏移
+
+### 29.5 待上板验证清单
+
+1. 31 号：各 `Scene_ID` → `Flag=0` + 55B；payload 前 7B = `scene 00 00 10 00 10 10`
+2. 31 号的 Gain/MPO/HighLevel 三段与**同一程序**的 22/23/30 逐项一致；未读回的程序 → `Flag=1`
+3. 37 号：`00 25 00 <dev> <status>` → payload `01`；不推流时 App 不再超时
+4. 26 号：应答 payload（`Flag` 之后）**偏移 13 / 24（0 基）= `08`**；整体布局
+   `Version 4B · Program_Num 1B · {Address 6B + Product_Type 2B + Chip_Type 1B + Turn 1B + Channel 1B} ×2 · Volume_Number 1B` = 28B
+5. 回归：6/29/7 的写帧、22/30/23 的回读与改前**逐字节一致**（转换只是重构）
+
 
 

@@ -734,13 +734,49 @@ static void cmd_setequalizer_7100(const uint8_t *data, uint8_t len)
 }
 
 /* ============================================================================
+ * WDRC 值转换：**BLE 线格式 ↔ 本地 dB**（读/写两族共用，唯一定义处）
+ *
+ * 本地侧（7100 读回缓存 `dsp_7100_prog_t` / I2C 写帧）**一律是 dB**：
+ *   LowLevelGain / HighLevelGain  -30 ~ 60      OutputLimit  -60 ~ 0
+ * BLE 侧是偏移后的 App 值 —— 偏移**只存在于线格式里**，既不落缓存、也不进 7100 帧：
+ *   LowLevelGain / HighLevelGain  App = dB + 30  → 0 ~ 90
+ *   OutputLimit                   App = dB + 60  → 0 ~ 60
+ * 读（Get）加偏移、写（Set）减偏移，两向都走 wdrc_app_offset() ——
+ * 调用点不要再散写 ±30 / ±60 字面量，改规则只改这一个函数。
+ * 适用：6/29/7（写）与 22/30/23/31（读）。
+ * ⚠ 均衡器（10 号 SetEqualizer）**不适用**：它的线格式是 int8 的 ±dB，本身无偏移。
+ * ========================================================================== */
+
+/* WDRC 参数种类（读回族的 which 参数，写族共用） */
+#define WDRC_RB_LL  0
+#define WDRC_RB_HL  1
+#define WDRC_RB_OL  2
+
+/* 参数种类 → BLE 线格式偏移 */
+static int16_t wdrc_app_offset(uint8_t which)
+{
+    return (which == WDRC_RB_OL) ? 60 : 30;
+}
+
+/* 本地 dB + 线格式偏移 → App 值；缓存异常时饱和，避免回绕成 255（同旧 cmd_getwdrc 钳位） */
+static uint8_t wdrc_to_app_u8(int16_t val_db, uint8_t which)
+{
+    int16_t v = (int16_t)(val_db + wdrc_app_offset(which));
+
+    if (v < 0)   { v = 0; }
+    if (v > 255) { v = 255; }
+    return (uint8_t)v;
+}
+
+/* ============================================================================
  * ID:6 / 29 / 7 — WDRC 参数设置（SetGain / SetHighLevelGainData / SetMPO）
  *
  * 三条 payload 同构（SYS_ID、CMD_ID 已被 HDLC 层剥掉）：
  *   { Device_Type(1), Current_Number(1), { Index(1), Value(1) } × k }
- *   SetGain             ：Index = Spectrum 0-15 → 7100 ch1-16，Value 0-90 → LowLevelGain  -30~60
- *   SetHighLevelGainData：Index = Channel  0-15 → 7100 ch1-16，Value 0-90 → HighLevelGain -30~60
- *   SetMPO              ：Index = Channel  0-15 → 7100 ch1-16，Value 0-60 → OutputLimit   -60~0
+ *   SetGain             ：Index = Spectrum 0-15 → 7100 ch1-16，Value → LowLevelGain
+ *   SetHighLevelGainData：Index = Channel  0-15 → 7100 ch1-16，Value → HighLevelGain
+ *   SetMPO              ：Index = Channel  0-15 → 7100 ch1-16，Value → OutputLimit
+ *   Value 一律是**线格式的 App 值**，转 dB 见上面的 WDRC 值转换块。
  * 一次可带多个 {Index, Value} 对，**共用同一次 7100 会话**（静音/提交/解除静音只发一次）。
  * Index 16-31 忽略；超出 dsp 层范围的值由 dsp_7100_cmd.c 钳位。
  *
@@ -754,7 +790,7 @@ typedef bool (*dsp_7100_wdrc_set_fn)(uint8_t prog, const dsp_7100_wdrc_item_t *i
                                      uint8_t n);
 
 static void cmd_setwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *data,
-                             uint8_t len, int16_t val_offset, dsp_7100_wdrc_set_fn set_fn)
+                             uint8_t len, uint8_t which, dsp_7100_wdrc_set_fn set_fn)
 {
     dsp_7100_wdrc_item_t items[DSP7100_WDRC_CH];
     uint8_t  dev_type;
@@ -772,7 +808,7 @@ static void cmd_setwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *d
 
     for (i = 2; (i + 1u) < (uint16_t)len; i += 2u) {
         uint8_t  idx = data[i];
-        int16_t  val = (int16_t)data[i + 1u] + val_offset;
+        int16_t  val = (int16_t)data[i + 1u] - wdrc_app_offset(which);   /* App 值 → dB */
 
         if (n >= DSP7100_WDRC_CH) break;
 
@@ -796,23 +832,25 @@ static void cmd_setwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *d
     hdlc_response_set(cmd_id, ok);
 }
 
-/* ID:6  SetGain — 增益 → LowLevelGain（Value 0-90 → -30~60） */
+/* ID:6  SetGain — 增益 → LowLevelGain */
 static void cmd_setgain_7100(const uint8_t *data, uint8_t len)
 {
-    cmd_setwdrc_7100(CMD_SETGAIN, "SetGain", data, len, -30, dsp_7100_set_low_level_gain);
+    cmd_setwdrc_7100(CMD_SETGAIN, "SetGain", data, len, WDRC_RB_LL,
+                     dsp_7100_set_low_level_gain);
 }
 
-/* ID:29 SetHighLevelGainData — 高水平增益 → HighLevelGain（Value 0-90 → -30~60） */
+/* ID:29 SetHighLevelGainData — 高水平增益 → HighLevelGain */
 static void cmd_sethighlevelgain_7100(const uint8_t *data, uint8_t len)
 {
     cmd_setwdrc_7100(CMD_SETHIGHLEVELGAINDATA, "SetHighLevelGain", data, len,
-                     -30, dsp_7100_set_high_level_gain);
+                     WDRC_RB_HL, dsp_7100_set_high_level_gain);
 }
 
-/* ID:7  SetMPO — MPO 最大输出量 → OutputLimit（Value 0-60 → -60~0） */
+/* ID:7  SetMPO — MPO 最大输出量 → OutputLimit */
 static void cmd_setmpo_7100(const uint8_t *data, uint8_t len)
 {
-    cmd_setwdrc_7100(CMD_SETMPO, "SetMPO", data, len, -60, dsp_7100_set_output_limit);
+    cmd_setwdrc_7100(CMD_SETMPO, "SetMPO", data, len, WDRC_RB_OL,
+                     dsp_7100_set_output_limit);
 }
 
 /* ============================================================================
@@ -821,21 +859,18 @@ static void cmd_setmpo_7100(const uint8_t *data, uint8_t len)
  * 请求：{ Device_Type(1), Current_Number(1) }
  * 应答：Flag(1) + Channel_Number(1) + { Index(1), Value(1) } × Channel_Number
  *   Index 0 起（= 7100 通道号 - 1）
- *   GetGainData          ：Value = LowLevelGain  + 30   （-30~60 → 0~90）
- *   GetHighLevelGainData ：Value = HighLevelGain + 30   （-30~60 → 0~90）
- *   GetMPOData           ：Value = OutputLimit   + 60   （-60~0  → 0~60）
+ *   GetGainData          ：Value ← LowLevelGain
+ *   GetHighLevelGainData ：Value ← HighLevelGain
+ *   GetMPOData           ：Value ← OutputLimit
+ *   Value 一律是**线格式的 App 值**，转换见上面的 WDRC 值转换块（wdrc_to_app_u8）。
  *
  * 数据取自读回缓存（dsp_7100_get_prog）；**读回尚未完成或该程序无效时回 Flag=1**，
  * App 需等开机读回跑完（见 [7100] 读回日志）再取。
  * 详见 docs/7100协议/瑞听设置指令.md、docs/7100协议/WDRC/7100_WDRC读取.md
  * ========================================================================== */
 
-#define WDRC_RB_LL  0
-#define WDRC_RB_HL  1
-#define WDRC_RB_OL  2
-
 static void cmd_getwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *data,
-                             uint8_t len, uint8_t which, int16_t val_offset)
+                             uint8_t len, uint8_t which)
 {
     const dsp_7100_prog_t *p;
     uint8_t resp[1 + DSP7100_WDRC_CH * 2];
@@ -862,12 +897,8 @@ static void cmd_getwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *d
         else if (which == WDRC_RB_HL) v = p->wdrc_hl[ch - 1];
         else                          v = p->wdrc_ol[ch - 1];
 
-        v += val_offset;
-        if (v < 0)   { v = 0; }            /* 缓存异常时饱和，避免回绕 */
-        if (v > 255) { v = 255; }
-
-        resp[1 + n * 2]     = (uint8_t)(ch - 1);   /* Index/Channel 0 起 */
-        resp[1 + n * 2 + 1] = (uint8_t)v;
+        resp[1 + n * 2]     = (uint8_t)(ch - 1);              /* Index/Channel 0 起 */
+        resp[1 + n * 2 + 1] = wdrc_to_app_u8(v, which);       /* dB → App 值 */
         n++;
     }
 
@@ -877,23 +908,84 @@ static void cmd_getwdrc_7100(uint16_t cmd_id, const char *name, const uint8_t *d
     hdlc_response(cmd_id, 0, resp, (uint8_t)(1 + n * 2));
 }
 
-/* ID:22  GetGainData — 增益 ← LowLevelGain（+30） */
+/* ID:22  GetGainData — 增益 ← LowLevelGain */
 static void cmd_getgaindata_7100(const uint8_t *data, uint8_t len)
 {
-    cmd_getwdrc_7100(CMD_GETGAINDATA, "GetGainData", data, len, WDRC_RB_LL, 30);
+    cmd_getwdrc_7100(CMD_GETGAINDATA, "GetGainData", data, len, WDRC_RB_LL);
 }
 
-/* ID:30  GetHighLevelGainData — 高水平增益 ← HighLevelGain（+30） */
+/* ID:30  GetHighLevelGainData — 高水平增益 ← HighLevelGain */
 static void cmd_gethighlevelgain_7100(const uint8_t *data, uint8_t len)
 {
     cmd_getwdrc_7100(CMD_GETHIGHLEVELGAINDATA, "GetHighLevelGain", data, len,
-                     WDRC_RB_HL, 30);
+                     WDRC_RB_HL);
 }
 
-/* ID:23  GetMPOData — MPO ← OutputLimit（+60） */
+/* ID:23  GetMPOData — MPO ← OutputLimit */
 static void cmd_getmpodata_7100(const uint8_t *data, uint8_t len)
 {
-    cmd_getwdrc_7100(CMD_GETMPODATA, "GetMPOData", data, len, WDRC_RB_OL, 60);
+    cmd_getwdrc_7100(CMD_GETMPODATA, "GetMPOData", data, len, WDRC_RB_OL);
+}
+
+/* ============================================================================
+ * ID:31 GetFittingData（带 High Level Gain）— 一次给全四张表
+ *
+ * 请求：{ Device_Type(1), Scene_ID(1) }（同 17 号）
+ * 应答：Flag(1) + Scene_ID(1) + LeftOrRight(1) + Turn_Number(1)
+ *       + Gain_Number(1) + Compress_Number(1) + MPO_Number(1) + HighLevel_Number(1)
+ *       + Gain[] + Compress[] + MPO[] + HighLevel[]
+ *
+ * 数据取自读回缓存（dsp_7100_get_prog）；**读回尚未完成或该程序无效时回 Flag=1**，
+ * 与 22/23/30 一致（不编造状态）。
+ * 表宽 = 16（= DSP7100_WDRC_CH，Index 0 起 = 7100 通道号 - 1），值编码沿用那三条
+ * （线格式转换见上面的 WDRC 值转换块，wdrc_to_app_u8），App 可回灌 SetGain/SetMPO。
+ *   Compress_Number 恒为 0 —— 1664 无压缩比数据源（8 号 SetCompressRatio 按需求不做，
+ *   0x177 读回只解出 LL/HL/OL），文档允许该数量置 0、不发该表。
+ *   Turn_Number 恒为 0 —— 文档响应表只声明了计数、没有拐点数组。
+ *   LeftOrRight 恒为 0（左）—— 单颗 7100 左右同值，同 15 号 GetCurrentScene / 33 号。
+ * 详见 docs/7100协议/瑞听设置指令.md §5
+ * ========================================================================== */
+
+#define FITTING_TABLE_N   DSP7100_WDRC_CH      /* 四张表各 16 项 */
+
+static void cmd_getfittingdata_hl(const uint8_t *data, uint8_t len)
+{
+    const dsp_7100_prog_t *p;
+    uint8_t resp[7 + FITTING_TABLE_N * 3];   /* 7 头 + Gain/MPO/HighLevel 三张表（Compress 不发） */
+    uint8_t prog;
+    uint8_t pos = 0;
+    uint8_t i;
+
+    if (len < 2) { hdlc_response(CMD_GETFITTINGDATA_HL, 1, NULL, 0); return; }
+
+    prog = data[1];                        /* data[0] = Device_Type，忽略 */
+    if (prog >= DSP7100_RB_PROGS) { hdlc_response(CMD_GETFITTINGDATA_HL, 1, NULL, 0); return; }
+
+    p = dsp_7100_get_prog(prog);           /* App prog 0-3 = 读回缓存索引 0-3 */
+    if (p == NULL) {
+        PRINTF("[REMPRO] GetFittingData(31): prog=%u 读回数据还不可用\r\n", prog);
+        hdlc_response(CMD_GETFITTINGDATA_HL, 1, NULL, 0);
+        return;
+    }
+
+    resp[pos++] = prog;                    /* Scene_ID（App 0 基，原样回） */
+    resp[pos++] = 0;                       /* LeftOrRight：0 = 左 */
+    resp[pos++] = 0;                       /* Turn_Number：无拐点表 */
+    resp[pos++] = FITTING_TABLE_N;         /* Gain_Number */
+    resp[pos++] = 0;                       /* Compress_Number：无数据源，不发该表 */
+    resp[pos++] = FITTING_TABLE_N;         /* MPO_Number */
+    resp[pos++] = FITTING_TABLE_N;         /* HighLevel_Number */
+
+    for (i = 0; i < FITTING_TABLE_N; i++)
+        resp[pos++] = wdrc_to_app_u8(p->wdrc_ll[i], WDRC_RB_LL);
+    for (i = 0; i < FITTING_TABLE_N; i++)
+        resp[pos++] = wdrc_to_app_u8(p->wdrc_ol[i], WDRC_RB_OL);
+    for (i = 0; i < FITTING_TABLE_N; i++)
+        resp[pos++] = wdrc_to_app_u8(p->wdrc_hl[i], WDRC_RB_HL);
+
+    PRINTF("[REMPRO] GetFittingData(31): prog=%u n=%u → %u bytes\r\n",
+           prog, FITTING_TABLE_N, pos);
+    hdlc_response(CMD_GETFITTINGDATA_HL, 0, resp, pos);
 }
 
 /* ============================================================================
@@ -975,6 +1067,31 @@ static void cmd_setdeviceonoff_7100(const uint8_t *data, uint8_t len)
     PRINTF("[REMPRO] SetDeviceOnOff: dev=%u onoff=%u on=%u changed=%u ok=%u\r\n",
            dev_type, onoff, s_device_on, changed, ok);
     hdlc_response_set(CMD_SETDEVICEONOFF, ok);
+}
+
+/* ============================================================================
+ * ID:37 SetFittingStatus — 只回 ACK，**不做任何动作**
+ *
+ * 请求 = { Device_Type(1), Fitting_Status(1) }；响应 = Flag(=0) + status(1)（非 0 = 成功）。
+ * Fitting_Status：0 开始验配/初始化 ｜ 1 验配完成 ｜ 2 开始 OTA 升级 ｜ 3 门店端开始 ｜ 4 门店端结束。
+ *
+ * 参照 remote_mic_rx_coex_1644 的同名 handler，但**去掉了**那边的
+ * `fitting_rm_disable()` / `fitting_rm_enable()`：1644 的 RM 是 7100 侧配置，验配要独占 DSP
+ * 就得把 RM 停掉；1664 的 RM 是片内 PCM 通路（rm_app.c / app_env.audio_streaming），
+ * 语义不同，按当前需求只回包、不挂起。
+ * ⚠ 已知局限：RM 推流期间 `rempro_cmd_process()` 整体被跳过（开发文档 §7.4.5），
+ *   所以这条在推流中同样**收不到**；要让它真能应答得先解掉那个早退。
+ * ========================================================================== */
+
+static void cmd_setfittingstatus(const uint8_t *data, uint8_t len)
+{
+    uint8_t ack = 1;
+
+    if (len < 2) { hdlc_response(CMD_SETFITTINGSTATUS, 1, NULL, 0); return; }
+
+    PRINTF("[REMPRO] SetFittingStatus: dev=%u status=%u (ack only)\r\n",
+           data[0], data[1]);
+    hdlc_response(CMD_SETFITTINGSTATUS, 0, &ack, 1);
 }
 
 /* ============================================================================
@@ -1131,14 +1248,14 @@ static void cmd_getdeviceconfig(void)
     /* Left side */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Left MAC */
     d[pos++] = 21; d[pos++] = 0;                         /* Product_Type = 21 */
-    d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
+    d[pos++] = 8;                                        /* Chip_Type = 8（App 侧要求；原 6 = E7160SL） */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
     /* Right side (same as left) */
     memcpy(d + pos, bdaddr, 6); pos += 6;               /* Address_Right MAC */
     d[pos++] = 21; d[pos++] = 0;                         /* Product_Type = 21 */
-    d[pos++] = 6;                                        /* Chip_Type = 6 (E7160SL/7100) */
+    d[pos++] = 8;                                        /* Chip_Type = 8（App 侧要求；原 6 = E7160SL） */
     d[pos++] = 2;                                        /* Turn_Number */
     d[pos++] = 16;                                       /* Channel_Number */
 
@@ -1366,6 +1483,10 @@ void rempro_cmd_process(void)
             if (data) cmd_getmpodata_7100(data, data_len);
             else hdlc_response(CMD_GETMPODATA, 1, NULL, 0);
             break;
+        case CMD_GETFITTINGDATA_HL:
+            if (data) cmd_getfittingdata_hl(data, data_len);
+            else hdlc_response(CMD_GETFITTINGDATA_HL, 1, NULL, 0);
+            break;
 
         case CMD_SETMUTEDATA:
             if (data) cmd_setmutedata_7100(data, data_len);
@@ -1374,6 +1495,10 @@ void rempro_cmd_process(void)
         case CMD_SETAUDIOMETRYSTATUS:
             if (data) cmd_setaudiometrystatus(data, data_len);
             else hdlc_response_set(CMD_SETAUDIOMETRYSTATUS, false);
+            break;
+        case CMD_SETFITTINGSTATUS:
+            if (data) cmd_setfittingstatus(data, data_len);
+            else hdlc_response(CMD_SETFITTINGSTATUS, 1, NULL, 0);
             break;
 
         case CMD_SETPLAYVOICE:
