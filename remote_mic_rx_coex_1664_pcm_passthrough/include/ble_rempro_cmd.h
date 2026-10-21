@@ -1,0 +1,94 @@
+#ifndef BLE_REMPRO_CMD_H
+#define BLE_REMPRO_CMD_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* HDLC protocol constants */
+#define HDLC_SEPARATOR          0x7E
+#define HDLC_SYS_ID             0x00
+
+/* Command IDs — App → Device */
+#define CMD_SETVOLUME           2
+#define CMD_SETDEVICEONOFF      3
+#define CMD_GETBATTERYINFO      4
+#define CMD_SETFEEDBACKONOFF    5
+#define CMD_SETGAIN             6
+#define CMD_SETMPO              7
+#define CMD_SETCOMPRESSRATIO    8
+#define CMD_SETDENOISE          9
+#define CMD_SETEQUALIZER        10
+#define CMD_SETPLAYVOICE         13
+#define CMD_SETSTOPVOICE         14
+#define CMD_GETCURRENTSCENE     15
+#define CMD_SETCURRENTSCENE     16
+#define CMD_GETFITTINGDATA      17
+#define CMD_SETMUTEDATA         21  /* ID:21 SetMuteData：静音开关，data[1] 非 0=静音（方向与 3 号相反） */
+#define CMD_GETGAINDATA         22  /* 增益数据 ← 7100 LowLevelGain */
+#define CMD_GETMPODATA          23  /* MPO 数据 ← 7100 OutputLimit */
+#define CMD_GETDEVICECONFIG     26
+#define CMD_SETHIGHLEVELGAINDATA 29  /* SetHighLevelGainData：高水平增益 → 7100 HighLevelGain */
+#define CMD_GETHIGHLEVELGAINDATA 30  /* 高水平增益数据 ← 7100 HighLevelGain */
+#define CMD_GETFITTINGDATA_HL   31  /* ID:31 GetFittingData：一次给全 Gain/Compress/MPO/HighLevel */
+#define CMD_GETDEVICEONOFF      33
+#define CMD_GETFEEDBACKONOFF    34
+#define CMD_SETFITTINGSTATUS    37  /* ID:37 SetFittingStatus：只回 ACK，不做动作 */
+#define CMD_SETAUDIOMETRYSTATUS  40
+#define CMD_IICDATACOMMUNITY    78
+#define CMD_FOTA_STATUS         87   /* ID:87 SetFOTAStatus：进入 FOTA 状态 */
+#define CMD_GETSTREAMADDRESS    88   /* ID:88 GetStreamAddress：读回 RM 音频流地址 */
+#define CMD_SETSTREAMADDRESS    89   /* ID:89 SetStreamAddress：设置 RM 音频流地址（accessword 高 24 位） */
+
+/* Command IDs — Device → App (active push, SYS_ID=1) */
+#define CMD_PUSH_VOLUME              4
+#define CMD_PUSH_SCENE               5
+#define CMD_PUSH_INITIAL_STATUS      6   /* Receive device initial Status */
+
+/* HDLC SYS_ID for device-initiated push */
+#define HDLC_SYS_ID_DEVICE      1
+
+void rempro_cmd_process(void);
+
+/* 电池 DIO0(IO) AD 原始值（分时复用 7100 I2C 的 SCL 脚，每次读前重配 ADC）。
+ * 供 GetBatteryInfo 及后续低电量检测使用。 */
+uint32_t read_battery_raw(void);
+
+/* Call from Main_Loop: advance chunked rempro TX once the previous
+ * notification completed. No ke_timer — low-power safe. */
+void rempro_tx_poll(void);
+
+/* Called from GATT callback — appends raw BLE chunk directly to
+ * reassembly buffer.  Avoids the single-slot role_value race condition
+ * when the App sends multi-chunk frames back-to-back. */
+void rempro_reasm_append(const uint8_t *data, uint8_t len);
+void rempro_reasm_reset(void);
+
+/* 由 APP_7100_HB_Handler 每 200ms 调：推进延时推送（测听进入/退出完成） */
+void rempro_deferred_tick(void);
+
+/* 7100 写会话结束时调（I2C 跑完）：启动下一条缓存的设置命令。
+ * 设置命令在 I2C 忙时按类型合并缓存（见 ble_rempro_cmd.c）；无缓存则空操作。 */
+void rempro_pending_start_next(void);
+
+/* Active push: notify app of state changes triggered by button */
+void rempro_push_scene_change(uint8_t scene_id);
+void rempro_push_volume_change(uint8_t prog, uint8_t volume);
+
+/* 7100 主动通知（DIO13 推来）→ 上报 App：
+ *   程序号 0x0016 → CMD 5，scene_id = 程序号 - 1（App 侧 0 基，同 SetCurrentScene）
+ *   音量   0x0012 → CMD 4，vol = 档位（App 侧 0-6，与 SetVolume 同号），prog = 当前程序
+ * payload = 3B `<addr_hi> <addr_lo> <值>`，解码在 dsp_7100_cmd.c 的 dsp_7100_notify_apply。
+ * BLE 未连接时两条 push 自己跳过（不用调用方判）。 */
+void rempro_push_7100_notify(const uint8_t *payload, uint8_t len);
+void rempro_push_initial_status_done(void);
+void rempro_push_audiometry_exit(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

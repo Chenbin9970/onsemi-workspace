@@ -1,0 +1,65 @@
+/* 由 scripts/gen_dsp_7100_rb.py 从 parm1604.txt 过滤生成：
+ * 4 程序 × (WDRC/DFBC/降噪) 选程序+选模块+读块。勿手改。 */
+#include "dsp_7100_init.h"
+
+static const uint8_t dsp_rb_p0[] = { 0xA7, 0x02, 0x00, 0x00, 0x00, 0x12, 0x01, };
+static const uint8_t dsp_rb_p1[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x07, 0x01, };
+static const uint8_t dsp_rb_p2[] = { 0xA7, 0x01, 0x00, 0x77, 0x01, 0x38, };
+static const uint8_t dsp_rb_p3[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x0A, 0x01, };
+static const uint8_t dsp_rb_p4[] = { 0xA7, 0x01, 0x00, 0x32, 0x01, 0x38, };
+static const uint8_t dsp_rb_p5[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x09, 0x01, };
+static const uint8_t dsp_rb_p6[] = { 0xA7, 0x01, 0x00, 0xAE, 0x00, 0x38, };
+static const uint8_t dsp_rb_p7[] = { 0xA7, 0x02, 0x00, 0x00, 0x00, 0x12, 0x02, };
+static const uint8_t dsp_rb_p8[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x07, 0x02, };
+static const uint8_t dsp_rb_p9[] = { 0xA7, 0x01, 0x00, 0x77, 0x01, 0x38, };
+static const uint8_t dsp_rb_p10[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x0A, 0x02, };
+static const uint8_t dsp_rb_p11[] = { 0xA7, 0x01, 0x00, 0x32, 0x01, 0x38, };
+static const uint8_t dsp_rb_p12[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x09, 0x02, };
+static const uint8_t dsp_rb_p13[] = { 0xA7, 0x01, 0x00, 0xAE, 0x00, 0x38, };
+static const uint8_t dsp_rb_p14[] = { 0xA7, 0x02, 0x00, 0x00, 0x00, 0x12, 0x03, };
+static const uint8_t dsp_rb_p15[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x07, 0x03, };
+static const uint8_t dsp_rb_p16[] = { 0xA7, 0x01, 0x00, 0x77, 0x01, 0x38, };
+static const uint8_t dsp_rb_p17[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x0A, 0x03, };
+static const uint8_t dsp_rb_p18[] = { 0xA7, 0x01, 0x00, 0x32, 0x01, 0x38, };
+static const uint8_t dsp_rb_p19[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x09, 0x03, };
+static const uint8_t dsp_rb_p20[] = { 0xA7, 0x01, 0x00, 0xAE, 0x00, 0x38, };
+static const uint8_t dsp_rb_p21[] = { 0xA7, 0x02, 0x00, 0x00, 0x00, 0x12, 0x04, };
+static const uint8_t dsp_rb_p22[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x07, 0x04, };
+static const uint8_t dsp_rb_p23[] = { 0xA7, 0x01, 0x00, 0x77, 0x01, 0x38, };
+static const uint8_t dsp_rb_p24[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x0A, 0x04, };
+static const uint8_t dsp_rb_p25[] = { 0xA7, 0x01, 0x00, 0x32, 0x01, 0x38, };
+static const uint8_t dsp_rb_p26[] = { 0xA7, 0x03, 0x00, 0x00, 0x00, 0x37, 0x09, 0x04, };
+static const uint8_t dsp_rb_p27[] = { 0xA7, 0x01, 0x00, 0xAE, 0x00, 0x38, };
+
+const dsp_a7_cmd_t dsp_rb_cmds[] = {
+    { dsp_rb_p0, (uint16_t)sizeof(dsp_rb_p0) },
+    { dsp_rb_p1, (uint16_t)sizeof(dsp_rb_p1) },
+    { dsp_rb_p2, (uint16_t)sizeof(dsp_rb_p2) },
+    { dsp_rb_p3, (uint16_t)sizeof(dsp_rb_p3) },
+    { dsp_rb_p4, (uint16_t)sizeof(dsp_rb_p4) },
+    { dsp_rb_p5, (uint16_t)sizeof(dsp_rb_p5) },
+    { dsp_rb_p6, (uint16_t)sizeof(dsp_rb_p6) },
+    { dsp_rb_p7, (uint16_t)sizeof(dsp_rb_p7) },
+    { dsp_rb_p8, (uint16_t)sizeof(dsp_rb_p8) },
+    { dsp_rb_p9, (uint16_t)sizeof(dsp_rb_p9) },
+    { dsp_rb_p10, (uint16_t)sizeof(dsp_rb_p10) },
+    { dsp_rb_p11, (uint16_t)sizeof(dsp_rb_p11) },
+    { dsp_rb_p12, (uint16_t)sizeof(dsp_rb_p12) },
+    { dsp_rb_p13, (uint16_t)sizeof(dsp_rb_p13) },
+    { dsp_rb_p14, (uint16_t)sizeof(dsp_rb_p14) },
+    { dsp_rb_p15, (uint16_t)sizeof(dsp_rb_p15) },
+    { dsp_rb_p16, (uint16_t)sizeof(dsp_rb_p16) },
+    { dsp_rb_p17, (uint16_t)sizeof(dsp_rb_p17) },
+    { dsp_rb_p18, (uint16_t)sizeof(dsp_rb_p18) },
+    { dsp_rb_p19, (uint16_t)sizeof(dsp_rb_p19) },
+    { dsp_rb_p20, (uint16_t)sizeof(dsp_rb_p20) },
+    { dsp_rb_p21, (uint16_t)sizeof(dsp_rb_p21) },
+    { dsp_rb_p22, (uint16_t)sizeof(dsp_rb_p22) },
+    { dsp_rb_p23, (uint16_t)sizeof(dsp_rb_p23) },
+    { dsp_rb_p24, (uint16_t)sizeof(dsp_rb_p24) },
+    { dsp_rb_p25, (uint16_t)sizeof(dsp_rb_p25) },
+    { dsp_rb_p26, (uint16_t)sizeof(dsp_rb_p26) },
+    { dsp_rb_p27, (uint16_t)sizeof(dsp_rb_p27) },
+};
+
+const uint16_t dsp_rb_cmd_cnt = 28;

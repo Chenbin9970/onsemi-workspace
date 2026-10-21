@@ -1,0 +1,695 @@
+/* ----------------------------------------------------------------------------
+ * Copyright (c) 2017 Semiconductor Components Industries, LLC (d/b/a
+ * ON Semiconductor), All Rights Reserved
+ *
+ * This code is the property of ON Semiconductor and may not be redistributed
+ * in any form without prior written permission from ON Semiconductor.
+ * The terms of use and warranty for this code are covered by contractual
+ * agreements between ON Semiconductor and the licensee.
+ *
+ * This is Reusable Code.
+ *
+ * ----------------------------------------------------------------------------
+ * app.h
+ * - Application header file
+ * ----------------------------------------------------------------------------
+ * $Revision: 1.17 $
+ * $Date: 2018/02/27 15:46:06 $
+ * ------------------------------------------------------------------------- */
+
+#ifndef APP_H_
+#define APP_H_
+
+/* FOTA 空中升级总开关（fotaskill 兼容：注释=关/开）。
+ * 开启需同时替换 RTE 变体（startup_rsl10_fota.S/sections_fota.ld/*_fota.rteconfig/.cproject_fota），
+ * 见开发文档「FOTA」。 */
+//#define CFG_FOTA
+#ifdef CFG_FOTA
+#define VER_ID                  "Smart1664"
+#define VER_MAJOR               1
+#define VER_MINOR               0
+#define VER_REVISION            0
+#endif    /* ifdef CFG_FOTA */
+
+/* ----------------------------------------------------------------------------
+ * Include files
+ * --------------------------------------------------------------------------*/
+#include <rsl10.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <rsl10_ke.h>
+#include <rsl10_ble.h>
+#include <rsl10_profiles.h>
+#include <rsl10_map_nvr.h>
+#include <rsl10_protocol.h>
+#include <rm_pkt.h>
+#include "ble_std.h"
+#include "ble_custom.h"
+#include "ble_bass.h"
+#include "ble_rempro.h"
+#ifdef CFG_FOTA
+#include "sys_fota.h"
+#include "sys_boot.h"
+#endif    /* ifdef CFG_FOTA */
+
+/* ----------------------------------------------------------------------------
+ * If building with a C++ compiler, make all of the definitions in this header
+ * have a C binding.
+ * ------------------------------------------------------------------------- */
+#ifdef __cplusplus
+extern "C"
+{
+#endif    /* ifdef __cplusplus */
+
+/* ----------------------------------------------------------------------------
+ * Defines
+ * --------------------------------------------------------------------------*/
+
+/*  (nordic channel/2 - 1)
+ *  {1, 7, 13, 19, 25, 31, 37}
+ *  {2, 8, 14, 20, 26, 35, 38}
+ *  {3, 9, 15, 21, 24, 33, 36}
+ */
+#define RM_HOPLIST                      { 3, 9, 15, 21, 24, 33, 36 }
+
+/* RM 音频流 accessword：**最低 1 字节固定**，高 3 字节才是「音频流地址」
+ * （BLE ID:88 GetStreamAddress / ID:89 SetStreamAddress 读写）。
+ * 出厂值 0xF2CDE629 → 地址默认 0xF2CDE6、固定低字节 0x29。
+ *
+ * ⚠ 与 RSL10 SDK 样例的写法**方向相反**：样例是 `0x00cde629 | (xx << 24)`
+ * （低 3 字节固定、高 1 字节随流变，xx = 0xF2/0x0D）；本机按 App 约定改成
+ * 低 1 字节固定。改这里之前必须与 App / TX 侧对齐，否则 RM 直接搜不到。
+ *
+ * 映射只在这两个宏里定义，别在别处重算（88/89/落盘/开机初始化都走它）。 */
+#define RM_STREAM_ACCESSWORD_FIXED_LOW   0x29UL
+#define RM_STREAM_ADDR_DEFAULT           0xF2CDE6UL
+#define RM_STREAM_ADDR_MASK              0x00FFFFFFUL
+#define RM_STREAM_ADDR_TO_ACCESSWORD(a)  ((((uint32_t)(a)) << 8) | RM_STREAM_ACCESSWORD_FIXED_LOW)
+#define RM_STREAM_ACCESSWORD_TO_ADDR(w)  (((uint32_t)(w) >> 8) & RM_STREAM_ADDR_MASK)
+
+#define RM_LEFT                         0
+#define RM_RIGHT                        1
+
+#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+
+#define OUTPUT_POWER_6DBM               0
+
+#define NO_TX_OUTPUT                    2
+#define SPI_TX_CODED_OUTPUT             3    /*with RSL10_RM_HearingAid in E7100 */
+#define SPI_TX_RAW_OUTPUT               4    /*with audio_spi_slave in E7100 */
+#define OD_OUTPUT                       5    /*片上 LPDSP32 解码 + ASRC → RSL10 OD 直驱（DIO0/1 差分，参照 peripheral_server_sleep） */
+#define PCM_SLAVE_OUTPUT                6    /* PCM 从机：7100 提供 BCLK/FS，RSL10 在 SERO 移位输出（参照 7160test） */
+
+/* 1664 当前音频出口 = PCM 从机（DIO2=BCLK / DIO3=FS / DIO14=SERO），DIO0/DIO1 仍留给 7100 I2C。
+ * 改回 OD_OUTPUT 可恢复 OD 直驱（届时须重解 DIO0/DIO1 冲突）；NO_TX_OUTPUT 为无输出。 */
+#define OUTPUT_INTRF                    PCM_SLAVE_OUTPUT    /*OD_OUTPUT//SPI_TX_RAW_OUTPUT//SPI_TX_CODED_OUTPUT// */
+
+/* 解码+ASRC 全链路使能：RAW(SPI 直出)、OD(片上解码→OD) 与 PCM(从机移位输出) 共用同一套解码初始化 */
+#define OUTPUT_DECODE_PATH              (OUTPUT_INTRF == SPI_TX_RAW_OUTPUT || \
+                                         OUTPUT_INTRF == OD_OUTPUT || \
+                                         OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+
+/* OD 直驱受话器输出（参照 peripheral_server_sleep） */
+#define OD_P_DIO                        0
+#define OD_N_DIO                        1
+#define DECIMATE_BY_200                 ((uint32_t)(0x11U << \
+                                                    AUDIO_CFG_DEC_RATE_Pos))
+#define AUDIO_CONFIG                    (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200                    | \
+                                         OD_ENABLE)
+
+/* PCM 模式：OD 输出必须关（DIO0/DIO1 是 7100 I2C），只保留音频时钟域配置 */
+#define AUDIO_CONFIG_PCM                (OD_AUDIOCLK                        | \
+                                         OD_UNDERRUN_PROTECT_ENABLE         | \
+                                         OD_DMA_REQ_ENABLE                  | \
+                                         OD_INT_GEN_DISABLE                 | \
+                                         DECIMATE_BY_200)
+
+#define RX_DMA_OD                       (DMA_LITTLE_ENDIAN |        \
+                                         DMA_ENABLE |               \
+                                         DMA_DISABLE_INT_DISABLE |  \
+                                         DMA_ERROR_INT_DISABLE |    \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_START_INT_DISABLE |    \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_DEST_OD |              \
+                                         DMA_PRIORITY_0 |           \
+                                         DMA_ADDR_CIRC)
+
+#define APP_RM_DATA_REQUEST_TYPE        RM_APP_REQUEST
+#define SIMUL                           0    /*For test */
+
+#define THREE_BLOCK_APPN(x, y, z)       x##y##z
+#define DMA_IRQn(x)                     THREE_BLOCK_APPN(DMA, x, _IRQn)    /*DMAx_IRQn */
+#define TIMER_IRQn(x)                   THREE_BLOCK_APPN(TIMER, x, _IRQn)    /*TIMERx_IRQn */
+#define DMA_IRQ_FUNC(x)                 THREE_BLOCK_APPN(DMA, x, _IRQHandler)    /*DMAx_IRQHandler */
+#define TIMER_IRQ_FUNC(x)               THREE_BLOCK_APPN(TIMER, x, _IRQHandler)    /*TIMERx_IRQHandler */
+
+#define MEMCPY_DMA_NUM                  0
+#define ASRC_IN_IDX                     3
+#define ASRC_OUT_IDX                    4
+#define RX_DMA_NUM                      5
+#define OD_DMA_NUM                      5    /* OD 输出 DMA（BufferOut→OD_DATA，参照 sleep） */
+#define PCM_DMA_NUM                     5    /* PCM 输出 DMA（pcm_tx_buf→PCM->TX_DATA）；与 OD_DMA_NUM 互斥 */
+#define PCM_RELAY_DMA_NUM               1    /* PCM 透传采集 DMA（PCM->RX_DATA→pcm_tx_buf）；dma0/2 空闲中取 1 */
+#define TX_DMA_NUM                      6
+#define UART_TX_NUM                     7
+
+#define UART_BAUD_RATE                  115200
+#define UART_RX                         4
+#define UART_TX                         5
+
+#if (SIMUL == 1)
+#define TIMER_SIMUL                     3
+#endif    /* if (SIMUL == 1) */
+#define TIMER_REGUL                     2
+
+#define DEBUG_UART_LOG                  0
+
+#define PCM_CFG_RX                      (PCM_BIT_ORDER_MSB_FIRST | \
+                                         PCM_TX_ALIGN_LSB |        \
+                                         PCM_WORD_SIZE_24 |        \
+                                         PCM_FRAME_ALIGN_LAST |    \
+                                         PCM_FRAME_WIDTH_LONG |    \
+                                         PCM_MULTIWORD_2 |         \
+                                         PCM_SUBFRAME_DISABLE |    \
+                                         PCM_CONTROLLER_DMA |      \
+                                         PCM_DISABLE |             \
+                                         PCM_SELECT_SLAVE)
+
+/* PCM 透传（同板有线）：1 = 外部音源作 PCM 从机，与 7100 共用 BCLK/FS，
+ * RSL10 把 SERI(DIO12) 收到的字原样从 SERO(DIO14) 转发给 7100；RM 音频不参与。
+ * 0 = 原 1664 无线接收路径（RM → 解码 → ASRC → PCM）。 */
+#define PCM_RELAY_INPUT                 1
+
+/* PCM 从机输出（7100 提供 BCLK/FS）：WORD_SIZE_16 + MULTIWORD_2 → 每 FS 帧 2×16-bit
+   = 32 BCLK，有效采样率 24k（参照 7160test 已验证配置）。 */
+#define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
+                                         PCM_TX_ALIGN_LSB |        \
+                                         PCM_WORD_SIZE_16 |        \
+                                         PCM_FRAME_ALIGN_FIRST |   \
+                                         PCM_FRAME_WIDTH_LONG |    \
+                                         PCM_MULTIWORD_2 |         \
+                                         PCM_SUBFRAME_ENABLE |     \
+                                         PCM_CONTROLLER_DMA |      \
+                                         PCM_DISABLE |             \
+                                         PCM_SELECT_SLAVE)
+
+#define TX_DMA_SPI                      (DMA_DEST_SPI0 |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_8 |     \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+#define UART_TX_CFG                      (DMA_DISABLE               |  \
+                                          DMA_ADDR_LIN               | \
+                                          DMA_TRANSFER_M_TO_P        | \
+                                          DMA_PRIORITY_0             | \
+                                          DMA_DISABLE_INT_DISABLE    | \
+                                          DMA_ERROR_INT_DISABLE      | \
+                                          DMA_COMPLETE_INT_DISABLE   | \
+                                          DMA_COUNTER_INT_DISABLE    | \
+                                          DMA_START_INT_DISABLE      | \
+                                          DMA_LITTLE_ENDIAN          | \
+                                          DMA_SRC_ADDR_INC           | \
+                                          DMA_SRC_WORD_SIZE_32       | \
+                                          DMA_DEST_WORD_SIZE_8       | \
+                                          DMA_SRC_ADDR_STEP_SIZE_1   | \
+                                          DMA_DEST_ADDR_STATIC       | \
+                                          DMA_DEST_UART)
+
+#define DMA_SAVE_STATE_MEM_CONFIG       (DMA_LITTLE_ENDIAN |       \
+                                         DMA_DISABLE |             \
+                                         DMA_DISABLE_INT_DISABLE | \
+                                         DMA_ERROR_INT_DISABLE |   \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE |   \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
+                                         DMA_PRIORITY_0 |          \
+                                         DMA_SRC_PBUS |            \
+                                         DMA_TRANSFER_P_TO_M |     \
+                                         DMA_DEST_ADDR_INC |       \
+                                         DMA_SRC_ADDR_INC |        \
+                                         DMA_ADDR_LIN)
+
+#define DMA_RESTORE_STATE_MEM_CONFIG    (DMA_LITTLE_ENDIAN |       \
+                                         DMA_DISABLE |             \
+                                         DMA_DISABLE_INT_DISABLE | \
+                                         DMA_ERROR_INT_DISABLE |   \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_START_INT_DISABLE |   \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
+                                         DMA_PRIORITY_0 |          \
+                                         DMA_DEST_PBUS |           \
+                                         DMA_TRANSFER_M_TO_P |     \
+                                         DMA_DEST_ADDR_INC |       \
+                                         DMA_SRC_ADDR_INC |        \
+                                         DMA_ADDR_LIN)
+
+#define DMA_MEMCPY_CONFIG               (DMA_DEST_PBUS |        \
+                                         DMA_ENABLE |           \
+                                         DMA_ADDR_LIN |         \
+                                         DMA_SRC_ADDR_INC |     \
+                                         DMA_DEST_ADDR_STATIC | \
+                                         DMA_TRANSFER_M_TO_P |  \
+                                         DMA_SRC_WORD_SIZE_32 | \
+                                         DMA_DEST_WORD_SIZE_8 | \
+                                         DMA_COMPLETE_INT_ENABLE)
+
+/* DMA for ASRC input on TX side */
+#define TX_DMA_ASRC_IN                  (DMA_DEST_ASRC |           \
+                                         DMA_TRANSFER_M_TO_P |     \
+                                         DMA_LITTLE_ENDIAN |       \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_DISABLE | \
+                                         DMA_DEST_WORD_SIZE_16 |   \
+                                         DMA_SRC_WORD_SIZE_32 |    \
+                                         DMA_SRC_ADDR_INC |        \
+                                         DMA_DEST_ADDR_STATIC |    \
+                                         DMA_ADDR_LIN |            \
+                                         DMA_DISABLE)
+
+/* DMA for ASRC output on TX side */
+#define TX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |            \
+                                         DMA_TRANSFER_P_TO_M |     \
+                                         DMA_LITTLE_ENDIAN |       \
+                                         DMA_COMPLETE_INT_ENABLE | \
+                                         DMA_COUNTER_INT_ENABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |   \
+                                         DMA_SRC_WORD_SIZE_16 |    \
+                                         DMA_SRC_ADDR_STATIC |     \
+                                         DMA_DEST_ADDR_STATIC |    \
+                                         DMA_ADDR_LIN |            \
+                                         DMA_DISABLE)
+
+/* DMA for ASRC input on RX side */
+#define RX_DMA_ASRC_IN                  (DMA_DEST_ASRC |            \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* DMA for ASRC output on RX side */
+#define RX_DMA_ASRC_OUT                 (DMA_SRC_ASRC |             \
+                                         DMA_DEST_SPI0 |            \
+                                         DMA_TRANSFER_P_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
+/* DMA for ASRC output on RX side — OD 直驱版：ASRC→RAM BufferOut（参照 peripheral_server_sleep） */
+#define OD_RX_DMA_ASRC_OUT              (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_DISABLE | \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_CIRC |            \
+                                         DMA_DISABLE)
+
+/* DMA for ASRC output on RX side — PCM 版：ASRC->OUT → pcm_tx_buf。
+   ASRC->OUT 是 16-bit 单声道采样；DEST16 只写每个 32-bit 字的低 16 位（高 16 补零）。
+   一次性 LIN，完成中断里重武装。 */
+#define PCM_RX_DMA_ASRC_OUT             (DMA_SRC_ASRC |             \
+                                         DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_16 |    \
+                                         DMA_SRC_WORD_SIZE_16 |     \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* pcm_tx_buf -> PCM->TX_DATA。每次武装流 PCM_FRAME_WORDS 个字，完成中断换手重武装。
+   用 LIN 不用 CIRC（CIRC 会在回绕边界欠载）。每 32-bit 字 = 两个 16-bit 采样。 */
+#define RX_DMA_PCM_STEREO               (DMA_DEST_PCM |             \
+                                         DMA_TRANSFER_M_TO_P |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_ADDR_INC |         \
+                                         DMA_DEST_ADDR_STATIC |     \
+                                         DMA_ADDR_LIN |             \
+                                         DMA_DISABLE)
+
+/* PCM 透传采集：PCM->RX_DATA -> pcm_tx_buf。与 RX_DMA_PCM_STEREO 对称：
+   每 32-bit 字 = 一个 16-bit 槽，LIN + 完成中断换手重武装。 */
+#define PCM_RELAY_RX_DMA                (DMA_TRANSFER_P_TO_M |      \
+                                         DMA_LITTLE_ENDIAN |        \
+                                         DMA_COMPLETE_INT_ENABLE |  \
+                                         DMA_COUNTER_INT_DISABLE |  \
+                                         DMA_DEST_WORD_SIZE_32 |    \
+                                         DMA_SRC_WORD_SIZE_32 |     \
+                                         DMA_SRC_PCM |              \
+                                         DMA_PRIORITY_0 |           \
+                                         DMA_DEST_ADDR_INC |        \
+                                         DMA_SRC_ADDR_STATIC |      \
+                                         DMA_ADDR_LIN)
+
+/* PCM 输出双缓冲：24k 下每缓冲 120 字 = 120 采样 = 5ms，ch4 填 / ch5 流 */
+#define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
+#define PCM_DOUBLE_BUFFER               1   /* 1=双缓冲, 0=单缓冲 */
+
+#define STABLE_THR                      400
+
+#define AUDIO_FRAME_SIZE                60
+
+#define CONCAT(x, y)                    x##y
+#define DIO_SRC(x)                      CONCAT(DIO_SRC_DIO_, x)
+
+/* DIO pin configuration for SPI */
+#define SPI_SER_DI                      2
+#define SPI_SER_DO                      1
+#define SPI_CLK_DO                      3
+#define SPI_CS_DO                       0
+
+/* DIO pin configuration for PCM interface（PCM 从机输出用，参照 7160test）。
+   注意：SERO 不能用 DIO1 —— 那是 7100 I2C 的 SDA。 */
+#define PCM_CLK_DO                      2    /* BCLK 输入（7100 提供，384 kHz） */
+#define PCM_FRAME_SYNC                  3    /* FS 输入（7100 提供，12 kHz） */
+#define PCM_SER_DI                      12   /* SERI 输入：外部音源（透传），原打印口让出 */
+#define PCM_SER_DO                      14   /* SERO 输出；需运行时关 JTAG 释放 DIO14 */
+
+#define DIO_SYNC_PULSE                  8
+/* 采样/audiosink 时钟输入：与 7160test 一致，用 PCM_FRAME_SYNC(DIO3) */
+#define SAMPL_CLK                       PCM_FRAME_SYNC
+
+/* DIO number that is used for easy re-flashing (recovery mode)。
+ * 与 7160test 一致用 DIO7（采样钟挪到 DIO3 后腾出）；
+ * DIO13 让给 7100 ready 握手输入（见开发文档 §5）。 */
+#define RECOVERY_DIO                    7
+
+/* 调试打印：本工程走 RTT（DIO12 让给 PCM SERI），不再覆写 UART 打印脚。
+   以下两个宏仅为保留兼容，未使用。 */
+#define PRINT_TX_DIO                    12
+#define PRINT_RX_DIO                    6
+
+/* LPDSP32 CODEC related defines */
+#define MEM_CM2DSP_ADDR0_ENC            (uint8_t *)(DSP_DRAM5_BASE)
+#define MEM_CM2DSP_ADDR1_ENC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 2)
+#define MEM_DSP2CM_ADDR0_ENC            (uint8_t *)(DSP_DRAM4_BASE)
+#define MEM_DSP2CM_ADDR1_ENC            (uint8_t *)(DSP_DRAM4_BASE + 80)
+#define MEM_CM2DSP_ADDR0_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4)
+#define MEM_CM2DSP_ADDR1_DEC            (uint8_t *)(DSP_DRAM5_BASE + 160 * 4 + 80)
+#define MEM_DSP2CM_ADDR0_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 4)
+#define MEM_DSP2CM_ADDR1_DEC            (uint8_t *)(DSP_DRAM4_BASE + 160 * 6)
+#define MEM_MESSAGE                     (uint8_t *)(DSP_DRAM4_BASE + 12 * 160)
+#define CODEC_MODE                      3
+
+/* Subframe length in uint16_t */
+#define SUBFRAME_LENGTH                 8
+
+/* Total subframe length accounting for left and right channel samples in uint16_t */
+#define SUBFRAME_LENGTH_LEFT_AND_RIGHT  (SUBFRAME_LENGTH * 2)
+
+/* Frame length in uint16_t */
+#define FRAME_LENGTH                    160
+
+/* Encoded frame length in uint8_t */
+#if (CODEC_MODE == 3)
+#define ENCODED_FRAME_LENGTH            (3 * (FRAME_LENGTH / 8))
+
+/* Encoded subframe length in uint8_t */
+#define ENCODED_SUBFRAME_LENGTH         (3 * (SUBFRAME_LENGTH / 8))
+#endif    /* if (CODEC_MODE == 3) */
+
+/* Threshold for valid Cr/Ck distance */
+#define ASRC_CFG_THR                    16
+
+/* Threshold for allowed read/write pointer crossing */
+#define PTR_RST_THR                     10
+
+/* the number of shifts of ASRC registers for using fix point variables */
+#define SHIFT_BIT                       20
+
+/* TX data fifo related defines */
+#define TX_DATA_FIFO_LENGTH             (2 * ENCODED_FRAME_LENGTH)
+#define TX_FIFO_RWPTR_INIT              (ENCODED_FRAME_LENGTH)
+#define TX_FIFO_W2R_THR                 (ENCODED_SUBFRAME_LENGTH)
+#define TX_FIFO_R2W_THR                 (ENCODED_SUBFRAME_LENGTH)
+
+/* Minimum and maximum VBAT measurements */
+#define VBAT_1p1V_MEASURED              0x1200
+#define VBAT_1p4V_MEASURED              0x16cc
+
+/* 电池 AD 采样总开关：0=关，1=开。
+ * 关闭时不碰 DIO0、不使能 ADC 块、不做 I2C 引脚交接（供功耗基线测量），
+ * GetBatteryInfo 固定回 100%（同改动前的行为）。
+ *
+ * 2026-09-30 置 0 关闭。**根因是电气上量不出来，不是软件 bug**：
+ *   2026-09-20 上板实测 raw：3.2V→9816，4.4V→10334，`pct` 全程 100%
+ *   （raw 恒 ≥ 占位的 BAT_ADC_MAX=9374）。用户确认 DIO0 上挂着 **7100 侧内置的
+ *   10k I2C 上拉** —— 板上 1M+360k 分压的戴维南等效是 265kΩ，对上 10k 后电池只占
+ *   节点电压的 ~3.6%，节点被上拉钉在 ~1.2V。分压不除，这条通路量不出电池。
+ * 另外两处遗留（即使电气问题解决了也要一并改，见 1644 文档 §17.3/§17.4）：
+ *   ① 「配置 ADC → 立刻读 DATA_TRIM_CH」：ADC_NORMAL 靠 8 通道序列轮询刷新，
+ *      PRESCALE_1280H 下扫完一轮约 5.1ms，立刻读到的是无效值，须改两阶段采样；
+ *   ② 全工程无 ADC_DISABLE，第一次查电量后 ADC 永久常开（1644 已修的功耗台阶）。
+ * 恢复前先定 DIO0 上拉怎么处理（关 7100 侧上拉 / 改硬件换脚），否则改了也白改。 */
+#define BAT_ADC_ENABLE                  0
+
+/* 电池 AD 采样量程。采样脚为 DIO0（= I2C_7100_SCL_DIO，与 7100 I2C SCL 分时复用，
+ * 引脚归属见 i2c_7100_hal.c）。
+ * TODO: MIN/MAX 沿用 1654 分压（1M+360k）的实测值占位 —— 1664 板上 DIO0 挂着
+ *       I2C 网络，分压比未必相同，上板实测 raw 后按实测修正。 */
+#define BAT_ADC_CHANNEL                 0
+#define BAT_ADC_MIN                     6950    /* 占位：≈3.0V → 1% */
+#define BAT_ADC_MAX                     9374    /* 占位：≈4.4V → 100% */
+#define BAT_LVL_MAX                     100
+
+/* Charge pump clock prescale value. With SLOWCLK = 2 MHz, CPCLK = 166 kHz */
+#define CPCLK_PRESCALE_12               ((uint32_t)(0XBU << \
+                                        CLK_DIV_CFG2_CPCLK_PRESCALE_Pos))
+
+/* Set timer to 200 ms (20 times the 10 ms kernel timer resolution) */
+#define TIMER_200MS_SETTING             20
+typedef void (*appm_add_svc_func_t)(void);
+#define DEFINE_SERVICE_ADD_FUNCTION(func) (appm_add_svc_func_t)func
+#define DEFINE_MESSAGE_HANDLER(message, handler) { message, \
+                                                   (ke_msg_func_t)handler }
+
+/* List of message handlers that are used by the different profiles/services */
+#define APP_MESSAGE_HANDLER_LIST \
+    DEFINE_MESSAGE_HANDLER(APP_TEST_TIMER, APP_Timer), \
+    DEFINE_MESSAGE_HANDLER(APP_7100_HB_TIMER, APP_7100_HB_Handler)
+
+/* List of functions used to create the database（只保留 Rempro Service） */
+#define SERVICE_ADD_FUNCTION_LIST                        \
+    DEFINE_SERVICE_ADD_FUNCTION(RemproService_ServiceAdd)
+
+typedef void (*appm_enable_svc_func_t)(uint8_t);
+#define DEFINE_SERVICE_ENABLE_FUNCTION(func) (appm_enable_svc_func_t)func
+
+/* List of functions used to enable client services */
+/* 无需要按连接启用的 server 服务（只保留 Rempro，不启用任何 client/enable 函数） */
+#define SERVICE_ENABLE_FUNCTION_LIST NULL
+
+/* ----------------------------------------------------------------------------
+ * Data types
+ * --------------------------------------------------------------------------*/
+struct app_env_tag
+{
+    uint8_t RM_on_off;
+    uint8_t volume;
+    struct rm_param_tag rm_param;
+    uint8_t rm_link_status;
+    uint16_t rm_lostLink_counter;
+    uint16_t rm_unsuccessLink_cunter;
+    uint8_t audio_streaming;
+};
+
+typedef enum
+{
+    PKT_LEFT = 0,
+    PKT_RIGHT = 1
+} PacketSide;
+
+/* APP Task messages */
+enum appm_msg
+{
+    APPM_DUMMY_MSG = TASK_FIRST_MSG(TASK_ID_APP),
+
+    /* Timer used to have a tick periodically for application */
+    APP_TEST_TIMER,
+
+    /* 7100 通讯：200ms tick（推进读回会话 + 每 5s 发心跳） */
+    APP_7100_HB_TIMER,
+};
+
+/* ----------------------------------------------------------------------------
+ * Global variables and types
+ * --------------------------------------------------------------------------*/
+extern void *ISR_Vector_Table;
+
+extern uint8_t payload_left_1[120];
+extern uint8_t payload_right_1[120];
+extern uint8_t payload_left_2[120];
+extern uint8_t payload_right_2[120];
+
+extern uint8_t audio_left[120];
+extern uint8_t audio_right[120];
+
+extern uint8_t ear_side;
+
+#if (OUTPUT_DECODE_PATH)
+extern int16_t BufferOut[];
+extern int16_t spi_buf[];
+extern int32_t pcm_buf[];
+extern int16_t asrc_in_buf[];
+extern int32_t data_fifo_rec;
+extern uint32_t asrc_state_mem_rx[2][31];
+extern uint8_t *Dsp2CmBuff0dec;
+extern uint8_t UARTTXBuffer[];
+
+extern bool asrc_stable;
+extern uint32_t cntr_stability;
+extern bool asrc_stable;
+extern bool flag_ascc_phase;
+extern int64_t audio_sink_cnt;
+
+#if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT)
+extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+
+/* PCM 双缓冲状态（定义在 app_func.c） */
+extern volatile uint8_t pcm_fill;
+extern volatile uint8_t pcm_ready;
+extern volatile uint8_t pcm_waiting;
+
+/* 流中断静音：1 = ch5 只流全 0 缓冲（RM_Callback_TRX 判定连续丢包后置位，
+   GOODPKT 回来时清除）。不依赖 ch4/ASRC 继续产出，见 app_func.c。 */
+extern volatile uint8_t pcm_break;
+void Pcm_Stream_Break(void);
+void Pcm_Stream_Resume(void);
+#endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
+
+#else    /* if (OUTPUT_DECODE_PATH) */
+extern int8_t spi_buf[];
+#endif    /* if (OUTPUT_DECODE_PATH) */
+
+extern const struct ke_task_desc TASK_DESC_APP;
+
+/* Support for the application manager and the application environment */
+extern struct app_env_tag app_env;
+
+/* List of functions used to create the database */
+extern const appm_add_svc_func_t appm_add_svc_func_list[];
+
+extern void *ISR_Vector_Table;
+
+extern uint8_t payload_left_1[120];
+extern uint8_t payload_right_1[120];
+extern uint8_t payload_left_2[120];
+extern uint8_t payload_right_2[120];
+
+extern uint8_t audio_left[120];
+extern uint8_t audio_right[120];
+
+/* ----------------------------------------------------------------------------
+ * Function prototype definitions
+ * --------------------------------------------------------------------------*/
+extern void App_Initialize(void);
+
+extern void App_Env_Initialize(void);
+
+extern int APP_Timer(ke_msg_id_t const msg_id, void const *param,
+                     ke_task_id_t const dest_id,
+                     ke_task_id_t const src_id);
+
+extern int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
+                               ke_task_id_t const dest_id,
+                               ke_task_id_t const src_id);
+
+extern int Msg_Handler(ke_msg_id_t const msgid, void *param,
+                       ke_task_id_t const dest_id,
+                       ke_task_id_t const src_id);
+
+extern void APP_RM_Init(uint8_t side);
+
+/* 本次开机的流地址是否来自 Flash 持久化记录（供 app.c 启动日志区分
+ * 「回填成功」与「用了默认值」；两者取值可能恰好相同）。 */
+extern bool rm_stream_addr_from_flash(void);
+
+extern uint8_t RM_Callback_TRX(uint8_t type, uint8_t *length, uint8_t *ptr);
+
+extern uint8_t RM_Callback_StatusUpdate(uint8_t status);
+
+#if (OUTPUT_DECODE_PATH)
+void Start_Dec_Lpdsp32(uint8_t *src_addr);
+
+void Start_Enc_Lpdsp32(uint32_t src_addr, uint8_t side);
+
+void UartLogInit(void);
+
+void UartLogTx(uint8_t *str);
+
+uint32_t * Read_buffer(uint8_t side);
+
+void Asrc_reconfig(void);
+
+void Asrc_in_dma_isr(void);
+
+void Asrc_out_dma_isr(void);
+
+void DspEnc_isr(uint8_t side);
+
+void DspDec_isr(void);
+
+void Ascc_phase_isr(void);
+
+void Ascc_period_isr(void);
+
+void Packet_regulator_timer_isr(void);
+
+void Rendering_func(uint8_t *src_addr);
+
+void Simulation_timer_isr(void);
+
+void Asrc_reconfig(void);
+
+#endif    /* if (OUTPUT_DECODE_PATH) */
+
+/* ----------------------------------------------------------------------------
+ * Close the 'extern "C"' block
+ * ------------------------------------------------------------------------- */
+#ifdef __cplusplus
+}
+#endif    /* ifdef __cplusplus */
+
+#endif    /* APP_H */
