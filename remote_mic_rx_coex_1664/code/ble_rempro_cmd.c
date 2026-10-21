@@ -270,6 +270,18 @@ static void hdlc_push(uint16_t cmd_id, const uint8_t *data, uint8_t data_len)
     }
 }
 
+/* BLE 主动切程序后，7100 回执里同值的 0x0016 通知不再回推给 App：
+ * App 自己发起的切换，App 已经知道结果，回推只是回声。
+ * 0 = 不抑制；非 0 = 期望的程序号（1-4）。匹配即消费一次；
+ * 会话收尾时由 rempro_push_scene_suppress_clear() 兜底清零
+ * （防切换失败、7100 一直不回 0x16 时残留，误吞本地按键的推送）。 */
+static uint8_t s_scene_push_suppress_prog = 0;
+
+void rempro_push_scene_suppress_clear(void)
+{
+    s_scene_push_suppress_prog = 0;
+}
+
 /* Active push: notify app of program switch (CMD=5, SYS_ID=1).
  * Protocol: SYS_ID(1) + CMD_ID(2) + Scene_ID(1) */
 void rempro_push_scene_change(uint8_t scene_id)
@@ -306,7 +318,13 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
     what = dsp_7100_notify_apply(payload, len, &val);
 
     if (what == DSP7100_NOTIFY_PROG) {
-        rempro_push_scene_change((uint8_t)(val - 1));          /* val = 程序号 1-4 */
+        if (s_scene_push_suppress_prog == val) {
+            /* BLE 自己发起的切换：回执只是回声，App 已知道，不推 */
+            s_scene_push_suppress_prog = 0;
+            PRINTF("[REMPRO] push scene suppressed prog=%u\r\n", val);
+        } else {
+            rempro_push_scene_change((uint8_t)(val - 1));      /* val = 程序号 1-4 */
+        }
     } else if (what == DSP7100_NOTIFY_VOL) {
         rempro_push_volume_change((uint8_t)(dsp_7100_get_program() - 1),
                                   val);                        /* val = 档位 0-6 = App 档位 */
@@ -566,6 +584,10 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
     }
 
     ok = dsp_7100_switch_program((uint8_t)(scene_id + 1));
+    if (ok) {
+        /* 会话已受理：随后 7100 回执里的同值 0x0016 不推回 App（见标志定义处） */
+        s_scene_push_suppress_prog = (uint8_t)(scene_id + 1);
+    }
     PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u\r\n",
            scene_id, scene_id + 1, ok);
 

@@ -3396,6 +3396,58 @@ ready 块逐个 16-bit 采样**带符号右移** 1 位（含 lo/hi 拆装）。`
 > 注意：右移是对**整块、就地**做的，所以衰减发生在 ready 块被 ch5 取走之前；
 > 若要改衰减量，只需改这一个宏。
 
+## 33. 2026-10-21：BLE 发起的切程序不再回推（抑制同值 0x0016 回声）
+
+### 33.1 现象
+
+App 通过 `SetCurrentScene (16)` 切程序后，设备又把同一个场景**主动推回 App**（CMD 5）：
+
+```
+[REMPRO] CMD=16 len=2
+[7100] --- SwitchProgram prog=3 ---
+[REMPRO] SetCurrentScene7100: scene=2 -> prog=3 ok=1
+...
+[7100] R (3B ok=1): 43 03 00 | (3B ok=1): 00 16 03     ← 7100 的程序号回执
+[REMPRO] push scene=2                                   ← 这就是回声
+[REMPRO] TX push (7B): 7E 01 05 00 02 08 7E
+```
+
+### 33.2 原因
+
+切程序会话的读 / 兜底读会读到 7100 的回执 `00 16 <prog>`（寄存器 `0x0016` = 程序号），
+`dsp_7100_notify_apply()` 认成「7100 主动通知」→ `rempro_push_7100_notify()` 推 CMD 5。
+这条回执本是**我们自己刚切过去的结果**，App 已经知道，推回去没有意义。
+
+### 33.3 改法：一个「期望值」标志
+
+- `ble_rempro_cmd.c` 文件内 `s_scene_push_suppress_prog`：`0` = 不抑制；非 0 = 期望的程序号（1-4）。
+- `cmd_setcurrentscene_7100()`：`dsp_7100_switch_program()` **受理成功**才置 `scene_id + 1`
+  （受理失败 = 会话没起来，不会有回执，不置）。
+- `rempro_push_7100_notify()` 的 `DSP7100_NOTIFY_PROG` 分支：
+  `val == s_scene_push_suppress_prog` → **不推**，打 `[REMPRO] push scene suppressed prog=N`，
+  标志清 0；值不同则照常推（例如 7100 实际没切到目标，不该瞒着 App）。
+- 兜底清除：`dsp_7100_cmd.c` 的 `a7_session_finish()` 在**收尾兜底读之后**调
+  `rempro_push_scene_suppress_clear()`。放这个位置是因为回声就在兜底读那几帧里：
+  清早了会把回声当本地按键推出去；不清则切换失败 / 7100 不回 `0x16` 时标志残留，
+  会误吞之后 7100 本地按键的推送。
+
+**只抑制程序号（CMD 5）**。音量（CMD 4）与其它推送路径（测听、初始状态）未改动。
+
+### 33.4 涉及文件
+
+| 文件 | 改动 |
+|------|------|
+| `code/ble_rempro_cmd.c` | 标志 + `rempro_push_scene_suppress_clear()`；PROG 分支抑制；`cmd_setcurrentscene_7100()` 置标志 |
+| `include/ble_rempro_cmd.h` | `rempro_push_scene_suppress_clear()` 声明 |
+| `code/dsp_7100_cmd.c` | `a7_session_finish()` 收尾（兜底读后）清除 |
+
+### 33.5 验证状态（**未编译、未上板**）
+
+1. App 切程序：日志应见 `push scene suppressed prog=N`，不再有 `TX push ... 01 05`，App 不再收到 CMD 5。
+2. 7100 本地按键切程序：仍应推 CMD 5（`push scene=N`）。
+3. 连续快速切两次程序：各抑制一次，无残留（后一次置标志覆盖前一次）。
+4. 切程序失败 / 7100 不回 `0x16`：`session done` 时标志已清，下一次本地按键推送不受影响。
+
 
 
 

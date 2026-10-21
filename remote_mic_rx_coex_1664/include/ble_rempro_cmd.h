@@ -84,6 +84,11 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume);
  * payload = 3B `<addr_hi> <addr_lo> <值>`，解码在 dsp_7100_cmd.c 的 dsp_7100_notify_apply。
  * BLE 未连接时两条 push 自己跳过（不用调用方判）。 */
 void rempro_push_7100_notify(const uint8_t *payload, uint8_t len);
+
+/* 7100 写会话收尾时调（dsp_7100_cmd.c 的 a7_session_finish）：
+ * 清掉「BLE 发起的切程序、同值回执不推送」标志，防止切换失败 / 7100 不回 0x0016
+ * 时标志残留，误吞之后 7100 本地按键触发的程序号推送。 */
+void rempro_push_scene_suppress_clear(void);
 void rempro_push_initial_status_done(void);
 void rempro_push_audiometry_exit(void);
 
