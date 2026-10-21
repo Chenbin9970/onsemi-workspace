@@ -42,6 +42,13 @@ void Initialize_Raw_PCM_Output_Type(void)
        PCM 此处保持禁用，等 LIN DMA 武装好后再使能。 */
     Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
                       PCM_FRAME_SYNC, PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
+
+    /* 试验（2026-10-19）：BCLK(DIO2) / FS(DIO3) 改为不上拉不下拉。
+       Sys_PCM_ConfigClk 会把同一个 cfg 套到四根脚上，这里只覆盖这两根输入脚。
+       ⚠ 手册 CAUTION：PCM frame/clock 输入不建议去掉 pull；7100 未驱动时这两脚悬空。 */
+    Sys_DIO_Config(PCM_CLK_DO, DIO_MODE_INPUT | DIO_NO_PULL);
+    Sys_DIO_Config(PCM_FRAME_SYNC, DIO_MODE_INPUT | DIO_NO_PULL);
+
     Sys_PCM_Config(PCM_CFG_TX);
 
     /* LIN DMA: pcm_tx_buf -> PCM->TX_DATA，由完成中断换手重武装

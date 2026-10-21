@@ -33,7 +33,7 @@
 | `b6365f2` | Rempro 切模式 / 调音量接 7100 运行时命令 |
 | （未提交） | 降噪 / DFBC 写入（tick 模型）+ GetBatteryInfo 回 100% + I2C 收发日志 |
 | （未提交） | **音频出口改 PCM 从机**（DIO2/3/4/14，24k），见 §3.4 / §6 |
-| （未提交） | **Rempro 31 GetFittingData / 37 SetFittingStatus 实装、26 号 Chip_Type=8、WDRC 值转换集中**，见 §29 |
+| `1184f0f` | **Rempro 31 GetFittingData / 37 SetFittingStatus 实装、26 号 Chip_Type=8、WDRC 值转换集中**，见 §29 |
 
 1664 与 1644 的源码差异仅有以上两笔提交的内容；`code/` 下其余文件与 1644 逐字节一致
 （仅行尾符差异）。
@@ -3212,6 +3212,102 @@ uint8_t dsp_7100_get_program(void)
 4. 26 号：应答 payload（`Flag` 之后）**偏移 13 / 24（0 基）= `08`**；整体布局
    `Version 4B · Program_Num 1B · {Address 6B + Product_Type 2B + Chip_Type 1B + Turn 1B + Channel 1B} ×2 · Volume_Number 1B` = 28B
 5. 回归：6/29/7 的写帧、22/30/23 的回读与改前**逐字节一致**（转换只是重构）
+
+## 30. 2026-10-21：并发 WDRC 设置命令的已知缺陷（暂不修，仅记录）
+
+**结论**：设置类 WDRC 会话（6 号 SetGain / 29 号 SetHighLevelGain / 7 号 SetMPO）进行中，
+若再收到**另一条 WDRC 设置**，后到的那条会被正常拒绝（`Flag=1/status=0`，不写 7100），
+但它会**污染正在跑的那条会话收尾时的读回缓存**，并经 `dsp_7100_cache_save_request()`
+**落盘 flash** —— 之后的 22 号（以及 31 号的对应段）会回错值。**7100 里的实际参数是对的**，
+重启后开机读回会自愈。
+
+**决定（2026-10-21）**：App 侧已做优化，不会再并发下发这类命令，设备端**本轮不改**，
+在此记录供后续需要时修复。
+
+### 30.1 复现时序
+
+1. 发 6 号 SetGain（多通道）→ 日志 `--- session start: WDRC ... ---`
+2. 会话未收尾前（`session done` 之前）再发 7 号 SetMPO → `上一会话未完成，忽略本次设置`
+3. 等 `session done ok=1` 后读 22 号 → 被 MPO 请求覆盖到的通道回的是 **MPO 值 +30**（可能钳到 0）；
+   MPO 请求没覆盖到的通道回的是**会话前的旧增益**（也不对）
+
+### 30.2 根因
+
+`a7_wdrc_start()`（dsp_7100_cmd.c:1480）的顺序问题：
+
+```c
+for (i = 0; i < n; i++) {
+    s_wdrc_items[i] = items[i];            /* ① 先覆盖全局 scratch */
+    a7_wdrc_clamp(which, &s_wdrc_items[i].val);
+}
+s_wdrc_n = n;
+...
+return a7_session_start(...);              /* ② 后才检查 s_sess_active，返回 false */
+```
+
+- 当前会话的 `s_steps[]` 在**启动时**已由 `a7_add_wdrc_items()` 构建完毕 → I2C 序列不受影响，
+  **7100 实际写入成功**
+- 但收尾 `a7_session_sync_cache()`（dsp_7100_cmd.c:898-911）按 `s_sess_val`（仍是先前的参数种类）
+  遍历**已被覆盖的** `s_wdrc_items[] / s_wdrc_n` 写 RAM 缓存，再落盘
+
+### 30.3 影响范围
+
+| 对象 | 结果 |
+|---|---|
+| 7100 实际参数（LL/HL） | **正确**（步骤表早已构建） |
+| 22 GetGainData | **错**（MPO 值当 LL 写进缓存） |
+| 30 GetHighLevelGainData | 正确（不是本会话改的那一段） |
+| 23 GetMPOData | 正确（MPO 被拒，7100 与缓存均未变） |
+| 31 GetFittingData | 活跃会话对应的那一段错，其余段正确 |
+| flash 缓存 | 被污染并持久化 |
+| 重启 | 开机 4 程序读回覆盖缓存 → **自愈** |
+
+- 只在**活跃会话本身是 WDRC** 时有害：若活跃会话是降噪/DFBC/EQ，它们的收尾不读 `s_wdrc_items`
+- 6/29/7 任意两条之间两两可触发（LL 会话被 HL 请求覆盖、HL 会话被 OL 覆盖……影响段随 `s_sess_val`）
+
+### 30.4 若后续要修（未实施）
+
+- **最小修复**：`a7_wdrc_start()` 的拷贝循环**之前**加 `if (s_sess_active) return false;`，
+  被拒请求不再碰任何共享状态
+- **彻底方案**：会话参数改用会话内快照（如 `s_sess_items[]`），`sync_cache` 不再引用全局 scratch
+- 验证：按 §30.1 复现，确认 22 号各通道与设置值一致、且 `session done` 后无缓存偏差
+
+## 31. 2026-10-19：PCM 从机 BCLK/FS 去内部上拉试验（未编译、未上板）
+
+### 31.1 改动
+
+`Initialize_Raw_PCM_Output_Type()`（app_init.c:39）在 `Sys_PCM_ConfigClk()` 之后补两行，
+只覆盖 BCLK(DIO2) / FS(DIO3) 两根输入脚：
+
+```c
+Sys_DIO_Config(PCM_CLK_DO,     DIO_MODE_INPUT | DIO_NO_PULL);
+Sys_DIO_Config(PCM_FRAME_SYNC, DIO_MODE_INPUT | DIO_NO_PULL);
+```
+
+| 引脚 | 改前 | 改后 |
+|---|---|---|
+| DIO2 BCLK | `0x013E`（输入 + 弱上拉 250 kΩ） | **`0x003E`**（输入 + 无上下拉） |
+| DIO3 FS | `0x013E` | **`0x003E`** |
+| DIO4 SERI | `0x0100`（GPIO 输入 + 弱上拉） | 不变 |
+| DIO14 SERO | `0x0107`（PCM SERO + 弱上拉） | 不变 |
+
+`PCM_SRC`（`0x00040302`：SERI=DIO4 / FRAME=DIO3 / CLK=DIO2）不受影响。
+
+### 31.2 风险与状态
+
+- RSL10 Hardware Reference（p.302）明确 CAUTION：PCM frame/clock 输入**不建议**去掉 pull；
+  7100 未驱动或未上电时这两脚悬空，可能拾取噪声
+- 本改动属**试验**，尚未编译、未上板；结论出来前不要当作定案
+- 回滚：删除上述两行即可
+- 附带：FOTA 开关脚本切换过一轮（ON → OFF），最终状态仍为 **OFF**；
+  `.cproject` 两个 config 的 exclude 被合并成「变体文件 + `mkfotaimg.py` + `fota.bin` 一律排除」，
+  其中 config2 是新补上的两条（此前缺失），属脚本强制的不变量
+
+### 31.3 待上板确认
+
+1. J-Link 读 `DIO->CFG[2]`（0x40000708）、`CFG[3]`（0x4000070C）= `0x0000003E`
+2. 音频正常、无新增杂音/断续；7100 时钟输出正常时两脚不应浮空
+3. 与改前对比主观听感（若关心的是输入脚噪声，需示波器看 DIO2/DIO3 波形）
 
 
 
