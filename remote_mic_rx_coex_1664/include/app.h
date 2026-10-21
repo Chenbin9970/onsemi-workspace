@@ -367,6 +367,20 @@ extern "C"
 #define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
 #define PCM_DOUBLE_BUFFER               1   /* 1=双缓冲, 0=单缓冲 */
 
+/* 送往 7100 前的 PCM 数字衰减：0 = 关闭；n > 0 时对每个采样做带符号右移 n 位
+ * （1 = -6 dB）。用于验证/规避 7100 输入级在大电平下的过载。 */
+#define RX_PCM_ATTEN_SHIFT              1
+
+/* PCM 相位环：把 ch4（ASRC 产出）与 ch5（PCM 消费）的相位稳在半个缓冲
+ * （PCM_FRAME_WORDS/2 采样 ≈ 2.5 ms）上，消除两侧时钟微小差/抖动造成的
+ * 周期性 PCM TX 欠载爆点。dwell 用自由运行的 ASRC 输出计数测量。
+ * GAIN 单位：inc 计数值/采样误差（2^29 = 100%；1 采样误差 ≈ 42 ppm 速率修正，
+ * 闭环时间常数约 1 秒）。 */
+#define PCM_PHASE_TARGET                (PCM_FRAME_WORDS / 2)
+#define PCM_PHASE_GAIN                  22528
+#define PCM_PHASE_ERR_LIMIT             20          /* 单次误差限幅（采样） */
+#define PCM_PHASE_TRIM_LIMIT            (1 << 19)   /* 微调量限幅 ±0.098% */
+
 #define STABLE_THR                      400
 
 #define AUDIO_FRAME_SIZE                60

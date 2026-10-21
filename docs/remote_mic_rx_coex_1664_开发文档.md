@@ -257,6 +257,9 @@ ch5 完成  if (pcm_break) 续流 pcm_zero_buf（静音，§6.7）;
 
 **ch5 不在初始化时使能**，必须由 ch4 完成中断在 `pcm_waiting` 时启动 —— 避免首帧竞争。
 
+> 2026-10-21 起这套握手补了**相位锁**（ch4 交块打时间戳、ch5 取块量 dwell 并微调 ASRC），
+> 消除两侧时钟相位漂移造成的周期性 PCM 欠载爆点，见 §32。
+
 `pcm_break`（流中断静音）/ `pcm_fade_in`（恢复淡入）是在这套握手上加的两个旁路，
 由 RM 丢包判定驱动，见 §6.7。
 
@@ -3308,6 +3311,91 @@ Sys_DIO_Config(PCM_FRAME_SYNC, DIO_MODE_INPUT | DIO_NO_PULL);
 1. J-Link 读 `DIO->CFG[2]`（0x40000708）、`CFG[3]`（0x4000070C）= `0x0000003E`
 2. 音频正常、无新增杂音/断续；7100 时钟输出正常时两脚不应浮空
 3. 与改前对比主观听感（若关心的是输入脚噪声，需示波器看 DIO2/DIO3 波形）
+
+## 32. 2026-10-21：PCM 相位环消除「每 ~10 s 一声鞭炮」+ 衰减定为 −6 dB
+
+### 32.1 现象
+
+1 kHz 测试音播放下，**约每 10 秒**出现一次短促的"啪/鞭炮"声。与 7100 音量档位无关；
+RM 链路、7100 I2C 都正常，未出现 §6.7 的流中断静音。
+
+### 32.2 实测定位：PCM TX 欠载，不是 RM 丢包
+
+用 J-Link 每 1 s 采一次 `PCM_STATUS`（`0x40000A0C`，bit0=**欠载** / bit1=溢出，**都是 sticky**，
+读一次就把置位清掉 ⇒ 每次读到 1 就是"这一秒内新欠载过一次"）。
+
+- **60 s 内欠载 7 次**：第 7 / 16 / 26 / 38 / 45 / 46 / 58 秒，间隔 7–12 s —— 与听感完全吻合。
+- 同期排除项：RM 丢包/坏包计数**不变**；`pcm_break` 从未置位（不是 §6.7 那条路径）；
+  ASRC 无 IN_ERR / UPDATE_ERR；与 7100 音量/程序命令无时间相关。
+
+⇒ 是**送往 7100 的 PCM 从机 TX FIFO 欠载**（ch5 没块可发），FIFO 下溢在 7100 侧就是一声爆点。
+
+### 32.3 根因：双缓冲只锁了频率，没锁相位
+
+§6.3 的乒乓是 **ch4（ASRC 产出）与 ch5（PCM 消费）各 5 ms 一块**，两条路径由**不同的时钟**驱动：
+ch4 跟 16 kHz RM 流/ASRC，ch5 跟 7100 输出的 PCM 位时钟。`Asrc_reconfig()` 里的闭环
+（`inc = (Cr - 2Ck)<<29 / 2Ck`）**只把平均速率对到 2:3**，对**相位/fill** 没有任何反馈：
+
+- 60 s 内 `ASRC_PHASE_INC` 漂移 `0xF589E7BE → 0xF58A0B09`（≈9035 counts ≈ **17 ppm**）——
+  频率环工作正常，说明**不是速率错，而是残差/抖动把相位慢慢推到边界**。
+- 相位一旦漂到"ch4 晚于 ch5"，ch5 完成时 `pcm_ready == 0xFF` → `pcm_waiting = 1`，
+  PCM TX FIFO 在等下一块的 ~5 ms 里被掏空 → 欠载爆点。等 ch4 追上后又恢复，
+  于是表现为**每隔几秒到十几秒一次**的偶发爆点。
+
+### 32.4 修法：用自由运行的 ASRC 输出计数做时间戳，纯比例相位环
+
+`ASRC->OUTPUT_CNT`（`0x40001114`，每输出一个采样 +1）**自由运行**（不再在 `Asrc_reconfig()` 里
+`Sys_ASRC_ResetOutputCount()`），当一个 **42 µs 分辨率**的时间戳用：
+
+| 位置 | 动作 |
+|------|------|
+| ch4 完成（`Pcm_asrc_out_dma_isr`） | `pcm_ready_stamp = Sys_ASRC_OutputCount()`（交块时刻） |
+| ch5 取块（`Pcm_tx_dma_isr`） | `dwell = now - stamp`；`err = dwell - PCM_PHASE_TARGET` → `pcm_phase_update(err)` |
+| ch4 完成时发现 ch5 正空闲（`pcm_waiting` 分支） | `pcm_phase_update(-PCM_PHASE_TARGET)`（催快产出） |
+| `Asrc_reconfig()` 算完 `asrc_inc_carrier` | 叠加 `pcm_phase_trim`（几十 ppm 量级）再 `Sys_ASRC_Config()` |
+
+- 目标 `PCM_PHASE_TARGET = PCM_FRAME_WORDS/2 = 60` 采样（≈2.5 ms，落在 0–120 的窗口正中，
+  两侧留 ±2.5 ms 余量）。
+- **纯比例，不积分**：`trim = err * PCM_PHASE_GAIN`（22528 ≈ 42 ppm/采样误差，τ≈1 s），
+  单次误差限 ±20 采样、微调限 ±`2^19`（±0.098%）。比例环的稳态误差 < 1 采样（≈42 µs），
+  **不会把 1 采样的量化噪声积分成音高抖动** —— 这是当初否掉积分器的理由。
+
+宏在 `include/app.h`（`PCM_PHASE_TARGET/GAIN/ERR_LIMIT/TRIM_LIMIT`）；实现集中在
+`app_func.c` 的 `pcm_phase_update()` + 两个 ISR。
+
+### 32.5 新增诊断计数器
+
+| 符号 | 含义 | 正常值 |
+|------|------|--------|
+| `pcm_starve_cnt` | ch5 完成时没有 ready 块（**即将欠载**） | 长时间 0 |
+| `pcm_drop_cnt` | ch4 完成时上一块还没被 ch5 取走（ready 被覆盖） | 长时间 0 |
+
+上板排查时按符号名读即可（`mem32 pcm_starve_cnt`），比轮询 sticky 的 `PCM_STATUS` 直观。
+
+### 32.6 验证状态
+
+- **相位环：已上板验证** —— 用户实测约 10 s 一次的鞭炮声**消失**。
+- 附带的 `Asrc_reconfig()` 改动（`asrc_out_cnt` 改用自由运行计数的差值）同样已随该版上板。
+
+### 32.7 另一件事：大音量破音 → 送 7100 前固定 −6 dB
+
+相位环修好后，**最大音量**下仍有破音（与上面的 10 s 爆点是两回事）：7100 输入级在满幅
+PCM 下过载。实测扫描：
+
+| 衰减 | 结果 |
+|------|------|
+| 0 dB（关闭） | 破 |
+| −3 dB | 仍破 |
+| −4.5 dB | 仍破 |
+| **−6 dB** | **干净** |
+
+⇒ 门槛在 −4.5 ～ −6 dB 之间。**做成可调试过一轮，用户决定不要可调**，保留最简形式：
+`RX_PCM_ATTEN_SHIFT 1`（`include/app.h`），在 `Pcm_asrc_out_dma_isr()`（ch4）里对刚交手的
+ready 块逐个 16-bit 采样**带符号右移** 1 位（含 lo/hi 拆装）。`0` 表示关闭，`n` 表示 −6n dB。
+
+> 注意：右移是对**整块、就地**做的，所以衰减发生在 ready 块被 ch5 取走之前；
+> 若要改衰减量，只需改这一个宏。
+
 
 
 

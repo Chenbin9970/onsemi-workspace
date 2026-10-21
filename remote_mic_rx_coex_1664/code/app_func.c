@@ -36,6 +36,7 @@ uint8_t *Dsp2CmBuff1dec = MEM_DSP2CM_ADDR1_DEC;
 int64_t Cr = 0;
 int64_t Ck = 0;
 int64_t asrc_out_cnt              = 0;
+uint32_t asrc_out_cnt_prev        = 0;
 int64_t audio_sink_cnt            = 0;
 int64_t avg_ck_outputcnt          = 0;
 int64_t diff_ck_outputcnt         = 0;
@@ -262,6 +263,13 @@ uint8_t *frame_in;
 volatile uint8_t pcm_fill = 0;
 volatile uint8_t pcm_ready = 0xFF;
 volatile uint8_t pcm_waiting = 0;
+
+/* PCM 相位环：inc 微调量（2^29 = 100%），ch5 换手时更新；dwell 测量用时间戳。
+   诊断量：starve = ch5 等不到新缓冲；drop = ch4 覆盖了还没播的缓冲。 */
+static volatile int32_t pcm_phase_trim = 0;
+static volatile uint32_t pcm_ready_stamp = 0;
+volatile uint32_t pcm_starve_cnt = 0;
+volatile uint32_t pcm_drop_cnt = 0;
 #endif    /* if (OUTPUT_INTRF == PCM_SLAVE_OUTPUT) */
 
 /* ----------------------------------------------------------------------------
@@ -289,9 +297,14 @@ void Packet_regulator_timer_isr(void)
  * ------------------------------------------------------------------------- */
 void Asrc_reconfig(void)
 {
-    /* Get ASRC output count */
-    asrc_out_cnt = Sys_ASRC_OutputCount();
-    Sys_ASRC_ResetOutputCount();
+    /* ASRC 输出计数器自由运行，作为 PCM 相位环的采样时钟（不再每帧清零）；
+       asrc_out_cnt 仍按帧差值计算，供下面的统计使用。 */
+    {
+        uint32_t out_now = Sys_ASRC_OutputCount();
+
+        asrc_out_cnt      = (int64_t)(uint32_t)(out_now - asrc_out_cnt_prev);
+        asrc_out_cnt_prev = out_now;
+    }
 
     diff_ck_outputcnt = Ck - (asrc_out_cnt << SHIFT_BIT);
     avg_ck_outputcnt  = ((diff_ck_outputcnt - avg_ck_outputcnt) >> 10) +
@@ -355,6 +368,8 @@ void Asrc_reconfig(void)
         {
             asrc_inc_carrier = 0xF5555556;   /* Ck 异常时回退名义 2:3 */
         }
+        /* 叠加 PCM 相位环的微调（几十 ppm 量级） */
+        asrc_inc_carrier = (uint32_t)((int32_t)asrc_inc_carrier + pcm_phase_trim);
         Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_INT_MODE);
     }
 #else
@@ -576,6 +591,42 @@ static void pcm_ramp_block(uint32_t *buf, uint32_t words, uint8_t fade_in)
     }
 }
 
+/* ----------------------------------------------------------------------------
+ * Function      : static void pcm_phase_update(int32_t err)
+ * ----------------------------------------------------------------------------
+ * Description   : PCM 相位环（纯比例）：按 dwell 与目标的差微调 ASRC 速率。
+ *                 err > 0 = ch5 取得晚（产出偏快）→ 放慢；err < 0 → 加快。
+ * Inputs        : err - dwell 与 PCM_PHASE_TARGET 的差（采样）
+ * Outputs       : None
+ * Assumptions   : 只在 ch4/ch5 DMA 完成中断里调用（同优先级，不互相抢占）
+ * ------------------------------------------------------------------------- */
+static void pcm_phase_update(int32_t err)
+{
+    int32_t trim;
+
+    if (err > PCM_PHASE_ERR_LIMIT)
+    {
+        err = PCM_PHASE_ERR_LIMIT;
+    }
+    else if (err < -PCM_PHASE_ERR_LIMIT)
+    {
+        err = -PCM_PHASE_ERR_LIMIT;
+    }
+
+    /* 纯比例：稳态误差 < 1 采样（≈42 µs），不会把测量噪声积分成音高抖动 */
+    trim = err * PCM_PHASE_GAIN;
+
+    if (trim > PCM_PHASE_TRIM_LIMIT)
+    {
+        trim = PCM_PHASE_TRIM_LIMIT;
+    }
+    else if (trim < -PCM_PHASE_TRIM_LIMIT)
+    {
+        trim = -PCM_PHASE_TRIM_LIMIT;
+    }
+    pcm_phase_trim = trim;
+}
+
 /* 全 0 缓冲：静音期间由 ch5 反复流它，保证 PCM 移位器残留字也是 0 */
 static uint32_t pcm_zero_buf[PCM_FRAME_WORDS];
 volatile uint8_t pcm_break = 0;
@@ -657,14 +708,37 @@ void Pcm_Stream_Resume(void)
  * ------------------------------------------------------------------------- */
 void Pcm_asrc_out_dma_isr(void)
 {
-    pcm_ready = pcm_fill;
-    pcm_fill  = 1 - pcm_fill;
+    if (pcm_ready != 0xFF)
+    {
+        pcm_drop_cnt++;    /* 上一块还没被 ch5 取走：相位偏"早"，本块覆盖它 */
+    }
+    pcm_ready       = pcm_fill;
+    pcm_ready_stamp = Sys_ASRC_OutputCount();
+    pcm_fill        = 1 - pcm_fill;
 
     if (pcm_fade_in)
     {
         pcm_fade_in = 0;
         pcm_ramp_block(pcm_tx_buf[pcm_ready], PCM_FRAME_WORDS, 1);
     }
+
+#if (RX_PCM_ATTEN_SHIFT > 0)
+    /* 送往 7100 前做数字衰减：规避 7100 输入级在大电平下的过载 */
+    {
+        uint32_t i;
+
+        for (i = 0; i < PCM_FRAME_WORDS; i++)
+        {
+            int16_t lo = (int16_t)(pcm_tx_buf[pcm_ready][i] & 0xFFFF);
+            int16_t hi = (int16_t)(pcm_tx_buf[pcm_ready][i] >> 16);
+
+            lo = (int16_t)(lo >> RX_PCM_ATTEN_SHIFT);
+            hi = (int16_t)(hi >> RX_PCM_ATTEN_SHIFT);
+            pcm_tx_buf[pcm_ready][i] = ((uint32_t)(uint16_t)hi << 16) |
+                                       (uint32_t)(uint16_t)lo;
+        }
+    }
+#endif    /* if (RX_PCM_ATTEN_SHIFT > 0) */
 
     Sys_DMA_ChannelConfig(ASRC_OUT_IDX, PCM_RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
                           (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
@@ -674,6 +748,7 @@ void Pcm_asrc_out_dma_isr(void)
     if (pcm_waiting)
     {
         pcm_waiting = 0;
+        pcm_phase_update(-PCM_PHASE_TARGET);    /* 相位偏"晚"，加快产出 */
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
                               (uint32_t)&pcm_tx_buf[pcm_ready][0],
                               (uint32_t)&PCM->TX_DATA);
@@ -702,6 +777,12 @@ void Pcm_tx_dma_isr(void)
     }
     else if (pcm_ready != 0xFF)
     {
+        uint32_t dwell = (uint32_t)(Sys_ASRC_OutputCount() - pcm_ready_stamp);
+
+        if (dwell < PCM_FRAME_WORDS)
+        {
+            pcm_phase_update((int32_t)dwell - PCM_PHASE_TARGET);
+        }
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
                               (uint32_t)&pcm_tx_buf[pcm_ready][0],
                               (uint32_t)&PCM->TX_DATA);
@@ -711,6 +792,7 @@ void Pcm_tx_dma_isr(void)
     }
     else
     {
+        pcm_starve_cnt++;    /* 没有可流缓冲：PCM TX FIFO 即将欠载 */
         pcm_waiting = 1;
     }
 }
