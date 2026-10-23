@@ -96,6 +96,9 @@ static void sniff_read(void)
 
     memset(hdr, 0, sizeof(hdr));
     okh  = i2c_7100_read(I2C_7100_ADDR, hdr, sizeof(hdr));
+    if (okh) {
+        BLE_7100Event(hdr[0]);   /* 7100 事件帧（关 BLE 的 45/24）见 ble_std.c */
+    }
     hlen = (uint16_t)hdr[1] + ((uint16_t)hdr[2] << 8);
     rd   = 0;
     if (okh && hlen > 0) {

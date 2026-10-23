@@ -52,6 +52,71 @@ uint8_t bdaddr_type;
 
 static struct gapm_set_dev_config_cmd *gapmConfigCmd;
 
+/* ---- 7100 推来的「关闭 BLE」事件（2026-10-23）----
+ * 依据 docs/7100协议/BLE关闭/2026-10-22_BLE关闭抓包解析.md：关 BLE 时 7100 在 DIO13 上
+ * 紧挨着抬两次线，推两帧**零长度**事件 `45 00 00` 与 `24 00 00`（RSL10 只需读头 + 82）。
+ * 动作（开发者定）：**两帧连续都读到**才关 —— 中间读到任何别的应答就重新计数；
+ * 关 = 在连先断开、否则取消广播，并置 s_ble_off 让 Advertising_Start() 不再重开广播，
+ * **直到复位/重新上电才恢复**。 */
+static uint8_t s_ev_mask;      /* bit0 = 已读 0x45，bit1 = 已读 0x24 */
+static bool    s_ble_off;      /* 已关：断开后不许重开广播 */
+
+#define BLE_EV_45   0x45
+#define BLE_EV_24   0x24
+
+/* 断开原因（HCI 错误码）：Remote User Terminated Connection。
+ * 不引 CO_ERROR_* 宏 —— 本工程没包含 co_error.h，用同值常量 + 这里注明来源。 */
+#define BLE_DISC_REASON_USER   0x13
+
+/* 真正执行关闭。在连 → GAPC_DISCONNECT；否则 → GAPM_CANCEL 停掉广播。
+ * 两处都用 SDK 的标准命令（同样例 GAPC_DisconnectCmd / GAPM_CancelCmd）。 */
+static void ble_close(void)
+{
+    s_ble_off = 1;
+
+    if (ble_env.state == APPM_CONNECTED) {
+        struct gapc_disconnect_cmd *cmd;
+
+        PRINTF("__BLE_OFF: disconnect conidx=%u\n", ble_env.conidx);
+        cmd = KE_MSG_ALLOC(GAPC_DISCONNECT_CMD,
+                           KE_BUILD_ID(TASK_GAPC, ble_env.conidx),
+                           TASK_APP, gapc_disconnect_cmd);
+        cmd->operation = GAPC_DISCONNECT;
+        cmd->reason    = BLE_DISC_REASON_USER;
+        ke_msg_send(cmd);
+    } else {
+        struct gapm_cancel_cmd *cmd;
+
+        PRINTF("__BLE_OFF: cancel advertising\n");
+        cmd = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP, gapm_cancel_cmd);
+        cmd->operation = GAPM_CANCEL;
+        ke_msg_send(cmd);
+    }
+}
+
+/* 每读到一个 7100 应答/通知的头都调一次（dsp_7100_read_frame / a7_rescue_read / sniff）。
+ * 头 3B 的 status 就是参数。 */
+void BLE_7100Event(uint8_t status)
+{
+    if (s_ble_off) {
+        return;
+    }
+
+    if (status == BLE_EV_45) {
+        s_ev_mask |= 0x01;
+    } else if (status == BLE_EV_24) {
+        s_ev_mask |= 0x02;
+    } else {
+        s_ev_mask = 0;          /* 两帧之间夹了别的应答 → 重新计数 */
+        return;
+    }
+
+    if (s_ev_mask == 0x03) {
+        s_ev_mask = 0;
+        ble_close();
+    }
+}
+
 /* ----------------------------------------------------------------------------
  * Standard Functions
  * ------------------------------------------------------------------------- */
@@ -203,6 +268,13 @@ void Advertising_Start(void)
     uint8_t device_name_length;
     uint8_t device_name_avail_space;
     uint8_t company_id[APP_COMPANY_ID_DATA_LEN] = APP_COMPANY_ID_DATA;
+
+    /* 7100 已要求关 BLE：断开/取消广播后，本函数会被 GAPC_DisconnectInd 再次调到，
+     * 这里拦住，别把广播又打开（恢复只能靠复位/重新上电）。 */
+    if (s_ble_off) {
+        PRINTF("__ADV skipped: BLE off by 7100\n");
+        return;
+    }
 
     /* 把耳侧与设备 MAC 编入 company data（同 peripheral_server_sleep） */
     company_id[10] = (ear_side == RM_RIGHT) ? 0x02 : 0x01;

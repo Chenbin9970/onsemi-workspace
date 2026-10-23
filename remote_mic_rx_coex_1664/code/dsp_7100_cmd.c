@@ -1016,6 +1016,9 @@ static void a7_rescue_read(void)
            s_step_idx, s_step_cnt, (unsigned)s_cmd_rescue_cnt);
 
     okh = i2c_7100_read(I2C_7100_ADDR, rx, 3);      /* 头 3B：status + len16(小端) */
+    if (okh) {
+        BLE_7100Event(rx[0]);   /* 7100 事件帧（关 BLE 的 45/24）见 ble_std.c */
+    }
     if (!okh) {
         PRINTF("[7100] step%u/%u 兜底读失败（头）—— 不发 82（没读到就不欠 credit）\r\n",
                s_step_idx, s_step_cnt);
@@ -1150,6 +1153,7 @@ uint8_t dsp_7100_read_frame(uint8_t *rx, uint16_t cap, uint16_t *pay_out)
 
     okh = i2c_7100_read(I2C_7100_ADDR, rx, 3);
     if (okh) {
+        BLE_7100Event(rx[0]);   /* 7100 事件帧（关 BLE 的 45/24）见 ble_std.c */
         pay = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
         /* setter `46 00 00` → len16 = 0（零数据字节）；0x03 探测 `46 03 00 <x> <busy> 1A`
          * → len16 = 3；`43 03 00` 那类也是 3（开发文档 §25.2 的旧固定长度即由此而来）。
