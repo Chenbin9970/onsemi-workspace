@@ -131,6 +131,12 @@ bool dsp_7100_set_denoise(uint8_t prog, uint8_t level);
 /* DFBC 开关：prog 1-4，onoff 0/1。返回 true = 会话已启动。 */
 bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
 
+/* 自动切换模式 + 飞行模式（一个会话写两块，程序槽 00，照 2026-10-22_15-16-57 会话 B）：
+ *   mode     : 0=关；1-4=在程序 1-4 启用（块 0x16/0x0000，A7 07 四字节）
+ *   airplane : 0=关；1=使能长按进入飞行模式（块 0x05/0x0035，A7 04 单字节 00/06）
+ * 返回 true = 会话已启动（异步）。 */
+bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane);
+
 /* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB，1dB/LSB）。
  * 写入值 = 设备当前值 + (本次绝对值 − 上次保存的绝对值)，作用于该段通道的
  * LowLevelGain 与 HighLevelGain；写入后的值落盘，下次据此算差值。

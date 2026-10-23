@@ -294,6 +294,8 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
 #define A7_BLK_DENOISE   0x09
 #define A7_BLK_DFBC      0x0A
 #define A7_BLK_WDRC      0x07   /* WDRC 参数（LL/HL）写块 */
+#define A7_BLK_AIRPLANE  0x05   /* 飞行模式：块内地址 0x0035 */
+#define A7_BLK_AUTOSW    0x16   /* 自动切换模式：块内地址 0x0000，4 字节值 */
 
 /* 会话类型 */
 #define A7_KIND_DENOISE  0
@@ -306,6 +308,7 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
 #define A7_KIND_VOL          7   /* 调音量（A2 三帧） */
 #define A7_KIND_AUDIO_ENTER  8   /* 进测听：切程序3 + 0x2E=00 + 解除静音（三条，路径 B 串行） */
 #define A7_KIND_AUDIO_EXIT   9   /* 退测听：切回原程序 + 0x2E=58 + 解除静音 */
+#define A7_KIND_AUTOSW      10   /* 自动切换模式 + 飞行模式（程序槽 00，两块两次提交） */
 
 /* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2，OutputLimit = +3
  * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1、§2）
@@ -759,6 +762,54 @@ static int8_t a7_eq_prev(const dsp_7100_prog_t *p, uint8_t band)
     return p->eq_high;
 }
 
+/* 自动切换模式 + 飞行模式：整段会话，照 2026-10-22_15-16-57 会话 B。
+ * 程序槽 00；两块分开写、分两次提交。airplane 取 s_sess_db，mode 由调用方传入。 */
+static void a7_add_autosw_session(uint8_t prog, uint8_t mode)
+{
+    uint8_t *p;
+
+    a7_add_probe();
+    a7_add_simple(A7_OPT_MUTE);
+    a7_add_prog(A7_OPT_SELECT, prog);
+    a7_add_probe();
+    /* ① 飞行模式：A7 05 00 00 00 05 05 00 00 35 → A7 04 … 06/00 */
+    a7_add_prep(A7_BLK_AIRPLANE, prog, 0x00, 0x35);
+    p = a7_put(9);
+    if (p != NULL) {
+        p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+        p[5] = 0x08; p[6] = 0x00; p[7] = 0x00;
+        p[8] = s_sess_db ? 0x06 : 0x00;
+    }
+    /* ② 自动切换：A7 05 … 05 16 00 00 00 → A7 07 … 四字节
+     *    mode 0 = 00 FF FF FF（关）；mode N = 01 00 00 0N（在程序 N 启用） */
+    a7_add_prep(A7_BLK_AUTOSW, prog, 0x00, 0x00);
+    p = a7_put(12);
+    if (p != NULL) {
+        p[0] = 0xA7; p[1] = 0x07; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+        p[5] = 0x08; p[6] = 0x00; p[7] = 0x00;
+        if (mode == 0) {
+            p[8] = 0x00; p[9] = 0xFF; p[10] = 0xFF; p[11] = 0xFF;
+        } else {
+            p[8] = 0x01; p[9] = 0x00; p[10] = 0x00; p[11] = mode;
+        }
+    }
+    a7_add_prog(A7_OPT_CONFIRM, prog);
+    a7_add_probe();                     /* 确认后 ×3 */
+    a7_add_probe();
+    a7_add_probe();
+    a7_add_simple(A7_OPT_UNMUTE);
+    a7_add_prog(A7_OPT_SELECT, 1);
+    a7_add_probe();
+    a7_add_prog(A7_OPT_SELECT, 1);      /* 抓包：提交前再选一次 */
+    a7_add_probe();
+    a7_add_simple(A7_OPT_COMMIT);
+    a7_add_probe();
+    a7_add_prog(A7_OPT_SELECT, 1);      /* 抓包：两块 → 第二轮提交 */
+    a7_add_probe();
+    a7_add_simple(A7_OPT_COMMIT);
+    a7_add_probe();
+}
+
 /* 会话骨架（2026-10-08 起按抓包补齐 6 条 0x03 探测，见开发文档 §25）：
  *   探测 → 静音 → 选程序 → 探测 → [写块] → confirm → 探测 → 探测
  *   → 解除静音 → 选回程序0 → 探测 → commit → 探测
@@ -773,7 +824,8 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
      * 两族都读、都发 82、都等 7100 抬线再读（2026-10-09 统一）；差别是配置族（路径 A）
      * **校验 46**（失败补 82 重读）、等不到沿时盲读一次降级，交互族（路径 B）读到的内容只进日志。 */
     s_sess_family = (kind == A7_KIND_DENOISE || kind == A7_KIND_DFBC ||
-                     kind == A7_KIND_WDRC    || kind == A7_KIND_EQ)
+                     kind == A7_KIND_WDRC    || kind == A7_KIND_EQ ||
+                     kind == A7_KIND_AUTOSW)
                     ? A7_FAM_ACK : A7_FAM_EDGE;
 
     if (kind == A7_KIND_MUTE) {             /* 静音 / 解除静音：同样只发这一条 */
@@ -823,6 +875,11 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
                   (kind == A7_KIND_AUDIO_ENTER) ? DSP7100_TONE_MODE_ON
                                                 : DSP7100_TONE_MODE_OFF);
         a7_add_simple(A7_OPT_UNMUTE);
+        return !s_build_fail;
+    }
+
+    if (kind == A7_KIND_AUTOSW) {
+        a7_add_autosw_session(prog, val);
         return !s_build_fail;
     }
 
@@ -1048,10 +1105,13 @@ static void a7_session_finish(bool ok)
         return;
     }
 
-    /* 纯音 / 静音**不改缓存里的任何参数** → 直接返回。
+    /* 纯音 / 静音 / 自动切换+飞行模式**不改缓存里的任何参数** → 直接返回。
      * 否则会走 cache_save_request()，把整份读回缓存（4 个程序）重写一遍 flash ——
-     * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。 */
-    if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE) return;
+     * 测听时每播一个频点就擦写一次，纯属浪费 + 磨损 flash。
+     * ⚠ AUTOSW 还**必须**在这里拦住：它的 s_sess_val 是 mode（0-4），
+     *   落到 a7_session_sync_cache 的 else（EQ）分支会越界索引 s_eq_ch_n[3]。 */
+    if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE ||
+        s_sess_kind == A7_KIND_AUTOSW) return;
 
     a7_session_sync_cache();
     dsp_7100_cache_save_request();
@@ -1367,6 +1427,7 @@ static const char *a7_kind_name(uint8_t kind)
     if (kind == A7_KIND_VOL)         return "SetVolume";
     if (kind == A7_KIND_AUDIO_ENTER) return "AudiometryOn";
     if (kind == A7_KIND_AUDIO_EXIT)  return "AudiometryOff";
+    if (kind == A7_KIND_AUTOSW)      return "AutoSwitchMode";
     return "EQ";
 }
 
@@ -1443,6 +1504,16 @@ bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff)
     if (prog < 1 || prog > 4) return false;
     s_sess_db = 0;
     return a7_session_start(A7_KIND_DFBC, prog, onoff ? 1 : 0);
+}
+
+/* 自动切换模式 + 飞行模式（一个会话写两块，程序槽 00）。
+ * s_sess_db 存 airplane（0/1），s_sess_val 存 mode（0-4），见 a7_build_session。 */
+bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane)
+{
+    if (mode > 4 || airplane > 1) return false;
+    PRINTF("[7100] --- AutoSwitchMode mode=%u airplane=%u ---\r\n", mode, airplane);
+    s_sess_db = airplane ? 1 : 0;
+    return a7_session_start(A7_KIND_AUTOSW, 0, mode);
 }
 
 /* 三段均衡器：band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB）。

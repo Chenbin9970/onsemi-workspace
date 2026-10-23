@@ -42,6 +42,7 @@ extern "C" {
 #define CMD_FOTA_STATUS         87   /* ID:87 SetFOTAStatus：进入 FOTA 状态 */
 #define CMD_GETSTREAMADDRESS    88   /* ID:88 GetStreamAddress：读回 RM 音频流地址 */
 #define CMD_SETSTREAMADDRESS    89   /* ID:89 SetStreamAddress：设置 RM 音频流地址（accessword 高 24 位） */
+#define CMD_SETAUTOSWITCHMODE   95   /* ID:95 SetAutoSwitchMode：自动切换模式 + 飞行模式 */
 
 /* Command IDs — Device → App (active push, SYS_ID=1) */
 #define CMD_PUSH_VOLUME              4

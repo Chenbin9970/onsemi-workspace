@@ -394,7 +394,7 @@ static void aud_push_schedule(uint8_t what)
  * 7100 写会话要跑 3.2~5.6s（均衡器最长），期间来的设置命令不丢弃：按命令类型合并
  * （同类型只留最新一条 —— 均衡器/降噪/DFBC 都是**绝对值**语义，丢中间帧不影响终态），
  * 会话结束再依次执行。命令一律**立即应答**，Flag=0 仅表示"已受理"，不代表已写入。 */
-#define PEND_MAX   3
+#define PEND_MAX   4   /* 降噪 / DFBC / EQ / 自动切换+飞行模式 各占一槽 */
 #define PEND_NONE  0
 
 typedef struct
@@ -420,7 +420,7 @@ static void pend_put(uint16_t cmd_id, uint8_t prog, uint8_t arg, int8_t db)
             if (s_pend[i].cmd_id == PEND_NONE) break;   /* 空槽 */
         }
     }
-    if (i == PEND_MAX) i = 0;                           /* 只有 3 种命令，正常走不到 */
+    if (i == PEND_MAX) i = 0;                           /* 4 种命令各有一槽，正常走不到 */
 
     s_pend[i].cmd_id = cmd_id;
     s_pend[i].prog   = prog;
@@ -450,6 +450,7 @@ void rempro_pending_start_next(void)
 
         if (cmd_id == CMD_SETDENOISE)            ok = dsp_7100_set_denoise(prog, arg);
         else if (cmd_id == CMD_SETFEEDBACKONOFF) ok = dsp_7100_set_dfbc(prog, arg);
+        else if (cmd_id == CMD_SETAUTOSWITCHMODE) ok = dsp_7100_set_auto_switch_mode(arg, prog);
         else                                     ok = dsp_7100_set_eq(prog, arg, db);
 
         PRINTF("[REMPRO] 缓存命令下发 cmd=%u prog=%u started=%u\r\n", cmd_id, prog, ok);
@@ -652,6 +653,44 @@ static void cmd_setfeedbackonoff_7100(const uint8_t *data, uint8_t len)
            dev_type, prog, onoff, ok);
 
     hdlc_response_set(CMD_SETFEEDBACKONOFF, ok);   /* 立即应答：Flag=0 = 已受理 */
+}
+
+/* ID:95  SetAutoSwitchMode — 自动切换模式 + 飞行模式（一次写两块）
+ * data: [0]=Device_Type  [1]=Mode_Status  [2]=Airplane_Mode_Enable
+ *   Mode_Status : 0=关；1-4=在程序 1-4 启用
+ *                 → 7100 块 0x16/0x0000，A7 07 四字节（00 FF FF FF / 01 00 00 0N）
+ *   Airplane    : 0=关；1=使能长按进入飞行模式
+ *                 → 7100 块 0x05/0x0035，A7 04 单字节（00 / 06）
+ * 两个字段都是绝对值，每次两块都写（与 2026-10-22_15-16-57 会话 B 一致，幂等）。
+ * I2C 忙 → 缓存（prog 存 airplane、arg 存 mode），Flag=0 仅表示已受理。 */
+static void cmd_setautoswitchmode_7100(const uint8_t *data, uint8_t len)
+{
+    uint8_t dev_type;
+    uint8_t mode;
+    uint8_t airplane;
+    bool ok;
+
+    if (len < 3) { hdlc_response_set(CMD_SETAUTOSWITCHMODE, false); return; }
+
+    dev_type = data[0];
+    mode     = data[1];
+    airplane = data[2];
+
+    if (mode > 4 || airplane > 1) {
+        hdlc_response_set(CMD_SETAUTOSWITCHMODE, false);
+        return;
+    }
+
+    if (dsp_7100_cmd_busy()) {
+        pend_put(CMD_SETAUTOSWITCHMODE, airplane ? 1 : 0, mode, 0);
+        ok = true;
+    } else {
+        ok = dsp_7100_set_auto_switch_mode(mode, airplane ? 1 : 0);
+    }
+    PRINTF("[REMPRO] SetAutoSwitchMode: dev=%u mode=%u airplane=%u started=%u\r\n",
+           dev_type, mode, airplane, ok);
+
+    hdlc_response_set(CMD_SETAUTOSWITCHMODE, ok);
 }
 
 /* ID:34  GetFeedbackOnOff — 从 7100 读回缓存取该程序的 DFBC 开关
@@ -1476,6 +1515,10 @@ void rempro_cmd_process(void)
         case CMD_SETFEEDBACKONOFF:
             if (data) cmd_setfeedbackonoff_7100(data, data_len);
             else hdlc_response_set(CMD_SETFEEDBACKONOFF, false);
+            break;
+        case CMD_SETAUTOSWITCHMODE:
+            if (data) cmd_setautoswitchmode_7100(data, data_len);
+            else hdlc_response_set(CMD_SETAUTOSWITCHMODE, false);
             break;
         case CMD_SETEQUALIZER:
             if (data) cmd_setequalizer_7100(data, data_len);
