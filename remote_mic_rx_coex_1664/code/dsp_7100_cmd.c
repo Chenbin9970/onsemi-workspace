@@ -1062,6 +1062,12 @@ static void a7_rescue_read(void)
         rempro_push_7100_notify(rx + 3, (uint8_t)((pay > 3u) ? 3u : pay));
     }
 
+    if (!okp) {
+        /* payload 没读全：不发 82（没读全就 ack 会把 7100 的读指针留在 payload 中段，同 §38） */
+        PRINTF("[7100] 兜底读未读全，不发 82\r\n");
+        return;
+    }
+
     /* 先记沿再发（同 a7_step_advance）：这条 82 的下降沿还没到，等它到了门就能往下走 */
     s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
     (void)dsp_7100_send_end();

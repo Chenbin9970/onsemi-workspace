@@ -9,8 +9,14 @@
 
 #include "i2c_7100_hal.h"
 #include <rsl10.h>
+#include <printf.h>
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
 
 #define I2C_7100_TIMEOUT_MAX    2000000U
+#define I2C_7100_READ_TRIES     3   /* 一次读最多分几段（超时续读），见 i2c_7100_read() */
 
 /* 传输状态（I2C_IRQHandler 使用） */
 static const uint8_t *s_tx_buf;
@@ -23,7 +29,7 @@ static volatile bool  s_tx_active;
 /* 读状态（I2C_IRQHandler 使用，master read） */
 static uint8_t       *s_rx_buf;
 static uint16_t       s_rx_len;
-static uint16_t       s_rx_idx;
+static volatile uint16_t s_rx_idx;  /* ISR 递增、主上下文当返回值读 → 必须 volatile（-O2 会折叠成 0） */
 static volatile bool  s_rx_done;
 static volatile bool  s_rx_ok;
 static volatile bool  s_rx_active;
@@ -187,11 +193,13 @@ bool i2c_7100_write(uint8_t addr, const uint8_t *data, uint16_t len)
     return s_tx_ok;
 }
 
-bool i2c_7100_read(uint8_t addr, uint8_t *data, uint16_t len)
+/* 单次 master read：不重试，返回**实际进缓冲的字节数**（超时 / 提前 STOP 时 < len）。
+ * 7100 的读指针是纯字节流：master 已经时钟出去的字节它不会再给，所以「已收 M 字节」
+ * 就是它前进的距离 —— 续读必须从 data+M 接着要，不能从头重读（2026-10-28 实测：
+ * 读超时之后下一轮读到的第一个字节仍是漏掉的那个）。 */
+static uint16_t i2c_rx_once(uint8_t addr, uint8_t *data, uint16_t len)
 {
     uint32_t t;
-    if (!data || !len) return false;
-    hw_ensure_init();
 
     /* 等上次传输结束 */
     t = 0;
@@ -220,7 +228,39 @@ bool i2c_7100_read(uint8_t addr, uint8_t *data, uint16_t len)
         Sys_I2C_Reset();
     }
     s_rx_active = false;
-    return s_rx_ok;
+    return s_rx_idx;
+}
+
+/* 读 len 字节：超时就带着「已收 M 字节」**续读**剩下的，最多分 I2C_7100_READ_TRIES 段。
+ * 为什么必须续读而不是重读整帧：读超时那一刻 7100 已经吐出去 M 个字节、读指针前进了 M，
+ * 从头重读会把流错位（读回第 26 步 306B 就是这么卡死的，见开发文档 §38）。
+ * 分 3 段是要给「7100 还在备数据（时钟拉伸）」留余量；真实失败（从机不应答）每段代价
+ * 一次 TIMEOUT（≈37ms），3 段约 110ms，只在故障时发生。 */
+bool i2c_7100_read(uint8_t addr, uint8_t *data, uint16_t len)
+{
+    uint16_t got = 0;
+    uint16_t n;
+    uint8_t  tries = 0;
+
+    if (!data || !len) return false;
+    hw_ensure_init();
+
+    while (got < len && tries < I2C_7100_READ_TRIES) {
+        n   = i2c_rx_once(addr, data + got, (uint16_t)(len - got));
+        got = (uint16_t)(got + n);
+        if (got < len) {
+            tries++;
+            PRINTF("[I2C] 读 %uB 断在 %u（第 %u 段）→ 续读 %u\r\n",
+                   (unsigned)len, (unsigned)got, (unsigned)tries,
+                   (unsigned)(len - got));
+            i2c_7100_delay_ms(1);
+        }
+    }
+    if (got < len) {
+        PRINTF("[I2C] 读 %uB 失败：只到 %u\r\n", (unsigned)len, (unsigned)got);
+        return false;
+    }
+    return true;
 }
 
 /* 硬件 I2C 速度由 prescale 固定（410kHz），此接口保留以兼容调用方 */

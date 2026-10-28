@@ -264,6 +264,12 @@ static uint32_t s_rb_wait_rise;     /* 发命令前记的上升沿数：RB_READ 
 static uint32_t s_rb_wait_fall;     /* 发 82 前记的下降沿数：RB_SEND 相位等它变（方案 A） */
 static uint8_t  s_rb_low_ticks = 0; /* 本步「tick 放行但线低」连吞了几拍（同命令族，见 rb_poll） */
 static uint8_t  s_rb_rescue_cnt = 0;/* 本步已做的兜底读次数（DSP7100_RESCUE_MAX 封顶，同命令族） */
+static uint8_t  s_rb_fail_cnt = 0;  /* 本步连续读不对的拍数：到 RB_FAIL_MAX 就终止读回（见 seq_tick） */
+
+/* 同一步连续失败多少拍就放弃读回：25 拍 × 200ms ≈ 5s。
+ * 目的只有一个 —— 别让「7100 读指针卡在 payload 中段」变成永久死循环：
+ * 那样 s_rb_done 永远不来，BLE 设置全被 §36 的读回门挡住，设备只剩音频可用。 */
+#define RB_FAIL_MAX  25
 
 dsp_7100_rb_bufs_t *dsp_7100_rb_bufs(void)
 {
@@ -369,6 +375,12 @@ static void rb_rescue_read(void)
         rempro_push_7100_notify(rx + 3, (uint8_t)((hlen > 3u) ? 3u : hlen));
     }
 
+    if (rd != DSP7100_RDF_OK) {
+        /* payload 没读全：不发 82（没读全就 ack 会把读指针留在 payload 中段，同 seq_tick） */
+        PRINTF("[RB] 兜底读未读全，不发 82\r\n");
+        return;
+    }
+
     s_rb_wait_fall = dsp_7100_dio13_fall_cnt();   /* 先记沿：这条 82 的下降沿还没到 */
     (void)dsp_7100_send_end();
 }
@@ -414,12 +426,17 @@ void dsp_7100_rb_seq_tick(void)
     okh = (rd_code != DSP7100_RDF_ERR_HDR);
     okp = (rd_code != DSP7100_RDF_ERR_PAY);
 
-    /* 先记下当前下降沿数，再发 82：这条 82 的下降沿此刻还没到，等它到了
-     * dsp_7100_rb_poll 就会立刻发下一条，不必等满 200ms（方案 A，只加速这半场）。
-     * 记在发之前是必须的 —— 记在之后万一边沿快到来不及，这一步就永远等不到「新的」下降沿。 */
-    s_rb_wait_fall = dsp_7100_dio13_fall_cnt();
-
-    (void)dsp_7100_send_end();      /* 04 82 收尾（共享原语，自己打印） */
+    /* 只有**整帧读全**（头 + payload）才还 credit 发 82。
+     * 没读全就发 = 告诉 7100「这一帧我拿走了」，剩下的字节丢在它缓冲里、读指针停在
+     * payload 中段 —— 之后每拍都读到垃圾头，永远读不回来（2026-10-28 14:32 第 26 步
+     * 306B 读超时就是这样卡死的，见开发文档 §38）。 */
+    if (okh && okp) {
+        /* 先记下当前下降沿数，再发 82：这条 82 的下降沿此刻还没到，等它到了
+         * dsp_7100_rb_poll 就会立刻发下一条，不必等满 200ms（方案 A，只加速这半场）。
+         * 记在发之前是必须的 —— 记在之后万一边沿快到来不及，这一步就永远等不到「新的」下降沿。 */
+        s_rb_wait_fall = dsp_7100_dio13_fall_cnt();
+        (void)dsp_7100_send_end();  /* 04 82 收尾（共享原语，自己打印） */
+    }
 
     /* 校验：首字节 46（7100 接下了）+ **长度**（头里的 len16 必须等于该块的字节数）。
      * 长度这一条是读回独有、也是它**唯一**能发现读错位的手段（375/306/174B 的内容本身
@@ -450,6 +467,7 @@ void dsp_7100_rb_seq_tick(void)
     PRINTF("\r\n");
 
     if (pass) {
+        s_rb_fail_cnt = 0;
         s_rb_idx++;
         if (s_rb_idx >= dsp_rb_cmd_cnt) {   /* 一轮完成，停止并解析 */
             /* 收尾兜底读（同命令会话 a7_session_finish）：跑完时线还高 = 7100 压着一帧，
@@ -475,6 +493,18 @@ void dsp_7100_rb_seq_tick(void)
         }
         s_rb_st = RB_SEND;
     } else {
+        s_rb_fail_cnt++;
+        if (s_rb_fail_cnt >= RB_FAIL_MAX) {
+            /* 同一步连 5s 都读不对 ⇒ 7100 读指针已经卡在 payload 中段，再发 82 也只会
+             * 读回垃圾，而且 s_rb_done 永远不来。止损：终止读回、**不落盘**（s_save_pending
+             * 保持 0，免得把垃圾写进 flash）；RAM 里保留 cache 载入的 flash 旧值
+             * （valid[] 不动 —— 比清成 0 有用，App 仍能取到上一次的降噪/DFBC/WDRC）。 */
+            PRINTF("[RB] %u/%u 连续失败 %u 次 → 终止读回（不落盘，保留 flash 旧值）\r\n",
+                   s_rb_idx + 1, dsp_rb_cmd_cnt, (unsigned)s_rb_fail_cnt);
+            s_save_pending = 0;
+            s_rb_done = 1;
+            return;
+        }
         /* 读失败：本相位改为只等 tick 兜底。
          * 必须这么做 —— 刚才那记 04 82 自己就产生一个上升沿（7100 收到 82 的脉冲
          * 含上升沿），而 s_rb_wait_rise 是发命令前记的、本相位不再刷新，于是
