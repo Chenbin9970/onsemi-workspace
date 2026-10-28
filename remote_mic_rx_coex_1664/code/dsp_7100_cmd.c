@@ -228,6 +228,16 @@ void dsp_7100_track_cfg_record(const uint8_t *rx, uint16_t len)
  * `46 03 00 <x> <busy> 1A` → len16=3），见开发文档 §25 / §26.9。 */
 #define A7_RX_MAX        6
 
+/* 外帧（len16 > A7_RX_MAX−3 的大块回执）的读丢参数（2026-10-28）。
+ * 本族回执只有两种长度：setter 0B、0x03 探测 3B。读到更长的帧说明混进了别的东西 ——
+ * 正常只有开机读回请求的降噪/DFBC/WDRC 块（174/306/375B），且**它的首字节也是 46**，
+ * 所以不能只看首字节当时就收（以前就是这样把 174B 截成 3B，剩下 171B 留在 7100 里，
+ * 之后每一帧都从 payload 中段读起 —— 日志 `88 03 06` —— 设置类指令全废到重启）。
+ * 现在整帧读完丢掉再重读本步回执。 */
+#define A7_DRAIN_CHUNK   32    /* 读丢 payload 的分块（栈 32B） */
+#define A7_DRAIN_MAX     700   /* 单帧合法 payload 上限（读回最大 375B）；超了判为错位，不硬读 */
+#define A7_RDF_FOREIGN   3     /* 本族私有返回码：读到 >3B 的大帧，已整帧读丢 */
+
 /* 一次读的**两截**（头 3B + payload）合成**一行**打（2026-10-09，调用点 a7_read_frame，两族共用）。
  * 为什么必须合：串口工具按自己的轮询周期收行，分两行打会凭空多出一个时间戳 ——
  * 实测同一段代码给出过「同一毫秒」和「差 12ms」两种结果，拿去量协议时序会看错；
@@ -495,6 +505,9 @@ static uint32_t s_cmd_wait_rise;    /* 写完本条后记的上升沿数（**两
 
 static uint8_t   s_cmd_buf[A7_CMD_BUF_SZ];
 static uint16_t  s_cmd_used;
+
+/* 私有工具（定义在下面的读帧区）：把外帧剩余 payload 读完丢弃。兜底读比它先出现。 */
+static bool a7_drain_payload(uint16_t n);
 
 /* 会话元信息（成功后回写缓存用） */
 static uint8_t   s_sess_prog;       /* 1-4 */
@@ -1007,6 +1020,7 @@ static void a7_rescue_read(void)
 {
     uint8_t  rx[A7_RX_MAX];
     uint16_t pay = 0;
+    uint16_t len;                  /* 头里的 len16（未截断） */
     bool     okh;
     bool     okp = true;
 
@@ -1024,12 +1038,25 @@ static void a7_rescue_read(void)
                s_step_idx, s_step_cnt);
         return;
     }
-    pay = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
+    len = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
+    pay = len;
     if (pay > (A7_RX_MAX - 3)) pay = A7_RX_MAX - 3;
     if (pay > 0) {
         okp = i2c_7100_read(I2C_7100_ADDR, rx + 3, (uint8_t)pay);
     }
     print_r2(rx, 3, okh, rx + 3, (uint16_t)pay, okp);   /* 两截合成一行，同路径 B */
+
+    /* 大帧（开机读回的块回执 174/306/375B）：剩下的也必须读完。只发 82 不会丢剩余
+     * 字节，读指针会停在 payload 中段（同 a7_read_frame 的注释）。 */
+    if (okp && len > (A7_RX_MAX - 3)) {
+        if (len > A7_DRAIN_MAX ||
+            !a7_drain_payload((uint16_t)(len - (A7_RX_MAX - 3)))) {
+            PRINTF("[7100] 兜底读到大帧 len16=%u，读丢失败\r\n", (unsigned)len);
+            okp = false;
+        } else {
+            PRINTF("[7100] 兜底读到大帧 len16=%u → 整帧读丢\r\n", (unsigned)len);
+        }
+    }
 
     if (okp && pay > 0) {
         rempro_push_7100_notify(rx + 3, (uint8_t)((pay > 3u) ? 3u : pay));
@@ -1168,6 +1195,22 @@ uint8_t dsp_7100_read_frame(uint8_t *rx, uint16_t cap, uint16_t *pay_out)
     return DSP7100_RDF_OK;
 }
 
+/* 把外帧 payload 剩下的 n 字节读完丢弃（本族缓冲装不下大帧）。
+ * 7100 的应答按读指针顺序出，连续读即可；分块是为了不动 700B 栈。
+ * 返回 false = 传输层没读成 —— 那一帧没读干净。 */
+static bool a7_drain_payload(uint16_t n)
+{
+    uint8_t  buf[A7_DRAIN_CHUNK];
+    uint16_t k;
+
+    while (n > 0) {
+        k = (n > A7_DRAIN_CHUNK) ? (uint16_t)A7_DRAIN_CHUNK : n;
+        if (!i2c_7100_read(I2C_7100_ADDR, buf, k)) return false;
+        n -= k;
+    }
+    return true;
+}
+
 /* 命令族这一侧的薄封装：传本族的读缓冲上限 A7_RX_MAX，并把**两截合成一行**打。
  * 为什么必须合一行：串口工具按自己的轮询周期收行，分两行打会凭空多出一个时间戳 ——
  * 实测同一段代码给出过「同一毫秒」和「差 12ms」两种结果，拿去量协议时序会看错；
@@ -1176,11 +1219,30 @@ uint8_t dsp_7100_read_frame(uint8_t *rx, uint16_t cap, uint16_t *pay_out)
  * ⚠ 读回不套这层（它的 payload 有 375B，合一行要 1150 字符 > 200B 缓冲）。 */
 static uint8_t a7_read_frame(uint8_t *rx, uint16_t *pay_out)
 {
-    uint8_t rd = dsp_7100_read_frame(rx, A7_RX_MAX, pay_out);
+    uint16_t len;
+    uint8_t  rd = dsp_7100_read_frame(rx, A7_RX_MAX, pay_out);
 
     print_r2(rx, 3, rd != DSP7100_RDF_ERR_HDR, rx + 3, *pay_out,
              rd != DSP7100_RDF_ERR_PAY);
-    return rd;
+    if (rd == DSP7100_RDF_ERR_HDR) return rd;
+
+    len = (uint16_t)rx[1] | (uint16_t)((uint16_t)rx[2] << 8);
+    if (len <= (A7_RX_MAX - 3)) return rd;      /* 本族回执：0B / 3B */
+
+    /* 外帧（见 A7_DRAIN_* 的注释）：里面已经按 cap−3 读走 3B，剩下的读完丢掉。
+     * 不能只发 82 了事 —— 实测 82 不会丢剩余字节，读指针会一直停在 payload 中段。 */
+    if (len > A7_DRAIN_MAX) {
+        PRINTF("[7100] 读到超长帧 len16=%u（>%u）→ 判为错位，本读数作废\r\n",
+               (unsigned)len, (unsigned)A7_DRAIN_MAX);
+        return A7_RDF_FOREIGN;
+    }
+    if (!a7_drain_payload((uint16_t)(len - (A7_RX_MAX - 3)))) {
+        PRINTF("[7100] 外帧 len16=%u 读丢时传输失败\r\n", (unsigned)len);
+        return DSP7100_RDF_ERR_PAY;
+    }
+    PRINTF("[7100] 外帧 len16=%u（不是本步回执）→ 整帧读丢，重读本步\r\n",
+           (unsigned)len);
+    return A7_RDF_FOREIGN;
 }
 
 /* ---- 路径 A：配置族（降噪 / DFBC / EQ / WDRC）—— 写帧 → 等抬线 → 读 → 校验 46 → 82 ----
@@ -1231,8 +1293,9 @@ static void a7_step_read(void)
     PRINTF("[7100] step%u/%u ACK FAIL hdr=%02X %02X %02X pay=%u (retry %u/%u)%s\r\n",
            s_step_idx, s_step_cnt, rx[0], rx[1], rx[2], (unsigned)pay,
            s_cmd_retry_cnt, A7_ACK_RETRY_MAX,
-           (rd == DSP7100_RDF_ERR_HDR) ? " [读头失败]" :
-           (rd == DSP7100_RDF_ERR_PAY) ? " [读payload失败]" : "");
+           (rd == A7_RDF_FOREIGN)          ? " [外帧已丢弃]" :
+           (rd == DSP7100_RDF_ERR_HDR)     ? " [读头失败]" :
+           (rd == DSP7100_RDF_ERR_PAY)     ? " [读payload失败]" : "");
     s_cmd_wait_fall = dsp_7100_dio13_fall_cnt();
     if (!dsp_7100_send_end()) { a7_session_finish(false); return; }
 
@@ -1296,6 +1359,15 @@ static void a7_step_edge(void)
     }
 
     rd = a7_read_frame(rx, &pay);                   /* 头 3B + 按 len16 补读，打印合成一行 */
+
+    if (rd == A7_RDF_FOREIGN) {
+        /* 外帧已整帧读丢，不是本步回执；回等沿相位继续等。**不刷新** s_cmd_wait_rise ——
+         * 本步回执的沿可能刚在读外帧那几毫秒里到过，刷新就把那记沿丢了。 */
+        PRINTF("[7100] step%u/%u 外帧已丢弃，继续等本步回执\r\n",
+               s_step_idx, s_step_cnt);
+        s_cmd_st = CMD_ST_WAIT_RISE;
+        return;
+    }
 
     if (rd != DSP7100_RDF_OK) {                           /* 传输层失败 → 显式判失败，不装看不见 */
         if (rd == DSP7100_RDF_ERR_HDR) {
@@ -1440,6 +1512,13 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
 {
     if (s_sess_active) {
         PRINTF("[7100] 上一会话未完成，忽略本次设置\r\n");
+        return false;
+    }
+    /* 开机读回没跑完时不许开会话：本族只读 3B，若抢到读回的块回执（174/306/375B，
+     * 首字节同样是 46），7100 读指针就停在 payload 中段，之后所有设置都读不到 46
+     * （2026-10-28 日志 `88 03 06`）。BLE 侧改成排队，读回完再下发。 */
+    if (!dsp_7100_rb_done()) {
+        PRINTF("[7100] 读回未完成，忽略本次设置\r\n");
         return false;
     }
     if (!a7_build_session(kind, prog, val)) {

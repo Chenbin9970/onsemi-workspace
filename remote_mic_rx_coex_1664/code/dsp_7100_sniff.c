@@ -4,7 +4,10 @@
  *   SN_WAIT_RISE  只认上升沿（无 tick 兜底）→ 有新的沿就进 SN_READ
  *   SN_READ       读 3B 头 + 按头里 len16 读满 payload（线上 `05 …`），分两行打印；
  *                 认出的属性（0x0016 程序号 / 0x0012 音量）上报给手机
- *                 （rempro_push_7100_notify，BLE 未连接则内部跳过）
+ *                 （rempro_push_7100_notify，BLE 未连接则内部跳过）。
+ *                 读失败原地重试（见 sniff_read_retry）；**没读全绝不发 82**；
+ *                 len16 不合理 = 流已错位 → 进 SN_DEAD 停死，不再读也不再 82
+ *                 （2026-10-28 按键首帧读超时导致 700B/34ms 自激风暴，见 §37）
  *   SN_ACK        记 rise/fall 基准 → 发 `04 82`（打 ok）→ 进 SN_ECHO
  *   SN_ECHO       只吃 82 那记「高→低」→ 取基准回 SN_WAIT_RISE；
  *                 窗口里若出现**新的上升沿**（7100 又抬线）→ 不当回声，去读它
@@ -29,10 +32,16 @@
 #define SNIFF_HDR_LEN    3    /* 应答头固定 3B：<status> <len16-LE>（照抓包 pkt 17 的 `05 44 00 00`） */
 #define SNIFF_DUMP_MAX  32    /* 单行最多 dump 的 payload 字节（同 dsp_7100_init.c 的 DSP_DUMP_MAX） */
 #define SNIFF_ECHO_WAIT  3    /* 等 82 那记「高→低」落定的上限（ms）；实测 <1ms 就到 */
+#define SNIFF_RETRY_MAX  3    /* 单次读最多尝试次数（含首次），见 sniff_read_retry() */
+#define SNIFF_RETRY_DELAY_MS 2 /* 重试间隔（ms）：7100 按键后的首帧还没把 payload 备好 */
 
 static const uint8_t s_end82[] = { 0x82 };
 
-typedef enum { SN_WAIT_RISE, SN_READ, SN_ACK, SN_ECHO } sniff_st_t;
+typedef enum { SN_WAIT_RISE, SN_READ, SN_ACK, SN_ECHO, SN_DEAD } sniff_st_t;
+
+/* sniff_read() 的结果：OK=整帧读完，可以发 82；BAD=没读全，**不许**发 82；
+ * DESYNC=头里的 len16 不合理（流已错位），停止监听。 */
+typedef enum { SNIFF_R_OK, SNIFF_R_BAD, SNIFF_R_DESYNC } sniff_rd_t;
 
 static uint8_t  s_st = SN_WAIT_RISE;
 static uint8_t  s_init;        /* 基准是否已取（首次 poll 取，避开引导期那堆边沿） */
@@ -81,32 +90,68 @@ static void sniff_dump(const uint8_t *p, uint16_t len)
     PRINTF("%s", line);
 }
 
+/* 读 n 字节，失败原地重试（含首次共 SNIFF_RETRY_MAX 次，间隔 SNIFF_RETRY_DELAY_MS）。
+ * 依据 2026-10-28 日志 #65：7100 按键后抬线的第 1 帧（`65 01 00 | 25`），1B payload 读超时。
+ * 两条实测：① 失败那次**一个字节都没消费** —— 下一轮读到的第一个字节仍是那个 `25`；
+ * ② 不重试、照发 82 的后果是 payload 留在 7100 里 → 整条流错位 1 字节 → 之后每轮按垃圾
+ * len16 读满 700B 再 82，自激成 34ms/轮的风暴（5.9s 跑 175 轮）。 */
+static bool sniff_read_retry(uint8_t *buf, uint16_t n)
+{
+    uint8_t i;
+
+    for (i = 0; i < SNIFF_RETRY_MAX; i++) {
+        if (i2c_7100_read(I2C_7100_ADDR, buf, n)) {
+            if (i > 0) {         /* 重试成功也要留一行：否则「救回来了」在日志里看不见 */
+                PRINTF("[SNIFF] 读 %uB 第 %u 次尝试成功\r\n",
+                       (unsigned)n, (unsigned)(i + 1));
+            }
+            return true;
+        }
+        i2c_7100_delay_ms(SNIFF_RETRY_DELAY_MS);
+    }
+    PRINTF("[SNIFF] 读 %uB 连续 %u 次失败\r\n", (unsigned)n, (unsigned)SNIFF_RETRY_MAX);
+    return false;
+}
+
 /* 上升沿触发后的读：先读 3B 头，再按头里的 len16 读满 payload（照读回的两步读法）。
  * ⚠ 必须读满 len16，不能只读头：只读头会把 payload 留在 7100 里（本次改动的起因）。
  *   抓包实证 `<status> <len16-LE> <payload>`：pkt 24 `21 01 00 00`（len16=1 → 1B payload）、
  *   pkt 26 `01 10 00 …`（16B）、pkt 28 `02 0A 00 …`（10B 串号）。
- * 分两行打印（头一行、payload 一行）：pack printf 200B 缓冲无边界检查，挤一行会顶到 200B。 */
-static void sniff_read(void)
+ * 分两行打印（头一行、payload 一行）：pack printf 200B 缓冲无边界检查，挤一行会顶到 200B。
+ * **只有 SNIFF_R_OK 才允许发 82**：没读全帧就 ack，7100 的读指针会停在 payload 中段。 */
+static sniff_rd_t sniff_read(void)
 {
     uint8_t  hdr[SNIFF_HDR_LEN];
     uint8_t  pay[DSP_INIT_RX_BUF];
-    uint16_t hlen, rd;
+    uint16_t hlen, rd = 0;
     bool     okh, okp = true;
     uint32_t rise = dsp_7100_dio13_rise_cnt();
 
     memset(hdr, 0, sizeof(hdr));
-    okh  = i2c_7100_read(I2C_7100_ADDR, hdr, sizeof(hdr));
-    if (okh) {
-        BLE_7100Event(hdr[0]);   /* 7100 事件帧（关 BLE 的 45/24）见 ble_std.c */
+    okh = sniff_read_retry(hdr, sizeof(hdr));
+    if (!okh) {
+        return SNIFF_R_BAD;      /* 头都没读到：一个字节没消费，别发 82 */
     }
+    BLE_7100Event(hdr[0]);       /* 7100 事件帧（关 BLE 的 45/24）见 ble_std.c */
+
     hlen = (uint16_t)hdr[1] + ((uint16_t)hdr[2] << 8);
-    rd   = 0;
-    if (okh && hlen > 0) {
-        rd  = (hlen > DSP_INIT_RX_BUF) ? (uint16_t)DSP_INIT_RX_BUF : hlen;
-        okp = i2c_7100_read(I2C_7100_ADDR, pay, rd);
+
+    /* 合理性门：正常通知帧只有 1/3/10/16 字节（见上面的抓包），读回的 174/306/375B 大块
+     * 走读回路径、不在这里。len16 超过缓冲只能是「错位后把 payload 当头」的垃圾值 ——
+     * 2026-10-28 那场风暴里就是 835/32839/58248。这种帧不读、不 ack，直接停。 */
+    if (hlen > DSP_INIT_RX_BUF) {
+        PRINTF("[SNIFF] #%lu HDR %02X %02X %02X len16=%u 不合理 → 判错位，停止监听\r\n",
+               (unsigned long)(s_n + 1), hdr[0], hdr[1], hdr[2], (unsigned)hlen);
+        return SNIFF_R_DESYNC;
     }
 
-    /* lvl 打在触发之后：上升沿刚过，正常应读回 1 —— 这是 §25.9.4 第 3 条要的极性数据。 */
+    if (hlen > 0) {
+        rd  = hlen;
+        okp = sniff_read_retry(pay, rd);
+    }
+
+    /* lvl 打在触发之后：上升沿刚过，正常应读回 1 —— 这是 §25.9.4 第 3 条要的极性数据。
+     * ok 恒为 1（头读失败且重试耗尽时上面已返回 BAD），保留这个字段与旧日志格式对齐。 */
     PRINTF("[SNIFF] #%lu rise=%lu lvl=%u ok=%u HDR %02X %02X %02X len16=%u DATA%uB\r\n",
            (unsigned long)(s_n + 1), (unsigned long)rise,
            (unsigned)DIO_DATA->ALIAS[13], okh,
@@ -114,7 +159,9 @@ static void sniff_read(void)
 
     if (rd > 0) {
         PRINTF("[SNIFF] #%lu data ok=%u:", (unsigned long)(s_n + 1), okp);
-        sniff_dump(pay, rd);
+        if (okp) {
+            sniff_dump(pay, rd);     /* 读失败时 pay 是未初始化栈内存，不 dump */
+        }
         PRINTF("\r\n");
 
         /* 认出来的通知（程序号 0x0016 / 音量 0x0012）上报给手机；BLE 未连接时内部跳过。
@@ -123,6 +170,8 @@ static void sniff_read(void)
             rempro_push_7100_notify(pay, (uint8_t)((rd > 3u) ? 3u : rd));
         }
     }
+
+    return okp ? SNIFF_R_OK : SNIFF_R_BAD;
 }
 
 static void sniff_echo(void)
@@ -190,8 +239,22 @@ void dsp_7100_sniff_poll(void)
         s_st = SN_READ;
         return;
     case SN_READ:
-        sniff_read();
-        s_st = SN_ACK;
+        switch (sniff_read()) {
+        case SNIFF_R_OK:
+            s_st = SN_ACK;
+            break;
+        case SNIFF_R_BAD:
+            /* 三次重试仍没读全 → 不发 82（没读全就 ack 必错位），并且停手：不停的话，
+             * 5s 心跳 {0x88,0x01} 引起的沿会把错位后的流当帧读，就是文件头说的自激风暴。 */
+            PRINTF("[SNIFF] #%lu 读数失败，不发 82，停止监听（复位才能恢复）\r\n",
+                   (unsigned long)(s_n + 1));
+            s_st = SN_DEAD;
+            break;
+        default:                   /* SNIFF_R_DESYNC */
+            PRINTF("[SNIFF] 被动监听已停止（复位才能恢复）\r\n");
+            s_st = SN_DEAD;
+            break;
+        }
         return;
     case SN_ACK:
     {
@@ -209,8 +272,7 @@ void dsp_7100_sniff_poll(void)
     case SN_ECHO:
         sniff_echo();
         return;
-    default:
-        s_st = SN_WAIT_RISE;
+    default:                       /* SN_DEAD：错位后彻底停手（不读、不发 82），复位恢复 */
         return;
     }
 }

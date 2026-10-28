@@ -394,7 +394,7 @@ static void aud_push_schedule(uint8_t what)
  * 7100 写会话要跑 3.2~5.6s（均衡器最长），期间来的设置命令不丢弃：按命令类型合并
  * （同类型只留最新一条 —— 均衡器/降噪/DFBC 都是**绝对值**语义，丢中间帧不影响终态），
  * 会话结束再依次执行。命令一律**立即应答**，Flag=0 仅表示"已受理"，不代表已写入。 */
-#define PEND_MAX   4   /* 降噪 / DFBC / EQ / 自动切换+飞行模式 各占一槽 */
+#define PEND_MAX   6   /* 降噪 / DFBC / EQ / 自动切换+飞行模式 / 切程序 / 音量 各占一槽 */
 #define PEND_NONE  0
 
 typedef struct
@@ -420,7 +420,7 @@ static void pend_put(uint16_t cmd_id, uint8_t prog, uint8_t arg, int8_t db)
             if (s_pend[i].cmd_id == PEND_NONE) break;   /* 空槽 */
         }
     }
-    if (i == PEND_MAX) i = 0;                           /* 4 种命令各有一槽，正常走不到 */
+    if (i == PEND_MAX) i = 0;                           /* 6 种命令各有一槽，正常走不到 */
 
     s_pend[i].cmd_id = cmd_id;
     s_pend[i].prog   = prog;
@@ -428,10 +428,15 @@ static void pend_put(uint16_t cmd_id, uint8_t prog, uint8_t arg, int8_t db)
     s_pend[i].db     = db;
 }
 
-/* 会话结束后由 APP_7100_HB_Handler 调：启动下一条缓存的命令（无缓存则空操作） */
+/* 每 200ms tick 由 APP_7100_HB_Handler 调：启动下一条缓存的命令。
+ * 无缓存 / 有会话在跑 / 开机读回没完 —— 都直接返回（会话在跑时 tick 本身就不会调进来）。 */
 void rempro_pending_start_next(void)
 {
     uint8_t i;
+
+    /* 读回没跑完不许开会话（同 a7_session_start 的门）。这段期间进的队留着，
+     * 读回一完成就下发 —— 否则队列会被"启动失败"白吃掉。 */
+    if (!dsp_7100_rb_done()) return;
 
     for (i = 0; i < PEND_MAX; i++) {
         uint16_t cmd_id;
@@ -451,6 +456,12 @@ void rempro_pending_start_next(void)
         if (cmd_id == CMD_SETDENOISE)            ok = dsp_7100_set_denoise(prog, arg);
         else if (cmd_id == CMD_SETFEEDBACKONOFF) ok = dsp_7100_set_dfbc(prog, arg);
         else if (cmd_id == CMD_SETAUTOSWITCHMODE) ok = dsp_7100_set_auto_switch_mode(arg, prog);
+        else if (cmd_id == CMD_SETCURRENTSCENE) {
+            ok = dsp_7100_switch_program(prog);
+            /* 会话真起来了才设抑制标志（同值 0x0016 回声不推回 App） */
+            if (ok) s_scene_push_suppress_prog = prog;
+        }
+        else if (cmd_id == CMD_SETVOLUME)        ok = dsp_7100_set_volume(arg);
         else                                     ok = dsp_7100_set_eq(prog, arg, db);
 
         PRINTF("[REMPRO] 缓存命令下发 cmd=%u prog=%u started=%u\r\n", cmd_id, prog, ok);
@@ -563,8 +574,13 @@ static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
     level = volume;                         /* App 档位 0-6 = 7100 档位 0-6 */
 
     ok = dsp_7100_set_volume(level);
-    PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u\r\n",
-           volume, level, ok);
+    if (!ok) {
+        /* 会话/开机读回占着 I2C：缓存下来，空闲后下发（同 SetDenoise）。
+         * 以前直接丢掉还回"成功"，App 与设备就此不同步。 */
+        pend_put(CMD_SETVOLUME, 0, level, 0);
+    }
+    PRINTF("[REMPRO] SetVolume7100: vol=%u -> level=%u ok=%u%s\r\n",
+           volume, level, ok, ok ? "" : " (已缓存)");
 
     hdlc_response_set(CMD_SETVOLUME, true);
 }
@@ -588,9 +604,13 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
     if (ok) {
         /* 会话已受理：随后 7100 回执里的同值 0x0016 不推回 App（见标志定义处） */
         s_scene_push_suppress_prog = (uint8_t)(scene_id + 1);
+    } else {
+        /* 会话/开机读回占着 I2C：缓存下来，空闲后下发（同 SetDenoise）。
+         * 以前直接丢掉还回"成功"，App 以为切了、再读回还是旧场景。 */
+        pend_put(CMD_SETCURRENTSCENE, (uint8_t)(scene_id + 1), 0, 0);
     }
-    PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u\r\n",
-           scene_id, scene_id + 1, ok);
+    PRINTF("[REMPRO] SetCurrentScene7100: scene=%u -> prog=%u ok=%u%s\r\n",
+           scene_id, scene_id + 1, ok, ok ? "" : " (已缓存)");
 
     hdlc_response_set(CMD_SETCURRENTSCENE, true);
 }
