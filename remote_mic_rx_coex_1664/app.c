@@ -34,6 +34,13 @@ int main()
      * configure the 'OUTPUT_INTERFACE' macro in printf.h */
     PRINTF("__remote_mic_rx_coex has started!\r\n");
 
+    /* 版本探针（2026-10-30 临时加，测完可删）：确认烧进板子的确实是这份构建。
+     * __DATE__ / __TIME__ 是**编译时刻**，Eclipse 重编必变；
+     * PROBE 标签同时写进 .elf/.hex 的 .rodata，可用于确认产物内容。
+     * 判据：串口这行的时间和 Debug 目录里 elf/hex 的生成时间对得上。 */
+    PRINTF("[VER] RX1664 build %s %s probe=RX1664_RESTORE_READFIRST_1030\r\n",
+           __DATE__, __TIME__);
+
     /* 本次开机 RM 音频流地址（from flash = 89 号写入的持久化值已被采用；
      * default = 无记录，用出厂值。两者取值可能恰好相同，只能靠这个标签区分）。
      * 必须在 App_Initialize() 之后打 —— APP_RM_Init() 里打会死锁，见开发文档 §19。 */
@@ -82,6 +89,14 @@ int main()
     /* 握手结束，打印累计边沿数当基线（ISR 此时早已跑过）。主循环里那条减去
      * 这条，差值就是下面 106 步引导的贡献。 */
     dsp_7100_dio13_irq_poll();
+
+    /* 用户状态记忆（当前程序号 / 音量档位）：必须在 7100 引导**之前**载入 ——
+     * 引导第 30/32 步会解析 7100 的 Volume / Memory 记录，而 7100 侧掉电记忆已关闭、
+     * 不可信；flash 有记录时那两条必须被忽略（见 dsp_7100_track_cfg_record）。
+     * 正常情况下重发排在读回**之前**（dsp_7100_restore_pending() 挡住读回）。
+     * ⚠ 2026-10-30 测试期改由主循环 dsp_7100_restore_poll() 走：静音 → 等 28 条读回
+     *   完成 → 切模式 → 切成功后 3s 调音量（见 dsp_7100_cmd.c 的 DELAY_WAIT）。 */
+    dsp_7100_user_state_load();
 
     /* 7100 同步引导（A7 之前的普通步）；读回由 200ms tick 推进。
      * DSP7100_BOOT_INIT_ENABLE=0 时整段跳过（实验用，见 dsp_7100_init.h）。 */
@@ -153,6 +168,10 @@ int main()
         /* 7100 读回落盘（flash 擦写不在定时器上下文做） */
         dsp_7100_process_deferred();
 
+        /* 用户状态记忆：10 分钟落定后写 flash；开机读回前把值重发给 7100 */
+        dsp_7100_user_state_flush();
+        dsp_7100_restore_poll();
+
         /* DIO13 边沿（7100 响应就绪）：边沿在 ISR 里计数，这里打印 */
         dsp_7100_dio13_irq_poll();
 
@@ -174,8 +193,12 @@ int main()
          * 就会先读到这帧陈货。
          * ⚠ 2026-10-09 起读回**每次开机都跑**（与 flash 对比，见 dsp_7100_cache_try_load），
          *   所以这里只需等 dsp_7100_rb_done() —— 不再有「缓存命中即换手」那条路。
-         * 两者都由 `!dsp_7100_cmd_busy()` 挡着：会话自己也要读、也要发 82。 */
-        if (!dsp_7100_cmd_busy())
+         * 两者都由 `!dsp_7100_cmd_busy()` 挡着：会话自己也要读、也要发 82。
+         * 2026-10-30 起再加 `!dsp_7100_restore_pending()`：开机恢复（程序/音量重发）
+         * 必须排在读回**之前**，恢复没跑完就不启动读回（两者交错会抢 7100 读指针）。
+         * ⚠ 唯一例外是「等读回完成」那一步 —— 它只是在等本函数，不占 I2C，函数对它返回
+         *   false，所以读回能跑；读回一完成就切模式、切成功后 3s 再调音量（见 DELAY_WAIT）。 */
+        if (!dsp_7100_cmd_busy() && !dsp_7100_restore_pending())
         {
             dsp_7100_rb_poll();
 #if (DSP7100_DIO13_SNIFF_ENABLE)

@@ -306,6 +306,21 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume)
     hdlc_push(CMD_PUSH_VOLUME, d, 4);
 }
 
+/* 7100 **只有切程序会自动解除静音**（本地按键，以及 BLE `SetCurrentScene` 那条单帧
+ * `A2 00 16`，开发者 2026-10-30 确认；两者都经 `00 16` 通知回到这里）。
+ * **调音量不会解静音**（同一确认）—— 所以 `00 12` 分支不调本函数：设备还静音着，
+ * 若把 s_device_on 置 1，GetDeviceOnOff(33) 会误报「开机」，且 App 再发 SetMuteData
+ * 时 changed=0 → 静音命令被当成重复下发吞掉。
+ * 切程序时把 s_device_on 拉回「开」，否则：
+ *   ① GetDeviceOnOff(33) 会一直报「静音」，App 显示与实际不符；
+ *   ② App 再发 SetMuteData 时 changed=0 → 静音命令被吞，设备根本不会静音。 */
+static void device_on_sync_from_7100(const char *why)
+{
+    if (s_device_on) return;
+    s_device_on = 1;
+    PRINTF("[REMPRO] 7100 %s → 静音状态复位为 开\r\n", why);
+}
+
 /* 7100 主动通知（DIO13 推来）→ App 上报：见 ble_rempro_cmd.h。
  * 解码（含更新跟踪值）在 dsp_7100_cmd.c，这里只做「7100 地址 → App 协议」的换算。
  * ⚠ 推送经 hdlc_push 直接连发，不走应答那条 GATTC 完成事件队列；
@@ -318,6 +333,7 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
     what = dsp_7100_notify_apply(payload, len, &val);
 
     if (what == DSP7100_NOTIFY_PROG) {
+        device_on_sync_from_7100("切程序");
         if (s_scene_push_suppress_prog == val) {
             /* BLE 自己发起的切换：回执只是回声，App 已知道，不推 */
             s_scene_push_suppress_prog = 0;
@@ -326,6 +342,7 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
             rempro_push_scene_change((uint8_t)(val - 1));      /* val = 程序号 1-4 */
         }
     } else if (what == DSP7100_NOTIFY_VOL) {
+        /* 调音量**不解静音**（见 device_on_sync_from_7100 上方注释）—— 只同步值并上报 */
         rempro_push_volume_change((uint8_t)(dsp_7100_get_program() - 1),
                                   val);                        /* val = 档位 0-6 = App 档位 */
     }
@@ -573,6 +590,7 @@ static void cmd_setvolume_7100(const uint8_t *data, uint8_t len)
 
     level = volume;                         /* App 档位 0-6 = 7100 档位 0-6 */
 
+    dsp_7100_restore_cancel();              /* 用户命令优先，放弃开机恢复 */
     ok = dsp_7100_set_volume(level);
     if (!ok) {
         /* 会话/开机读回占着 I2C：缓存下来，空闲后下发（同 SetDenoise）。
@@ -600,6 +618,7 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
         return;
     }
 
+    dsp_7100_restore_cancel();              /* 用户命令优先，放弃开机恢复 */
     ok = dsp_7100_switch_program((uint8_t)(scene_id + 1));
     if (ok) {
         /* 会话已受理：随后 7100 回执里的同值 0x0016 不推回 App（见标志定义处） */
@@ -1228,6 +1247,7 @@ static void cmd_setaudiometrystatus(const uint8_t *data, uint8_t len)
     case 0:   /* 进入测听：切程序 → 0x2E=0x00 → 解除静音（照 tonestar.txt 抓包顺序）*/
         if (s_audiometry_active) break;                  /* 已在测听，幂等 */
         s_audiometry_prev_prog = dsp_7100_get_program();
+        dsp_7100_restore_cancel();                       /* 用户命令优先，放弃开机恢复 */
         if (!dsp_7100_audiometry(true, s_audiometry_prev_prog)) {
             PRINTF("[REMPRO] SetAudiometryStatus: 入测听会话启动失败\r\n");
             break;

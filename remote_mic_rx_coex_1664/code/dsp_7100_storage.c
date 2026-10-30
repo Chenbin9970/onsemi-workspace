@@ -43,8 +43,8 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
  *   [3]      eq_low   (int8, App 上次下发的绝对值 ±dB)
  *   [4]      eq_mid
  *   [5]      eq_high
- *   [6..21]  wdrc_ll[16]   设备当前值（含 EQ）
- *   [22..37] wdrc_hl[16]   设备当前值（含 EQ）
+ *   [6..21]  wdrc_ll[16]   **基准**（不含 EQ；App 设的绝对值）
+ *   [22..37] wdrc_hl[16]   **基准**（不含 EQ）
  *   [38..53] wdrc_ol[16]
  *   [54..57] magic "D71P"
  *   [58]     version
@@ -71,7 +71,8 @@ static const uint32_t CACHE_BASE[DSP7100_CACHE_PROGS] = {
 #define CACHE_SLOT_WORDS   (CACHE_SLOT_BYTES / 4)     /* 16 */
 
 static const uint8_t CACHE_MAGIC[4] = { 'D', '7', '1', 'P' };
-#define CACHE_VERSION   5    /* v5: wdrc_ll/hl 语义由"不含 EQ 的基准"改为"设备当前值" */
+#define CACHE_VERSION   6    /* v6: wdrc_ll/hl 恢复为**基准**（不含 EQ）；EQ 写 = 基准 + 绝对值，
+                              *     读回只在槽无效时建立基准（v5 的"设备当前值"槽自动失效重读） */
 #define CACHE_VALID     0xA5
 
 /* ---- Settings 扇区（最后一个 2KB，在链接区 380K 上界 0x15F000 之外）----
@@ -95,6 +96,26 @@ static const uint8_t CACHE_MAGIC[4] = { 'D', '7', '1', 'P' };
 static const uint8_t SETS_MAGIC[4] = { 'R', 'M', 'S', 'T' };
 #define SETS_VERSION     1
 #define SETS_VALID       0xA5
+
+/* ---- Settings 扇区内的用户状态 append-only 槽（布局见 include/dsp_7100_storage.h）----
+ * 偏移 0..15 留给上面的流地址记录，槽从 16 起（16B 对齐，正好是 4 word）。 */
+#define SETTINGS_BYTES        2048
+#define MEM_SLOT_OFF          16
+#define MEM_SLOT_BYTES        16
+#define MEM_SLOT_WORDS        (MEM_SLOT_BYTES / 4)                            /* 4 */
+#define MEM_SLOT_MAX          ((SETTINGS_BYTES - MEM_SLOT_OFF) / MEM_SLOT_BYTES) /* 127 */
+
+#define MEM_PROG_OFF          0
+#define MEM_VOL_OFF           1
+#define MEM_MAGIC_OFF         2
+#define MEM_VER_OFF           6
+#define MEM_VALID_OFF         7
+#define MEM_CRC_OFF           8
+#define MEM_CRC_LEN           8
+#define MEM_VERSION           1
+#define MEM_VALID             0xA5
+
+static const uint8_t MEM_MAGIC[4] = { 'D', '7', '1', 'M' };
 
 /* ---- Main Flash unlock（HIGH region 0x00150000+，同 BS300）---- */
 static void main_flash_unlock(void)
@@ -120,6 +141,21 @@ static uint16_t crc16_xmodem(const uint8_t *data, uint16_t len)
         }
     }
     return crc;
+}
+
+/* 校验 Settings 扇区里的流地址记录（magic / version / valid / CRC）。 */
+static bool stream_record_valid(const uint8_t *rec)
+{
+    uint16_t stored, calc;
+
+    if (memcmp(rec + SETS_MAGIC_OFF, SETS_MAGIC, 4) != 0) return false;
+    if (rec[SETS_VALID_OFF] != SETS_VALID) return false;
+    if (rec[SETS_VER_OFF] != SETS_VERSION) return false;
+
+    stored = (uint16_t)rec[SETS_CRC_OFF]
+           | ((uint16_t)rec[SETS_CRC_OFF + 1] << 8);
+    calc = crc16_xmodem(rec, SETS_CRC_LEN);
+    return (stored == calc);
 }
 
 /* 校验某程序的 flash 槽；通过则返回 payload 指针，否则 NULL。 */
@@ -279,6 +315,12 @@ bool dsp_7100_settings_save_stream_addr(uint32_t stream_addr)
     uint32_t buf[SETS_REC_WORDS];
     uint8_t *sb = (uint8_t *)buf;
     uint16_t crc;
+    uint8_t  mem_prog = 0;
+    uint8_t  mem_vol  = 0;
+    bool     mem_ok;
+
+    /* 本扇区同时存用户状态槽，擦扇区会连带清掉 —— 先读出来，写完再补回 */
+    mem_ok = dsp_7100_settings_load_user_state(&mem_prog, &mem_vol);
 
     memset(sb, 0xFF, SETS_REC_BYTES);
     sb[SETS_ADDR_OFF]     = (uint8_t)(stream_addr & 0xFF);
@@ -309,6 +351,10 @@ bool dsp_7100_settings_save_stream_addr(uint32_t stream_addr)
     }
     __enable_irq();
 
+    if (mem_ok && !dsp_7100_settings_save_user_state(mem_prog, mem_vol)) {
+        PRINTF("[7100-settings] user state restore FAIL\r\n");
+    }
+
     PRINTF("[7100-settings] stream addr saved (crc=%04X)\r\n", crc);
     return true;
 }
@@ -316,21 +362,185 @@ bool dsp_7100_settings_save_stream_addr(uint32_t stream_addr)
 bool dsp_7100_settings_load_stream_addr(uint32_t *stream_addr)
 {
     const uint8_t *rec = (const uint8_t *)SETTINGS_BASE;
-    uint16_t stored, calc;
 
     if (stream_addr == NULL) return false;
-
-    if (memcmp(rec + SETS_MAGIC_OFF, SETS_MAGIC, 4) != 0) return false;
-    if (rec[SETS_VALID_OFF] != SETS_VALID) return false;
-    if (rec[SETS_VER_OFF] != SETS_VERSION) return false;
-
-    stored = (uint16_t)rec[SETS_CRC_OFF]
-           | ((uint16_t)rec[SETS_CRC_OFF + 1] << 8);
-    calc = crc16_xmodem(rec, SETS_CRC_LEN);
-    if (stored != calc) return false;
+    if (!stream_record_valid(rec)) return false;
 
     *stream_addr = (uint32_t)rec[SETS_ADDR_OFF]
                  | ((uint32_t)rec[SETS_ADDR_OFF + 1] << 8)
                  | ((uint32_t)rec[SETS_ADDR_OFF + 2] << 16);
+    return true;
+}
+
+/* ---- 用户状态记忆（当前程序号 / 音量档位）---- */
+
+static const uint8_t *mem_slot(uint8_t idx)
+{
+    return (const uint8_t *)(SETTINGS_BASE + MEM_SLOT_OFF
+                             + (uint16_t)idx * MEM_SLOT_BYTES);
+}
+
+/* 槽是否是一条完整有效的记忆记录（含范围检查）。 */
+static bool mem_slot_valid(const uint8_t *rec)
+{
+    uint16_t stored, calc;
+
+    if (memcmp(rec + MEM_MAGIC_OFF, MEM_MAGIC, 4) != 0) return false;
+    if (rec[MEM_VALID_OFF] != MEM_VALID) return false;
+    if (rec[MEM_VER_OFF] != MEM_VERSION) return false;
+
+    stored = (uint16_t)rec[MEM_CRC_OFF]
+           | ((uint16_t)rec[MEM_CRC_OFF + 1] << 8);
+    calc = crc16_xmodem(rec, MEM_CRC_LEN);
+    if (stored != calc) return false;
+
+    if (rec[MEM_PROG_OFF] < 1 || rec[MEM_PROG_OFF] > DSP7100_MEM_PROG_MAX) return false;
+    if (rec[MEM_VOL_OFF] > DSP7100_MEM_VOL_MAX) return false;
+    return true;
+}
+
+/* 槽是否从未写过（整槽 0xFF）。写过一半的坏槽跳过，不覆盖。 */
+static bool mem_slot_empty(const uint8_t *rec)
+{
+    uint8_t i;
+
+    for (i = 0; i < MEM_SLOT_BYTES; i++) {
+        if (rec[i] != 0xFF) return false;
+    }
+    return true;
+}
+
+/* 最新一条有效槽号；没有返回 -1。 */
+static int mem_find_latest(void)
+{
+    int slot;
+
+    for (slot = (int)MEM_SLOT_MAX - 1; slot >= 0; slot--) {
+        if (mem_slot_valid(mem_slot((uint8_t)slot))) return slot;
+    }
+    return -1;
+}
+
+/* 第一条空槽号；全部写满返回 0xFF。 */
+static uint8_t mem_find_empty(void)
+{
+    uint8_t slot;
+
+    for (slot = 0; slot < MEM_SLOT_MAX; slot++) {
+        if (mem_slot_empty(mem_slot(slot))) return slot;
+    }
+    return 0xFF;
+}
+
+static void mem_build_record(uint8_t *buf, uint8_t prog, uint8_t vol)
+{
+    uint16_t crc;
+
+    memset(buf, 0xFF, MEM_SLOT_BYTES);
+    buf[MEM_PROG_OFF] = prog;
+    buf[MEM_VOL_OFF]  = vol;
+    memcpy(buf + MEM_MAGIC_OFF, MEM_MAGIC, 4);
+    buf[MEM_VER_OFF]   = MEM_VERSION;
+    buf[MEM_VALID_OFF] = MEM_VALID;
+    crc = crc16_xmodem(buf, MEM_CRC_LEN);
+    buf[MEM_CRC_OFF]     = (uint8_t)(crc & 0xFF);
+    buf[MEM_CRC_OFF + 1] = (uint8_t)(crc >> 8);
+}
+
+/* 写一个 16B 槽（4 word）。调用方保证该槽是擦除态。 */
+static bool mem_write_slot(uint8_t idx, uint32_t *buf)
+{
+    uint32_t addr = (uint32_t)(SETTINGS_BASE + MEM_SLOT_OFF
+                               + (uint16_t)idx * MEM_SLOT_BYTES);
+
+    main_flash_unlock();
+    Sys_Watchdog_Refresh();
+    __disable_irq();
+    if (Flash_WriteBuffer(addr, MEM_SLOT_WORDS, (unsigned int *)buf) != FLASH_ERR_NONE) {
+        __enable_irq();
+        PRINTF("[7100-mem] slot %u write FAIL\r\n", (unsigned)idx);
+        return false;
+    }
+    __enable_irq();
+    return true;
+}
+
+/* 槽写满：整扇区擦除 → 补写流地址记录（原来有才补）→ 把本槽写到 0 号。 */
+static bool mem_sector_recycle(uint8_t prog, uint8_t vol)
+{
+    uint32_t stream_buf[SETS_REC_WORDS];
+    uint32_t buf[MEM_SLOT_WORDS];
+    bool     stream_ok;
+
+    stream_ok = stream_record_valid((const uint8_t *)SETTINGS_BASE);
+    if (stream_ok) {
+        memcpy(stream_buf, (const void *)SETTINGS_BASE, SETS_REC_BYTES);
+    }
+
+    main_flash_unlock();
+    Sys_Watchdog_Refresh();
+    __disable_irq();
+    if (Flash_EraseSector(SETTINGS_BASE) != FLASH_ERR_NONE) {
+        __enable_irq();
+        PRINTF("[7100-mem] sector erase FAIL\r\n");
+        return false;
+    }
+    if (stream_ok &&
+        Flash_WriteBuffer(SETTINGS_BASE, SETS_REC_WORDS, stream_buf) != FLASH_ERR_NONE) {
+        __enable_irq();
+        PRINTF("[7100-mem] stream addr restore FAIL\r\n");
+        return false;
+    }
+    __enable_irq();
+
+    mem_build_record((uint8_t *)buf, prog, vol);
+    if (!mem_write_slot(0, buf)) return false;
+
+    PRINTF("[7100-mem] slots full -> sector erased (stream addr %s), saved prog=%u vol=%u\r\n",
+           stream_ok ? "restored" : "none", prog, vol);
+    return true;
+}
+
+bool dsp_7100_settings_load_user_state(uint8_t *prog, uint8_t *vol)
+{
+    int            last;
+    const uint8_t *rec;
+
+    if (prog == NULL || vol == NULL) return false;
+
+    last = mem_find_latest();
+    if (last < 0) return false;
+
+    rec   = mem_slot((uint8_t)last);
+    *prog = rec[MEM_PROG_OFF];
+    *vol  = rec[MEM_VOL_OFF];
+    return true;
+}
+
+bool dsp_7100_settings_save_user_state(uint8_t prog, uint8_t vol)
+{
+    uint32_t buf[MEM_SLOT_WORDS];
+    uint8_t  slot;
+    int      last;
+
+    if (prog < 1 || prog > DSP7100_MEM_PROG_MAX) return false;
+    if (vol > DSP7100_MEM_VOL_MAX) return false;
+
+    /* 与最新一条相同 → 不写（开机恢复重发不会重复落盘） */
+    last = mem_find_latest();
+    if (last >= 0) {
+        const uint8_t *rec = mem_slot((uint8_t)last);
+
+        if (rec[MEM_PROG_OFF] == prog && rec[MEM_VOL_OFF] == vol) return true;
+    }
+
+    slot = mem_find_empty();
+    if (slot == 0xFF) return mem_sector_recycle(prog, vol);
+
+    mem_build_record((uint8_t *)buf, prog, vol);
+    if (!mem_write_slot(slot, buf)) return false;
+
+    PRINTF("[7100-mem] saved prog=%u vol=%u slot=%u\r\n",
+           prog, vol, (unsigned)slot);
     return true;
 }

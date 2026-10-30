@@ -265,6 +265,9 @@ static uint32_t s_rb_wait_fall;     /* 发 82 前记的下降沿数：RB_SEND �
 static uint8_t  s_rb_low_ticks = 0; /* 本步「tick 放行但线低」连吞了几拍（同命令族，见 rb_poll） */
 static uint8_t  s_rb_rescue_cnt = 0;/* 本步已做的兜底读次数（DSP7100_RESCUE_MAX 封顶，同命令族） */
 static uint8_t  s_rb_fail_cnt = 0;  /* 本步连续读不对的拍数：到 RB_FAIL_MAX 就终止读回（见 seq_tick） */
+/* 每程序：flash 槽是否有效（开机时拍下）。有效 = 缓存里的 wdrc_ll/hl 是**基准**，
+ * 读回解析不得覆盖（v6，2026-10-30）；无效 = 首次开机/0xFE 失效，用读回值建立基准。 */
+static uint8_t  s_llhl_from_cache[RB_PROGS];
 
 /* 同一步连续失败多少拍就放弃读回：25 拍 × 200ms ≈ 5s。
  * 目的只有一个 —— 别让「7100 读指针卡在 payload 中段」变成永久死循环：
@@ -297,15 +300,23 @@ static int32_t rb_ch_base(uint8_t ch)
 }
 
 /* 解析 WDRC 块（375B）→ LL / HL / OL ×16。
- * 字段定义见 docs/7100协议/WDRC/7100_WDRC读取.md §6。 */
+ * 字段定义见 docs/7100协议/WDRC/7100_WDRC读取.md §6。
+ * LL/HL 是 **EQ 基准**（缓存 v6 语义）：槽有效时保留 flash 值，不拿设备当前值
+ * （含 EQ 偏移）覆盖 —— 否则 App 每开机重设一次 EQ，基准就被抬高一次。
+ * OL 不受 EQ 影响，照常更新。 */
 static void rb_parse_wdrc(uint8_t prog, const uint8_t *wp)
 {
     dsp_7100_prog_t *p = &s_rb_bufs.prog[prog];
+    uint8_t keep = s_llhl_from_cache[prog];
     uint8_t ch;
+
     for (ch = 0; ch < RB_CH; ch++) {
         int32_t base = rb_ch_base(ch);
-        p->wdrc_ll[ch] = rb_field(wp, base + RB_LL_OFF, 7);
-        p->wdrc_hl[ch] = rb_field(wp, base + RB_HL_OFF, 8);
+
+        if (!keep) {
+            p->wdrc_ll[ch] = rb_field(wp, base + RB_LL_OFF, 7);
+            p->wdrc_hl[ch] = rb_field(wp, base + RB_HL_OFF, 8);
+        }
         p->wdrc_ol[ch] = rb_field(wp, base + RB_OL_OFF, 8);
     }
 }
@@ -333,9 +344,10 @@ static void rb_parse_print(void)
     for (prog = 0; prog < RB_PROGS; prog++) {
         const dsp_7100_prog_t *p = &s_rb_bufs.prog[prog];
 
-        PRINTF("[RB] P%u 降噪 en=%u lvl=%u | DFBC=%s | WDRC LL/HL/OL:",
+        PRINTF("[RB] P%u 降噪 en=%u lvl=%u | DFBC=%s | WDRC LL/HL/OL%s:",
                prog + 1, p->denoise_en, p->denoise_lvl,
-               p->dfbc_en ? "on" : "off");
+               p->dfbc_en ? "on" : "off",
+               s_llhl_from_cache[prog] ? "(LL/HL=flash)" : "");
         for (uint8_t ch = 0; ch < RB_CH; ch++) {
             PRINTF(" %d/%d/%d", p->wdrc_ll[ch], p->wdrc_hl[ch], p->wdrc_ol[ch]);
         }
@@ -610,14 +622,25 @@ const dsp_7100_prog_t *dsp_7100_get_prog(uint8_t prog)
  *   读回结果与 flash 槽逐字节对比（storage 层），有差异才覆盖、无差异不碰 flash。
  * flash 旧值仍要载入：
  *   ① 读回解析**不碰** eq_low/mid/high（见 rb_parse_*），这三个字段唯一来源就是 flash
- *      槽 —— 不载入则每次开机归零，与 flash 必然判成「有差异」（每次都擦写），
- *      且 App 的 EQ 增量（a7_build_session 的 s_eq_delta）跟着算错。
+ *      槽 —— 不载入则每次开机归零，与 flash 必然判成「有差异」（每次都擦写）。
+ *      槽有效时 wdrc_ll/hl（EQ 基准）也一并保留，不拿含 EQ 的设备值覆盖（v6）。
  *   ② 读回中途失败时 RAM 里还留着能用的一份旧值。
  * ⚠ s_rb_done **不能**在这里置 1：app.c 一见 done 就把 DIO13 交给被动监听，
  *   读回就再也跑不动了（读回唯一的推进点是 dsp_7100_rb_poll）。 */
 void dsp_7100_cache_try_load(void)
 {
-    if (dsp_7100_cache_load()) {
+    uint8_t prog;
+    bool    hit;
+
+    hit = dsp_7100_cache_load();
+
+    /* 拍下每程序槽是否命中：命中 = LL/HL 基准以 flash 为准，读回不覆盖。
+     * 必须在这里拍 —— 读回解析会给 valid[] 置位，之后就看不出「是否来自 flash」了。 */
+    for (prog = 0; prog < RB_PROGS; prog++) {
+        s_llhl_from_cache[prog] = s_rb_bufs.valid[prog];
+    }
+
+    if (hit) {
         PRINTF("[7100-cache] flash 旧值已载入（本次仍走读回对比）\r\n");
         rb_parse_print();       /* 旧值先打一遍，便于与读回后的新值对照 */
     } else {

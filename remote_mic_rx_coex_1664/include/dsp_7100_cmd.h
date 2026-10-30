@@ -138,11 +138,11 @@ bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
 bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane);
 
 /* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB，1dB/LSB）。
- * 写入值 = 设备当前值 + (本次绝对值 − 上次保存的绝对值)，作用于该段通道的
- * LowLevelGain 与 HighLevelGain；写入后的值落盘，下次据此算差值。
- * 通道映射（数组下标）：低音 {1,2} ｜ 中音 {3,4} ｜ 高音 {6,7}。
+ * 写入值 = **基准 + 本次绝对值**，作用于该段通道的 LowLevelGain 与 HighLevelGain；
+ * 基准（Get 上报的 LowLevelGain/HighLevelGain）不被 EQ 改动，两者一起落盘。
+ * 通道映射（7100 通道号）：低音 ch1-3 ｜ 中音 ch4-8 ｜ 高音 ch9-16（2026-10-30 定）。
  * db 超出 ±10 会被钳位。返回 true = 会话已启动。
- * ⚠ 每段 2 通道 = 20 命令（含 6 条 0x03 探测），全程静音（mute → 写 → 解除），属已知取舍。 */
+ * ⚠ 命令数 = 通道数×4 + 12（含 6 条 0x03 探测）：低音 24 / 中音 32 / 高音 44，全程静音。 */
 bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db);
 
 /* 一个 WDRC 设置项：ch 1-16，val = **7100 侧 dB 绝对值** */
@@ -234,6 +234,32 @@ void dsp_7100_cmd_tick(void);
  * （`0x2A` / `0x2E`），正常兜 1~2 次就自然停。收尾那段是同步循环，约 30ms 不喂 BLE/音频。
  * **读回的收尾兜底读同此**（它在 dsp_7100_rb_seq_tick 跑完一轮处）。 */
 void dsp_7100_cmd_poll(void);
+
+/* ---- 用户状态记忆：当前程序号 / 音量档位（2026-10-30）----
+ * 7100 侧「掉电保存 Volume / Memory」已关闭，改由 RSL10 存 flash
+ * （Settings 扇区 append-only 槽，格式见 dsp_7100_storage.h）。
+ *   变更成功后等 **10 分钟无新变更**再落盘（200ms tick × 3000）；
+ *   开机在**读回全部参数之前**以 flash 为准，把程序号 / 音量档位重发给 7100。
+ *   ⚠ 2026-10-30 测试期：静音 → 28 条读回 → 读回完成即切模式 → 切成功后 3s 调音量，
+ *     见 restore_poll。
+ * ⚠ 已知取舍（开发者确认）：最后一次变更后 10 分钟内掉电会丢。
+ * ⚠ 恢复**首尾**不加静音（2026-10-30 试过又撤掉）：7100 一切程序就自动解除静音，
+ *   静音压不住恢复过程。测试期只是**开头单独发一条静音**（不复原），见上。
+ *
+ * 调用点：
+ *   app.c          —— 开机握手后 user_state_load()、主循环 user_state_flush() + restore_poll()；
+ *                     restore_pending() 为真期间**不启动读回**（恢复 → 读回，顺序固定）
+ *   app_process.c  —— 200ms tick 调 user_state_tick()
+ *   ble_rempro_cmd.c 的 SetVolume / SetCurrentScene / 进入测听 —— 调 restore_cancel()
+ *                   （BLE 命令优先，否则恢复会把刚设的值 / 刚进的测听切回去） */
+void dsp_7100_user_state_load(void);
+void dsp_7100_user_state_tick(void);    /* 200ms tick，只计时/置落盘请求 */
+void dsp_7100_user_state_flush(void);   /* 主循环，真正写 flash */
+void dsp_7100_restore_poll(void);       /* 主循环，把 flash 值重发给 7100（正式版在读回之前；
+                                         * 测试期切程序改到读回之后） */
+void dsp_7100_restore_cancel(void);     /* BLE 命令到达时放弃开机恢复 */
+bool dsp_7100_restore_pending(void);    /* true = 恢复占着 I2C，读回必须等
+                                         * （测试期「等读回完成」那步返回 false） */
 
 #ifdef __cplusplus
 }

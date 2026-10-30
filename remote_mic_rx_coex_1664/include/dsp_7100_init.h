@@ -135,9 +135,10 @@ void dsp_7100_rb_poll(void);
  *   OutputLimit   @ +22 8bit 有符号
  * 见 docs/7100协议/WDRC/7100_WDRC读取.md
  *
- * wdrc_ll/hl 保存的是**设备当前值**（含 EQ）；eq_* 保存 App 上次下发的 EQ 绝对值。
- * 设 EQ 时用 本次值 − 上次值 得到差值，加到 wdrc_ll/hl 上，两者一起落盘
- * （见 dsp_7100_cmd.c a7_build_session / a7_session_finish）。 */
+ * wdrc_ll/hl 保存的是**基准**（不含 EQ；即 App 通过 SetGain/SetHighLevelGain 设的值，
+ * Get 也上报它）；eq_* 保存 App 上次下发的 EQ 绝对值。设 EQ 时写 基准 + 绝对值，
+ * 基准本身不改；设 WDRC 时写绝对值并把三段 eq 全清零。缓存 v6
+ * （见 dsp_7100_cmd.c a7_build_session / a7_session_sync_cache）。 */
 typedef struct
 {
     uint8_t denoise_en;                   /* 降噪使能（0xAE payload[0] bit7） */
@@ -146,8 +147,8 @@ typedef struct
     int8_t  eq_low;                       /* 均衡器低音：App 上次下发的绝对值（±dB） */
     int8_t  eq_mid;                       /* 均衡器中音：同上 */
     int8_t  eq_high;                      /* 均衡器高音：同上 */
-    int8_t  wdrc_ll[DSP7100_WDRC_CH];     /* LowLevelGain  **设备当前值**（含 EQ） */
-    int8_t  wdrc_hl[DSP7100_WDRC_CH];     /* HighLevelGain **设备当前值**（含 EQ） */
+    int8_t  wdrc_ll[DSP7100_WDRC_CH];     /* LowLevelGain  **基准**（不含 EQ） */
+    int8_t  wdrc_hl[DSP7100_WDRC_CH];     /* HighLevelGain **基准**（不含 EQ） */
     int8_t  wdrc_ol[DSP7100_WDRC_CH];     /* OutputLimit   */
 } dsp_7100_prog_t;
 
@@ -163,8 +164,9 @@ dsp_7100_rb_bufs_t *dsp_7100_rb_bufs(void);
 /* 一轮读回是否已完成 */
 bool dsp_7100_rb_done(void);
 
-/* 开机调：把 flash 里的旧值载入 RAM（供读回后对比 + 提供读回不覆盖的字段，
- * 如 eq_low/mid/high），并置好读回基准 —— **不再短路读回**，详见实现处注释。 */
+/* 开机调：把 flash 里的旧值载入 RAM（供读回后对比 + 提供读回不覆盖的字段：
+ * 槽有效时 eq_* 与 wdrc_ll/hl 基准都以 flash 为准），并置好读回基准 ——
+ * **不再短路读回**，详见实现处注释。 */
 void dsp_7100_cache_try_load(void);
 
 /* 主循环调：读回跑完一轮后把结果落盘（flash 擦写不在定时器上下文做）。 */

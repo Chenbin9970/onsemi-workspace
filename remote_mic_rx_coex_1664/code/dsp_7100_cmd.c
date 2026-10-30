@@ -8,6 +8,7 @@
 #include "dsp_7100_cmd.h"
 #include "dsp_7100_init.h"
 #include "dsp_7100_sniff.h"   /* dsp_7100_sniff_rebase()：会话收尾时追平 sniff 的触发基准 */
+#include "dsp_7100_storage.h" /* 用户状态记忆（当前程序号 / 音量档位）的 flash 槽 */
 #include "ble_rempro_cmd.h"   /* rempro_push_7100_notify()：路径 B 读到的通知顺手上报 */
 #include "app.h"
 #include "i2c_7100_hal.h"
@@ -37,6 +38,262 @@ static const uint8_t s_volume_value[7] = {0x00, 0x11, 0x21, 0x32, 0x43, 0x53, 0x
 
 static uint8_t s_cur_prog = 1;
 static uint8_t s_cur_vol_level = 6;   /* 音量档位 0-6（与 App 同号）；初值 = 最大档 */
+
+/* ---- 用户状态记忆（当前程序号 / 音量档位，2026-10-30）----
+ * 7100 侧「掉电保存 Volume / Memory」已关闭，改由 RSL10 存 flash：
+ *   变更成功后等 **10 分钟无新变更**再落盘（200ms tick × 3000 = 600s），
+ *   开机在**读回全部参数之前**以 flash 为准把程序 / 音量重发给 7100（dsp_7100_restore_poll）。
+ * 槽格式见 include/dsp_7100_storage.h。
+ * ⚠ 已知取舍（开发者确认）：最后一次变更后 10 分钟内掉电会丢。 */
+/* ⚠ 测试期临时改成 6 秒（200ms × 30）；测试完改回 3000u（10 分钟） */
+#define DSP7100_MEM_TICKS_10MIN    30u
+#define DSP7100_MEM_RESTORE_TRIES  5u
+
+/* 开机恢复的步骤：0=发程序 1=等程序 2=发音量 3=等音量
+ * ⚠ 静音步（10/11）**只用于分离测试**：7100 一切程序就自动解除静音，静音压不住恢复过程
+ *   （2026-10-30 试过一次「静音 → 切程序 → 音量 → 解除静音」，上板后撤掉）。
+ *   当前测试顺序：静音 → 读回 28 条 → **读回完成即切模式** → 切成功后 3s 调音量。 */
+#define DSP7100_RESTORE_PROG_SEND  0
+#define DSP7100_RESTORE_PROG_WAIT  1
+#define DSP7100_RESTORE_VOL_SEND   2
+#define DSP7100_RESTORE_VOL_WAIT   3
+#define DSP7100_RESTORE_MUTE_SEND  10
+#define DSP7100_RESTORE_MUTE_WAIT  11
+#define DSP7100_RESTORE_DELAY_WAIT 12   /* 等 28 条读回完成再切模式（测试） */
+#define DSP7100_RESTORE_VOL_DUE_WAIT 13 /* 程序已切完，3s 到点再调音量（测试） */
+
+/* 测试定时（从**程序切换成功**起算，200ms tick）：15 拍 = 3s → 发音量。
+ * 只用一个倒计时 s_mem_restore_delay_ticks，PROG_WAIT 成功时装 15（不是静音时）。 */
+#define DSP7100_RESTORE_VOL_DELAY_TICKS  15u
+
+static uint8_t  s_mem_has_saved;       /* flash 里有有效记忆 */
+static uint8_t  s_mem_saved_prog;      /* flash 最新一条（去重/失败重试的基准） */
+static uint8_t  s_mem_saved_vol;
+static uint8_t  s_mem_dirty;           /* RAM 里有待落盘的新值 */
+static uint8_t  s_mem_dirty_prog;
+static uint8_t  s_mem_dirty_vol;
+static uint16_t s_mem_idle_ticks;      /* 距上次变更的 tick 数 */
+static uint8_t  s_mem_save_req;        /* 主循环落盘请求 */
+static uint8_t  s_mem_restore_pending; /* 开机恢复待下发 */
+static uint8_t  s_mem_restore_step;
+static uint8_t  s_mem_restore_tries;
+static uint8_t  s_mem_restore_prog;
+static uint8_t  s_mem_restore_vol;
+static uint8_t  s_mem_restore_delay_ticks;  /* 切模式后等 3s 的 200ms 计数（测试用） */
+
+/* 记一次变更：与 flash 最新值相同就不落盘；值没变则不重启 10 分钟计时。
+ * ⚠ 回到 flash 已有值时还要**清掉**待落盘脏值：开机恢复按「先程序后音量」两步走，
+ *   第一步收尾时会用旧音量 mark 一次（此时与 flash 不同 → 置脏），第二步收尾才把
+ *   音量改回 flash 值。不清脏值的话 10 分钟后会把「旧音量」写进 flash。 */
+static void mem_mark(uint8_t prog, uint8_t vol)
+{
+    if (s_mem_has_saved && prog == s_mem_saved_prog && vol == s_mem_saved_vol) {
+        s_mem_dirty    = 0;
+        s_mem_save_req = 0;
+        return;
+    }
+    if (s_mem_dirty && prog == s_mem_dirty_prog && vol == s_mem_dirty_vol) {
+        return;
+    }
+    s_mem_dirty      = 1;
+    s_mem_dirty_prog = prog;
+    s_mem_dirty_vol  = vol;
+    s_mem_idle_ticks = 0;
+    PRINTF("[7100-mem] pending prog=%u vol=%u（落定后写 flash）\r\n", prog, vol);
+}
+
+void dsp_7100_user_state_load(void)
+{
+    uint8_t prog = 0;
+    uint8_t vol  = 0;
+
+    if (!dsp_7100_settings_load_user_state(&prog, &vol)) {
+        PRINTF("[7100-mem] flash 无记忆记录，保持默认 prog=%u vol=%u\r\n",
+               s_cur_prog, s_cur_vol_level);
+        return;
+    }
+
+    s_mem_has_saved  = 1;
+    s_mem_saved_prog = prog;
+    s_mem_saved_vol  = vol;
+    s_cur_prog       = prog;
+    s_cur_vol_level  = vol;
+
+    /* ⚠ **测试开关**（2026-10-30，测完恢复）：现在的顺序是
+     *   静音 → 读回 28 条 → 读回完成即切模式 → 切成功后 3s 调音量
+     *   （**不显式解除静音**，切程序会自动解除）。
+     *   恢复正常时改回 `DSP7100_RESTORE_PROG_SEND`，并把 MUTE_SEND / MUTE_WAIT /
+     *   DELAY_WAIT / VOL_DUE_WAIT 四个 case 与 s_mem_restore_delay_ticks 去掉。
+     *   flash 照常载入（s_mem_has_saved=1 → 引导里 7100 的 Volume / Memory 记录照样被忽略）。 */
+    s_mem_restore_pending     = 1;
+    s_mem_restore_step        = DSP7100_RESTORE_MUTE_SEND;
+    s_mem_restore_tries       = 0;
+    s_mem_restore_prog        = prog;
+    s_mem_restore_vol         = vol;
+    s_mem_restore_delay_ticks = 0;   /* 切模式成功时才起算（见 PROG_WAIT） */
+    PRINTF("[7100-mem] loaded prog=%u vol=%u（测试：读回后切模式、3s 后调音量）\r\n",
+           prog, vol);
+}
+
+void dsp_7100_user_state_tick(void)
+{
+    /* 测试定时：从**切模式成功**起算（PROG_WAIT 时装 15），到 0 才调音量。
+     * 其余阶段倒计时是 0，这个 if 自然不跑。 */
+    if (s_mem_restore_delay_ticks > 0) {
+        s_mem_restore_delay_ticks--;
+    }
+
+    if (!s_mem_dirty || s_mem_save_req) return;
+
+    s_mem_idle_ticks++;
+    if (s_mem_idle_ticks >= DSP7100_MEM_TICKS_10MIN) {
+        s_mem_idle_ticks = DSP7100_MEM_TICKS_10MIN;   /* 停住，防 uint16 回绕 */
+        s_mem_save_req   = 1;
+        PRINTF("[7100-mem] 落定计时到 -> 排队落盘 prog=%u vol=%u\r\n",
+               s_mem_dirty_prog, s_mem_dirty_vol);
+    }
+}
+
+void dsp_7100_user_state_flush(void)
+{
+    if (!s_mem_save_req) return;
+    /* flash 擦写阻塞且关中断：等读回完成、会话空闲再做 */
+    if (!dsp_7100_rb_done() || dsp_7100_cmd_busy()) return;
+
+    if (dsp_7100_settings_save_user_state(s_mem_dirty_prog, s_mem_dirty_vol)) {
+        s_mem_has_saved  = 1;
+        s_mem_saved_prog = s_mem_dirty_prog;
+        s_mem_saved_vol  = s_mem_dirty_vol;
+        s_mem_dirty      = 0;
+        s_mem_save_req   = 0;
+    } else {
+        /* 失败：清请求、重新计 10 分钟再试（避免故障时每个主循环都擦写） */
+        s_mem_save_req   = 0;
+        s_mem_idle_ticks = 0;
+        PRINTF("[7100-mem] save FAIL，10 分钟后重试\r\n");
+    }
+}
+
+void dsp_7100_restore_cancel(void)
+{
+    if (!s_mem_restore_pending) return;
+
+    s_mem_restore_pending = 0;
+    PRINTF("[7100-mem] restore cancelled（BLE 命令优先）\r\n");
+}
+
+/* 是否还有**占 I2C 的**开机恢复没跑完（app.c 用它挡住读回）。
+ * ⚠ DELAY_WAIT 只是在**等读回完成**（好接着切模式），不占 I2C、也不碰 7100 读指针 →
+ *   这里对它**返回 false**，读回才能跑。其余步骤都要读写 I2C，照常挡住。
+ * 注意「被 BLE 命令取消」后返回 false —— 那时读回该正常开始。 */
+bool dsp_7100_restore_pending(void)
+{
+    return s_mem_restore_pending != 0 &&
+           s_mem_restore_step != DSP7100_RESTORE_DELAY_WAIT;
+}
+
+/* 开机恢复：**在首次读回之前**按序重发程序号 / 音量档位，每步都是异步会话。
+ * 读回由 app.c 用 dsp_7100_restore_pending() 挡住，两者不会交错。
+ * 忙就不动，下一拍再来。WAIT 没达成（会话失败）则**退回 SEND 重来**，不是原地空转 ——
+ * 主循环一圈只有几 µs，原地自增会在会话没跑完时就把重试次数耗光。
+ * 计数只在 WAIT 失败时 +1（会话期间被 cmd_busy 挡着，一圈最多 +1），到上限放弃，不卡开机。 */
+void dsp_7100_restore_poll(void)
+{
+    if (!s_mem_restore_pending) return;
+    if (dsp_7100_cmd_busy()) return;
+
+    switch (s_mem_restore_step) {
+    /* ⚠ 测试步（2026-10-30）：先静音；切模式等 28 条读回完成，音量再等切成功后 3s。 */
+    case DSP7100_RESTORE_MUTE_SEND:
+        if (dsp_7100_set_mute(true)) {
+            s_mem_restore_step = DSP7100_RESTORE_MUTE_WAIT;
+        } else if (s_mem_restore_tries++ >= DSP7100_MEM_RESTORE_TRIES) {
+            s_mem_restore_pending = 0;
+            PRINTF("[7100-mem] restore 静音启动失败，放弃\r\n");
+        }
+        break;
+
+    case DSP7100_RESTORE_MUTE_WAIT:
+        /* 能走到这里说明静音会话已收尾（cmd_busy 的门在上面）。
+         * 不在这里计时：切模式跟着 28 条读回走（见 DELAY_WAIT），音量在切成功后再算 3s。 */
+        s_mem_restore_step = DSP7100_RESTORE_DELAY_WAIT;
+        PRINTF("[7100-mem] 静音完成，等 28 条读回完成再切模式\r\n");
+        break;
+
+    case DSP7100_RESTORE_DELAY_WAIT:
+        /* 等读回跑完（这步不挡读回：dsp_7100_restore_pending 对它返回 false）。
+         * 读回一结束立刻发切程序 —— 不能再和读回抢 7100 读指针。 */
+        if (dsp_7100_rb_done()) {
+            s_mem_restore_tries = 0;
+            s_mem_restore_step  = DSP7100_RESTORE_PROG_SEND;
+            PRINTF("[7100-mem] 读回完成 -> 切模式\r\n");
+        }
+        break;
+
+    case DSP7100_RESTORE_VOL_SEND:
+        if (dsp_7100_set_volume(s_mem_restore_vol)) {
+            s_mem_restore_step = DSP7100_RESTORE_VOL_WAIT;
+        } else if (s_mem_restore_tries++ >= DSP7100_MEM_RESTORE_TRIES) {
+            PRINTF("[7100-mem] restore 音量 %u 启动失败，放弃\r\n",
+                   s_mem_restore_vol);
+            s_mem_restore_pending = 0;
+        }
+        break;
+
+    case DSP7100_RESTORE_VOL_WAIT:
+        if (s_cur_vol_level == s_mem_restore_vol) {
+            s_mem_restore_pending = 0;
+            PRINTF("[7100-mem] restore done prog=%u vol=%u\r\n",
+                   s_mem_restore_prog, s_mem_restore_vol);
+        } else if (s_mem_restore_tries++ >= DSP7100_MEM_RESTORE_TRIES) {
+            PRINTF("[7100-mem] restore 音量 %u 未生效，放弃\r\n",
+                   s_mem_restore_vol);
+            s_mem_restore_pending = 0;
+        } else {
+            s_mem_restore_step = DSP7100_RESTORE_VOL_SEND;    /* 会话失败 → 重来 */
+        }
+        break;
+
+    case DSP7100_RESTORE_PROG_SEND:
+        if (dsp_7100_switch_program(s_mem_restore_prog)) {
+            s_mem_restore_step = DSP7100_RESTORE_PROG_WAIT;
+        } else if (s_mem_restore_tries++ >= DSP7100_MEM_RESTORE_TRIES) {
+            PRINTF("[7100-mem] restore 程序 %u 启动失败，放弃\r\n",
+                   s_mem_restore_prog);
+            s_mem_restore_pending = 0;
+        }
+        break;
+
+    case DSP7100_RESTORE_PROG_WAIT:
+        if (s_cur_prog == s_mem_restore_prog) {
+            /* 程序已切成功 → 起算 3s（200ms × 15）再调音量 */
+            s_mem_restore_delay_ticks = DSP7100_RESTORE_VOL_DELAY_TICKS;
+            s_mem_restore_step        = DSP7100_RESTORE_VOL_DUE_WAIT;
+            s_mem_restore_tries       = 0;
+            PRINTF("[7100-mem] 模式已切到 %u，3s 后调音量\r\n", s_mem_restore_prog);
+        } else if (s_mem_restore_tries++ >= DSP7100_MEM_RESTORE_TRIES) {
+            PRINTF("[7100-mem] restore 程序 %u 未生效，放弃\r\n",
+                   s_mem_restore_prog);
+            s_mem_restore_pending = 0;
+        } else {
+            s_mem_restore_step = DSP7100_RESTORE_PROG_SEND;   /* 会话失败 → 重来 */
+        }
+        break;
+
+    case DSP7100_RESTORE_VOL_DUE_WAIT:
+        /* 程序已切完，等切成功后的 3s 到点再调音量。 */
+        if (s_mem_restore_delay_ticks == 0) {
+            s_mem_restore_tries = 0;
+            s_mem_restore_step  = DSP7100_RESTORE_VOL_SEND;
+            PRINTF("[7100-mem] 3s 到 -> 调音量 %u\r\n", s_mem_restore_vol);
+        }
+        break;
+
+    default:
+        s_mem_restore_pending = 0;
+        break;
+    }
+}
 
 /* ---- I2C 收发打印（切程序/音量/降噪/DFBC 四条链路共用）----
  * 只打数据字节；I2C 地址字节由 HAL 在 START 后发出，不在字节流内
@@ -155,12 +412,14 @@ uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_
             return DSP7100_NOTIFY_NONE;
         }
         s_cur_prog = payload[2];
+        mem_mark(s_cur_prog, s_cur_vol_level);   /* 7100 本地按键切的程序 */
         *out_val   = s_cur_prog;
         return DSP7100_NOTIFY_PROG;
     }
 
     if (addr == DSP7100_REG_VOLUME) {
         s_cur_vol_level = vol_value_to_level(payload[2]);
+        mem_mark(s_cur_prog, s_cur_vol_level);   /* 7100 本地按键调的音量 */
         *out_val        = s_cur_vol_level;
         return DSP7100_NOTIFY_VOL;
     }
@@ -176,13 +435,17 @@ uint8_t dsp_7100_notify_apply(const uint8_t *payload, uint8_t len, uint8_t *out_
  * dsp_7100_notify_apply()：音量值→档位的换算（vol_value_to_level，取最接近档）
  * 与程序号 1-4 的越界检查都在那边，这里不另写解析。
  * 这两条读在参数写（`A1 00 12` / `A1 00 16`）**之前**，拿到的是 7100 自己
- * 掉电保存的值 —— 所以 1664 侧不需要为「当前程序号 / 音量档位」存 flash。
+ * 掉电保存的值。
+ * ⚠ 2026-10-30 起：7100 侧的掉电记忆**已关闭且不可信**，当前程序/音量改由
+ *   RSL10 存 flash（见 dsp_7100_user_state_load）。flash 有有效记录时**忽略**这两条，
+ *   只有首次开机（无记录）才用它们当初始值。
  * 匹配按**记录内容**而非步号：96 步表以后增删不会错位。 */
 void dsp_7100_track_cfg_record(const uint8_t *rx, uint16_t len)
 {
     uint8_t payload[3];
     uint8_t val;
 
+    if (s_mem_has_saved)                { return; }  /* flash 记忆为准 */
     if (rx == NULL || len < 5)        { return; }
     if (rx[0] != 0x42 || rx[3] != 0xA0) { return; }
     if (rx[4] != 0x02 && rx[4] != 0x03) { return; }
@@ -217,7 +480,7 @@ void dsp_7100_track_cfg_record(const uint8_t *rx, uint16_t len)
 
 /* 最长会话 = WDRC 全通道单参数：6 条 0x03 探测 + 静音+选程序+提交+解除+选回+commit
  *            + 16 通道×2 命令 = 44 条
- * （EQ 每段 2 通道 = 20 条；命令缓冲 44×10B = 440B，取 640 留余量） */
+ * （EQ 高音段 8 通道 × LL/HL 也是 44 条；命令缓冲 44×10B = 440B，取 640 留余量） */
 #define A7_MAX_CMDS      56
 #define A7_CMD_BUF_SZ    640
 
@@ -332,14 +595,15 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
 #define A7_WDRC_P_HL     1
 #define A7_WDRC_P_OL     2
 
-/* EQ 三段 → WDRC 通道（数组下标，非通道号）
- *   低音 {1,2}  |  中音 {3,4}  |  高音 {6,7}   —— 下标 0、5 不参与 EQ */
-static const uint8_t s_eq_ch_low[]  = { 1, 2 };
-static const uint8_t s_eq_ch_mid[]  = { 3, 4 };
-static const uint8_t s_eq_ch_high[] = { 6, 7 };
+/* EQ 三段 → WDRC 通道（数组下标，非通道号；写入时 +1 得通道号）
+ *   低音 ch1-3  {0,1,2}  |  中音 ch4-8  {3,4,5,6,7}  |  高音 ch9-16  {8..15}
+ * 2026-10-30 开发者定：三段覆盖全部 16 通道，不再有通道不参与 EQ。 */
+static const uint8_t s_eq_ch_low[]  = { 0, 1, 2 };
+static const uint8_t s_eq_ch_mid[]  = { 3, 4, 5, 6, 7 };
+static const uint8_t s_eq_ch_high[] = { 8, 9, 10, 11, 12, 13, 14, 15 };
 
 static const uint8_t *s_eq_ch[3]   = { s_eq_ch_low, s_eq_ch_mid, s_eq_ch_high };
-static const uint8_t  s_eq_ch_n[3] = { 2, 2, 2 };
+static const uint8_t  s_eq_ch_n[3] = { 3, 5, 8 };
 
 /* EQ 调整量上限（±dB），超出钳位并告警 */
 #define A7_EQ_MAX_DB     10
@@ -514,7 +778,6 @@ static uint8_t   s_sess_prog;       /* 1-4 */
 static uint8_t   s_sess_kind;       /* A7_KIND_* */
 static uint8_t   s_sess_val;        /* 降噪档位 / DFBC 开关 / EQ 段 / WDRC 参数选择 */
 static int8_t    s_sess_db;         /* EQ 段本次下发的绝对值（±dB） */
-static int16_t   s_eq_delta;        /* EQ 本次相对上次的差值 = 本次绝对值 − 上次保存值 */
 /* WDRC 会话的待写项。**必须拷一份**：会话是异步跑的，
  * 调用方的数组（BLE 负载缓冲）到收尾回写缓存时可能已经失效。 */
 static dsp_7100_wdrc_item_t s_wdrc_items[DSP7100_WDRC_CH];
@@ -767,12 +1030,12 @@ static uint8_t *a7_add_noise_block(uint8_t level)
     return p;
 }
 
-/* 取该段上次下发的 EQ 绝对值（band 0=低音 1=中音 2=高音） */
-static int8_t a7_eq_prev(const dsp_7100_prog_t *p, uint8_t band)
+/* 该段 EQ 绝对值写进缓存（band 0=低音 1=中音 2=高音） */
+static void a7_eq_store(dsp_7100_prog_t *p, uint8_t band, int8_t db)
 {
-    if (band == 0) return p->eq_low;
-    if (band == 1) return p->eq_mid;
-    return p->eq_high;
+    if (band == 0)      p->eq_low  = db;
+    else if (band == 1) p->eq_mid  = db;
+    else                p->eq_high = db;
 }
 
 /* 自动切换模式 + 飞行模式：整段会话，照 2026-10-22_15-16-57 会话 B。
@@ -920,17 +1183,16 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
         uint8_t n;
         uint8_t i;
 
-        if (bp == NULL) return false;       /* 无基准值 → 先做读回 */
+        if (bp == NULL) return false;       /* 基准未建立 → 先等读回 */
         if (val > 2) return false;
 
-        /* 缓存里的 LL/HL 就是设备当前值，本次只加"与上次 EQ 的差值" */
-        s_eq_delta = (int16_t)s_sess_db - (int16_t)a7_eq_prev(bp, val);
-
+        /* 缓存里的 LL/HL 是**基准**（不含 EQ），本次写 = 基准 + App 下发的绝对值。
+         * 不再用"与上次的差值"—— EQ 只在这里加，WDRC 那边写绝对值、不读 EQ。 */
         n = s_eq_ch_n[val];
         for (i = 0; i < n; i++) {
             uint8_t  ch  = s_eq_ch[val][i];             /* 0-based */
-            int32_t  ll  = (int32_t)bp->wdrc_ll[ch] + s_eq_delta;
-            int32_t  hl  = (int32_t)bp->wdrc_hl[ch] + s_eq_delta;
+            int32_t  ll  = (int32_t)bp->wdrc_ll[ch] + s_sess_db;
+            int32_t  hl  = (int32_t)bp->wdrc_hl[ch] + s_sess_db;
 
             if (ll < A7_WDRC_LL_MIN) ll = A7_WDRC_LL_MIN;
             if (ll > A7_WDRC_LL_MAX) ll = A7_WDRC_LL_MAX;
@@ -969,9 +1231,11 @@ static void a7_session_sync_cache(void)
         dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
         uint8_t i;
 
-        /* 直接设绝对值 → 缓存基准跟着改（值在 a7_wdrc_start 里已钳位）。
-         * ⚠ EQ 模型认为"设备值 = 基准 + 该段 eq"，若该段 eq 非 0，本值写下去后两者会差一个 eq 量；
-         *   要严格一致应改成 "基准 = 新值 − 该段 eq"。目前 EQ 默认 0，先按简单处理。 */
+        /* 直接设绝对值 → 缓存**基准**跟着改（值在 a7_wdrc_start 里已钳位）。
+         * LL/HL 下发的是不含 EQ 的绝对值，所以写到的通道上旧 EQ 偏移被覆盖掉；
+         * **只要设的是 LL/HL，就无条件把三段 EQ 全清零（2026-10-30 开发者定）** ——
+         * 不看频段、不看通道交集，否则 GetCurrentScene 还报着非 0、设备上却已没有。
+         * OL 不受 EQ 影响，不动。 */
         for (i = 0; i < s_wdrc_n; i++) {
             uint8_t ch = s_wdrc_items[i].ch;
 
@@ -979,28 +1243,16 @@ static void a7_session_sync_cache(void)
             else if (s_sess_val == A7_WDRC_P_HL) p->wdrc_hl[ch - 1] = s_wdrc_items[i].val;
             else                                 p->wdrc_ol[ch - 1] = s_wdrc_items[i].val;
         }
-    } else {                   /* EQ：把本次写入的 LL/HL 与 EQ 绝对值一起落到缓存 */
-        dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
-        uint8_t n = s_eq_ch_n[s_sess_val];
-        uint8_t i;
 
-        for (i = 0; i < n; i++) {
-            uint8_t  ch = s_eq_ch[s_sess_val][i];
-            int32_t  ll = (int32_t)p->wdrc_ll[ch] + s_eq_delta;
-            int32_t  hl = (int32_t)p->wdrc_hl[ch] + s_eq_delta;
-
-            if (ll < A7_WDRC_LL_MIN) ll = A7_WDRC_LL_MIN;
-            if (ll > A7_WDRC_LL_MAX) ll = A7_WDRC_LL_MAX;
-            if (hl < A7_WDRC_HL_MIN) hl = A7_WDRC_HL_MIN;
-            if (hl > A7_WDRC_HL_MAX) hl = A7_WDRC_HL_MAX;
-
-            p->wdrc_ll[ch] = (int8_t)ll;
-            p->wdrc_hl[ch] = (int8_t)hl;
+        if (s_sess_val == A7_WDRC_P_LL || s_sess_val == A7_WDRC_P_HL) {
+            a7_eq_store(p, 0, 0);
+            a7_eq_store(p, 1, 0);
+            a7_eq_store(p, 2, 0);
         }
+    } else {                   /* EQ：只记 App 的绝对值；wdrc_ll/hl 是基准，不动 */
+        dsp_7100_prog_t *p = &dsp_7100_rb_bufs()->prog[s_sess_prog - 1];
 
-        if (s_sess_val == 0)      p->eq_low  = s_sess_db;
-        else if (s_sess_val == 1) p->eq_mid  = s_sess_db;
-        else                      p->eq_high = s_sess_db;
+        a7_eq_store(p, s_sess_val, s_sess_db);
     }
 }
 
@@ -1134,10 +1386,12 @@ static void a7_session_finish(bool ok)
     if (s_sess_kind == A7_KIND_PROG || s_sess_kind == A7_KIND_AUDIO_ENTER ||
         s_sess_kind == A7_KIND_AUDIO_EXIT) {
         s_cur_prog = s_sess_prog;
+        mem_mark(s_cur_prog, s_cur_vol_level);
         return;
     }
     if (s_sess_kind == A7_KIND_VOL) {
         s_cur_vol_level = s_sess_val;
+        mem_mark(s_cur_prog, s_cur_vol_level);
         return;
     }
 
@@ -1522,8 +1776,12 @@ static bool a7_session_start(uint8_t kind, uint8_t prog, uint8_t val)
     }
     /* 开机读回没跑完时不许开会话：本族只读 3B，若抢到读回的块回执（174/306/375B，
      * 首字节同样是 46），7100 读指针就停在 payload 中段，之后所有设置都读不到 46
-     * （2026-10-28 日志 `88 03 06`）。BLE 侧改成排队，读回完再下发。 */
-    if (!dsp_7100_rb_done()) {
+     * （2026-10-28 日志 `88 03 06`）。BLE 侧改成排队，读回完再下发。
+     * 例外：**开机恢复**排在读回之前（读回被 restore_pending 挡住，不会交错），
+     * 此时允许开会话。BLE 侧另有自己的读回门（rempro_pending_start_next），不受影响。
+     * ⚠ 用 dsp_7100_restore_pending() 而不是裸标志：测试期「等读回完成」那步本身就要
+     *   读回先跑，它返回 false → 这步不占 I2C 也不算例外；会话照常被「读回未完成」挡住。 */
+    if (!dsp_7100_rb_done() && !dsp_7100_restore_pending()) {
         PRINTF("[7100] 读回未完成，忽略本次设置\r\n");
         return false;
     }
@@ -1606,8 +1864,8 @@ bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane)
 }
 
 /* 三段均衡器：band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB）。
- * 实际写入 = 设备当前值 + (本次绝对值 − 上次保存的绝对值)，LL 与 HL 同时平移。
- * 缓存里的 LL/HL 与 EQ 绝对值都是设备实际值，掉电保存在 flash。 */
+ * 实际写入 = **基准 + 本次绝对值**，LL 与 HL 同时平移；基准（wdrc_ll/hl）不被 EQ 改动。
+ * 缓存里的 LL/HL 是基准（不含 EQ），eq_* 是 App 上次下发的绝对值，双双掉电保存在 flash。 */
 bool dsp_7100_set_eq(uint8_t prog, uint8_t band, int8_t db)
 {
     if (prog < 1 || prog > 4 || band > 2) return false;

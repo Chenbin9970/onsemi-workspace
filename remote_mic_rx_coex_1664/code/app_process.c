@@ -59,6 +59,9 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
     /* 测听进入/退出的延时推送（纯 BLE，不占 I2C，放最前面不受会话影响） */
     rempro_deferred_tick();
 
+    /* 用户状态记忆的 10 分钟落定计时：不占 I2C，会话期间照走（落盘在主循环） */
+    dsp_7100_user_state_tick();
+
     /* 命令会话进行中：只置兜底标志（推进在主循环的 dsp_7100_cmd_poll），
      * 会话期间不读回不发心跳 */
     if (dsp_7100_cmd_busy()) {
