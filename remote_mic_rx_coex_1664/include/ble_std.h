@@ -73,14 +73,23 @@ extern "C"
 #define PREF_SLV_LATENCY                0
 #define PREF_SLV_SUP_TIMEOUT            200
 
-/* Set the device name */
+/* Set the device name
+ * 命名规则（2026-10-30 定）：左右耳靠 APP_RM_AUDIO_CHANNEL 区分（-L / -R）；
+ * FOTA 固件直接叫 SM1604-x，非 FOTA 固件后面加 test 后缀，扫描即可区分。 */
 #define APP_DEVICE_NAME_LENGTH_MAX      20
+#if (APP_RM_AUDIO_CHANNEL == RM_RIGHT)
 #ifdef CFG_FOTA
-/* FOTA 固件广播名带标识，方便扫描区分 */
-#define APP_DFLT_DEVICE_NAME            "Smart1664FOTA"
+#define APP_DFLT_DEVICE_NAME            "SM1604-R"
 #else    /* ifdef CFG_FOTA */
-#define APP_DFLT_DEVICE_NAME            "Smart1664"
+#define APP_DFLT_DEVICE_NAME            "SM1604-Rtest"
 #endif    /* ifdef CFG_FOTA */
+#else    /* APP_RM_AUDIO_CHANNEL == RM_LEFT */
+#ifdef CFG_FOTA
+#define APP_DFLT_DEVICE_NAME            "SM1604-L"
+#else    /* ifdef CFG_FOTA */
+#define APP_DFLT_DEVICE_NAME            "SM1604-Ltest"
+#endif    /* ifdef CFG_FOTA */
+#endif    /* APP_RM_AUDIO_CHANNEL == RM_RIGHT */
 #define APP_DEVICE_NAME_FLAG            '\x09'
 
 /* ON SEMICONDUCTOR Company ID */

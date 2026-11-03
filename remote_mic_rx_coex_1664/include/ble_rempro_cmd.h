@@ -90,6 +90,10 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len);
  * 清掉「BLE 发起的切程序、同值回执不推送」标志，防止切换失败 / 7100 不回 0x0016
  * 时标志残留，误吞之后 7100 本地按键触发的程序号推送。 */
 void rempro_push_scene_suppress_clear(void);
+
+/* 登记一次「接下来值为 prog 的 0x0016 不推送」（匹配即消费一次）：
+ * BLE 发起的切程序用 —— SetCurrentScene、测听进/出的切程序（进 → 3，退 → 原程序）。 */
+void rempro_push_scene_suppress(uint8_t prog);
 void rempro_push_initial_status_done(void);
 void rempro_push_audiometry_exit(void);
 

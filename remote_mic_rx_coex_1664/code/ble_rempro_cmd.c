@@ -282,6 +282,12 @@ void rempro_push_scene_suppress_clear(void)
     s_scene_push_suppress_prog = 0;
 }
 
+/* 登记一次同值 0x0016 抑制。程序号取 1-4，由调用方保证（dsp 层已校验）。 */
+void rempro_push_scene_suppress(uint8_t prog)
+{
+    s_scene_push_suppress_prog = prog;
+}
+
 /* Active push: notify app of program switch (CMD=5, SYS_ID=1).
  * Protocol: SYS_ID(1) + CMD_ID(2) + Scene_ID(1) */
 void rempro_push_scene_change(uint8_t scene_id)
@@ -476,7 +482,7 @@ void rempro_pending_start_next(void)
         else if (cmd_id == CMD_SETCURRENTSCENE) {
             ok = dsp_7100_switch_program(prog);
             /* 会话真起来了才设抑制标志（同值 0x0016 回声不推回 App） */
-            if (ok) s_scene_push_suppress_prog = prog;
+            if (ok) rempro_push_scene_suppress(prog);
         }
         else if (cmd_id == CMD_SETVOLUME)        ok = dsp_7100_set_volume(arg);
         else                                     ok = dsp_7100_set_eq(prog, arg, db);
@@ -622,7 +628,7 @@ static void cmd_setcurrentscene_7100(const uint8_t *data, uint8_t len)
     ok = dsp_7100_switch_program((uint8_t)(scene_id + 1));
     if (ok) {
         /* 会话已受理：随后 7100 回执里的同值 0x0016 不推回 App（见标志定义处） */
-        s_scene_push_suppress_prog = (uint8_t)(scene_id + 1);
+        rempro_push_scene_suppress((uint8_t)(scene_id + 1));
     } else {
         /* 会话/开机读回占着 I2C：缓存下来，空闲后下发（同 SetDenoise）。
          * 以前直接丢掉还回"成功"，App 以为切了、再读回还是旧场景。 */

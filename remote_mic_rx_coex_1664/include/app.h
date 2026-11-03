@@ -43,6 +43,14 @@
 #include <rsl10_map_nvr.h>
 #include <rsl10_protocol.h>
 #include <rm_pkt.h>
+
+/* 左/右耳（音频通道）选择 —— 必须在 ble_std.h 之前定义：
+ * 广播名（APP_DFLT_DEVICE_NAME）按它区分 -L / -R。 */
+#define RM_LEFT                         0
+#define RM_RIGHT                        1
+
+#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+
 #include "ble_std.h"
 #include "ble_custom.h"
 #include "ble_bass.h"
@@ -86,11 +94,6 @@ extern "C"
 #define RM_STREAM_ADDR_MASK              0x00FFFFFFUL
 #define RM_STREAM_ADDR_TO_ACCESSWORD(a)  ((((uint32_t)(a)) << 8) | RM_STREAM_ACCESSWORD_FIXED_LOW)
 #define RM_STREAM_ACCESSWORD_TO_ADDR(w)  (((uint32_t)(w) >> 8) & RM_STREAM_ADDR_MASK)
-
-#define RM_LEFT                         0
-#define RM_RIGHT                        1
-
-#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
 
 #define OUTPUT_POWER_6DBM               0
 

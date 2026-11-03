@@ -45,8 +45,8 @@ static uint8_t s_cur_vol_level = 6;   /* 音量档位 0-6（与 App 同号）；
  *   开机在**读回全部参数之前**以 flash 为准把程序 / 音量重发给 7100（dsp_7100_restore_poll）。
  * 槽格式见 include/dsp_7100_storage.h。
  * ⚠ 已知取舍（开发者确认）：最后一次变更后 10 分钟内掉电会丢。 */
-/* ⚠ 测试期临时改成 6 秒（200ms × 30）；测试完改回 3000u（10 分钟） */
-#define DSP7100_MEM_TICKS_10MIN    30u
+/* ⚠ 测试期临时改成 5 分钟（200ms × 1500）；测试完改回 3000u（10 分钟） */
+#define DSP7100_MEM_TICKS_10MIN    1500u
 #define DSP7100_MEM_RESTORE_TRIES  5u
 
 /* 开机恢复的步骤：0=发程序 1=等程序 2=发音量 3=等音量
@@ -1831,12 +1831,17 @@ bool dsp_7100_set_volume(uint8_t level)
 bool dsp_7100_audiometry(bool enter, uint8_t prev_prog)
 {
     uint8_t prog = enter ? DSP7100_AUDIOMETRY_PROG : prev_prog;
+    bool    ok;
 
     if (prog < 1 || prog > 4) return false;
     PRINTF("[7100] --- Audiometry %s prog=%u ---\r\n", enter ? "on" : "off", prog);
     s_sess_db = 0;
-    return a7_session_start(enter ? A7_KIND_AUDIO_ENTER : A7_KIND_AUDIO_EXIT,
-                            prog, 0);
+    ok = a7_session_start(enter ? A7_KIND_AUDIO_ENTER : A7_KIND_AUDIO_EXIT,
+                          prog, 0);
+    /* 测听进/出由 App 发起（完成状态另有 CMD 6 推送），7100 回执里切程序的
+     * 0x0016 回声不再推给 App（2026-10-30 开发者要求）。进 = 3、退 = 原程序。 */
+    if (ok) rempro_push_scene_suppress(prog);
+    return ok;
 }
 
 bool dsp_7100_set_denoise(uint8_t prog, uint8_t level)

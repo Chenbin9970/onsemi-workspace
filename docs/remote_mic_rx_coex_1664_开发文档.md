@@ -7,7 +7,7 @@
 占用 DIO0/DIO1，**已改为 PCM 从机输出**（`OUTPUT_INTRF = PCM_SLAVE_OUTPUT`）：7100 做时钟主机
 提供 BCLK/FS，RSL10 从机在 SERO 移位输出，见 §3.4 与 §6。
 
-与 1644 的差异（见 §3）：设备名改 `Smart1664`、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
+与 1644 的差异（见 §3）：设备名改 `SM1604-L/R`（非 FOTA 加 `test` 后缀）、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
 （与 7100 I2C 分时复用，§3.2）**、**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
@@ -19,6 +19,9 @@
 > **切程序 / 调音量 / 测听（进入·出音·停音·退出）已上板验证通过**（见 §22.6）；
 > App 侧尚在完善；**EQ 的写帧顺序已上板验证（§27）**，**三段→通道映射 + 基准模型（缓存 v6）
 > 已于 2026-10-30 上板确认正常**（§40），WDRC 独立会话仍未上板，详见 §7.4.2 / §7.4.3 / §7.4.4 与 §17。
+> **静音语义已上板确认**：静音下只有切程序解除静音，调音量不解除（§41）。
+> **测听进/出的切程序不再回推 CMD 5**（§42）与**设备名 `SM1604-L/R` + FOTA `test` 后缀**（§15）
+> 尚未上板确认。
 > 引脚按「音频输出关闭 + I2C 用 DIO0/DIO1」定案（见 §5）。
 
 参考工程：`remote_mic_rx_coex_1644`（本工程直接来源）、`peripheral_server_sleep`（OD 输出路径
@@ -43,7 +46,7 @@
 
 | 改动 | 涉及文件 | 说明 |
 |------|----------|------|
-| 设备名 `Smart1644` → `Smart1664`（含 FOTA 变体） | include/ble_std.h、include/app.h（`VER_ID`） | 广播名区分机型 |
+| 设备名 `Smart1644` → `SM1604-L/R`（非 FOTA 加 `test`，2026-10-30 定） | include/ble_std.h、include/app.h（`APP_RM_AUDIO_CHANNEL` 提前到 include 之前） | 广播名区分机型 / 左右耳 / FOTA |
 | 工程名 / rteconfig / .cproject 改名 | .project、.cproject*、*.rteconfig、RTE/RTE_Components.h | 工程标识 |
 | **删除按键** | app.c、code/app_init.c、include/app.h | 见 §5 |
 | ~~**删除电池 AD 采样**~~ → **改为 DIO0 分时复用** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h、code/i2c_7100_hal.c/.h | 见 §3.2、§5 |
@@ -802,6 +805,10 @@ CMD 21 {DevType, Mute} 静音开关   ← ⚠ 方向与 CMD 3 相反：Mute 非 
 CMD  3 {DevType, OnOff} 开关机    ← OnOff 非 0 = 开机 → 解除静音；0 = 关机 → 静音
 ```
 
+> **程序号推送**（2026-10-30 修）：测听进/出的切程序（进 → 3、退 → 原程序）**不回推**
+> CMD 5 场景号 —— 这两次切换是 App 发起的，完成状态已由上面的 CMD 6 推送告知；
+> 7100 回执里的同值 `0x0016` 用 §33 的抑制标志吞掉（`dsp_7100_audiometry()` 启动成功后登记）。
+
 **CMD 3 开关机**（2026-09-17 补实现）：请求 `{Device_Type, Device_OnOff}`，按接口文档 `Device_OnOff` 的
 `0: Off 1: On` —— **非 0 = 开机**。7100 侧没有独立的开关机指令，按 1644 的做法（`bs300_active`/`bs300_mute`）
 映射成解除静音/静音，复用上面那两条帧：
@@ -1066,6 +1073,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
     **测功耗前必须把 `BAT_ADC_ENABLE` 置 0**（SDK 有 `ADC_DISABLE` 可加收尾，待做）。
 17. **低电量提示未实现**（§3.2）：1664 无 BS300，播不了 `0xFD12F2`。待确认 7100 有无可用
     提示音命令；位置已留在 `code/app_process.c` 的 `APP_Timer`（有 TODO 注释）。
+18. **测听进/出的切程序不再回推 CMD 5 场景号**（§42，2026-10-30）：复用 §33 的抑制标志，
+    进 = 程序 3、退 = 原程序。**未编译、未上板**，验证清单见 §42.5。
 18. **BLE 88/89 流地址未上板实测**（§19）：落地路径（Settings 扇区擦写、复位时机、
     开机回填）都只做了代码走查。唯一能证明正确性的两项 —— 「断电重启后流地址是否保持」
     与「改完地址后 TX 能否对上」—— 见 §19 验证清单。
@@ -1083,7 +1092,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 4. 主循环应见 DIO9/10/13 电平变化打印：`[IO] D9=… D10=… D13=…`（照 rx_coex）。
 5. 与已配对发射机建链：串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
    **建链后开始有 PCM 音频输出**；断链应静音，重连应恢复出声（验证 `rm_app.c` 的重武装）。
-6. 手机扫描应看到 **Smart1664** 广播；Rempro `GetBatteryInfo`：`BAT_ADC_ENABLE=1` 时回**实测值**
+6. 手机扫描应看到 **SM1604-L/R**（非 FOTA 固件为 `SM1604-Ltest` / `SM1604-Rtest`）广播；
+   Rempro `GetBatteryInfo`：`BAT_ADC_ENABLE=1` 时回**实测值**
    （串口同步打 `[REMPRO] GetBatteryInfo: raw=… pct=…%`，标定用），`=0` 时回 **100%**（§3.2）。
 7. 示波器：
    - **DIO0/DIO1 应有 I2C 波形**（SCL/SDA），不受 PCM 影响；
@@ -1135,8 +1145,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 - **单设备连接**：沿用 peripheral 单连接（`APP_IDX_MAX = 1`）；未移植 sleep 的左右耳 peer /
   BLE Central / 双耳 GATT 同步；Rempro 已单独移植（见 §15）。
-- **设备名**：`APP_DFLT_DEVICE_NAME = "Smart1664"`（include/ble_std.h）；
-  FOTA 开启时为 `Smart1664FOTA`。
+- **设备名**（include/ble_std.h，2026-10-30 定）：按左右耳 + FOTA 共 4 种 ——
+  FOTA 开启：左 `SM1604-L` / 右 `SM1604-R`；FOTA 关闭：左 `SM1604-Ltest` / 右 `SM1604-Rtest`。
+  左右靠 `APP_RM_AUDIO_CHANNEL`（app.h，需定义在 `#include "ble_std.h"` 之前）区分。
 - **地址配置**：`BD_ADDRESS_TYPE = BD_TYPE_PUBLIC`；`PRIVATE_BDADDR`、`APP_PUBLIC_BDADDR`、
   `RADIO_CLOCK_ACCURACY(500)` 照 sleep。
 - **广播**：ADV 放设备名，可发现模式 `GAP_GEN_DISCOVERABLE`，广播间隔 160×0.625ms≈100ms；
@@ -1144,7 +1155,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
   > 由 160 改为 `5000//160`（原值以注释保留），是为**功耗测试**临时放宽广播间隔。
   > 正式版本应改回 **160**。
   公司厂商段 18B 用 sleep 的 `APP_COMPANY_ID_DATA`，把「耳侧 + 设备 MAC」编入 company data。
-  因名字 Smart1664 为 9 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放 **scan response**。
+  因名字 `SM1604-x` / `SM1604-xtest` 占 8–12 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放
+  **scan response**。
 - **bdaddr 修正**（code/ble_std.c）：PUBLIC 分支读到公共地址后不再被 `PRIVATE_BDADDR` 覆盖，
   读不到才回退 `co_default_bdaddr`。
 
@@ -1177,7 +1189,8 @@ Reset_Handler 在 SystemInit 后调用 `SystemFotaInit()`；BLE 侧在 Rempro RO
 `0xFD` 时 `Sys_Fota_StartDfu(1)` 进入升级（`0xFD` 非 HDLC 帧头 `0x7E`，安全保留）。
 
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
-FOTA 开启时 BLE 广播名自动带标识 `Smart1664FOTA`（ble_std.h 按 `CFG_FOTA` 分支）。
+BLE 广播名按 `CFG_FOTA` 与左右耳分支（ble_std.h，2026-10-30 定）：
+FOTA 开 = `SM1604-L` / `SM1604-R`；FOTA 关 = `SM1604-Ltest` / `SM1604-Rtest`。
 
 **文件**（remote_mic_rx_coex_1664/ 下）：
 
@@ -3482,7 +3495,9 @@ App 通过 `SetCurrentScene (16)` 切程序后，设备又把同一个场景**�
   清早了会把回声当本地按键推出去；不清则切换失败 / 7100 不回 `0x16` 时标志残留，
   会误吞之后 7100 本地按键的推送。
 
-**只抑制程序号（CMD 5）**。音量（CMD 4）与其它推送路径（测听、初始状态）未改动。
+**只抑制程序号（CMD 5）**。音量（CMD 4）与初始状态推送不受影响。
+> 2026-10-30 起**测听进/出的切程序也走这套抑制**（进 → 3、退 → 原程序），见 §7.4.4；
+> 置标志的入口统一成 `rempro_push_scene_suppress()`。
 
 ### 33.4 涉及文件
 
@@ -4034,7 +4049,7 @@ TX frame: 7E 00 10 00 00 01 11 7E                ← 仍旧回「已受理」(Fl
    以及在 `dsp_7100_user_state_tick()` 里的递减。
 3. `dsp_7100_restore_pending()` 删掉对 `DELAY_WAIT` 的例外，恢复成
    `return s_mem_restore_pending != 0;`（读回重新排在恢复之后）。
-4. `DSP7100_MEM_TICKS_10MIN` 从 `30u` 改回 `3000u`（10 分钟）。
+4. `DSP7100_MEM_TICKS_10MIN` 从 `1500u` 改回 `3000u`（10 分钟）。
 5. `app.c` 的 `[VER]` 版本探针（`probe=RX1664_RESTORE_READFIRST_1030`）可删。
 
 ### 39.5 涉及文件
@@ -4051,12 +4066,12 @@ TX frame: 7E 00 10 00 00 01 11 7E                ← 仍旧回「已受理」(Fl
 
 ### 39.6 验证清单（**未编译、未上板**）
 
-> 测试期把 `dsp_7100_cmd.c` 的 `DSP7100_MEM_TICKS_10MIN` 临时改成 `30u`（200ms × 30 = 6 秒），
+> 测试期把 `dsp_7100_cmd.c` 的 `DSP7100_MEM_TICKS_10MIN` 临时改成 `1500u`（200ms × 1500 = 5 分钟），
 > 测完必须改回 `3000u`（10 分钟）。
 
 1. **首次上电（无记录）**：日志 `[7100-mem] flash 无记忆记录`；改一次音量后出现
    `[7100-mem] pending prog=… vol=…`。
-2. **落盘**：保持不动到计时到（测试期 6 秒）→ `落定计时到 -> 排队落盘` →
+2. **落盘**：保持不动到计时到（测试期 5 分钟）→ `落定计时到 -> 排队落盘` →
    `saved prog=… vol=… slot=0`；用 J-Link `savebin 0x15F000 0x800` 看到 16B 槽内容与 CRC。
 3. **重启恢复（顺序，正式版）**：复位 → `loaded prog=… vol=…` → 引导 106 步 → **先**两条会话日志
    （SwitchProgram / SetVolume）→ `restore done` → **之后**才出现 `[RB] 1/28 …`；
@@ -4247,3 +4262,58 @@ v5→v6 升级首启基准重建。清单保留在 §7.4.2。
 `[REMPRO] 7100 切程序 → 静音状态复位为 开`、`GetDeviceOnOff`(33) 回 1、再发 CMD 21
 `Mute=1` 能真正下发 `A7 … 25`；静音 → 按键调音量 → **不出现**该日志，`GetDeviceOnOff`
 仍回 0。
+
+---
+
+## 42. 2026-10-30：测听进/出的切程序不再回推场景号（CMD 5）
+
+### 42.1 现象
+
+进入测听后 App 收到一次 CMD 5 场景推送（scene = 2，即 7100 程序 3）；退出测听又收到一次
+（scene = 进入前的程序 - 1）。App 侧场景显示被测听内部的切程序带着跑，用户看到界面来回跳。
+
+### 42.2 根因
+
+测听会话的第 ① 句本身就是切程序：
+
+```
+进：A2 00 16 03          ← 切到测听程序 3
+退：A2 00 16 <原程序>     ← 切回
+```
+
+7100 对程序变化的回执/推送是 `43 03 00 | 00 16 <prog>`，与**本地按键切程序**走同一条通知
+路径：`dsp_7100_cmd.c` 路径 B 读到 → `rempro_push_7100_notify()` → `rempro_push_scene_change()`。
+
+§33（2026-10-21）加的抑制标志 `s_scene_push_suppress_prog` 当时只给 BLE `SetCurrentScene`
+用，测听的切程序没有登记，所以回声被原样推给 App。
+
+### 42.3 修改
+
+- 新增统一入口 [`rempro_push_scene_suppress(prog)`](../remote_mic_rx_coex_1664/code/ble_rempro_cmd.c)，
+  登记「接下来值为 prog 的 0x0016 不推送」；`SetCurrentScene` 的两处置标志
+  （直发 + 队列下发）都改为调用它，不再直写静态变量。
+- [`dsp_7100_audiometry()`](../remote_mic_rx_coex_1664/code/dsp_7100_cmd.c) 在会话启动成功后登记：
+  **进 = 3，退 = 原程序**。回声在会话收尾的兜底读里被消费（与 SetCurrentScene 同一机制）；
+  切换失败 / 7100 不回 0x16 时，由 `a7_session_finish()` 的
+  `rempro_push_scene_suppress_clear()` 兜底，不会残留误吞之后本地按键的推送。
+- 抑制只针对程序号 **CMD 5**。测听完成状态仍由 CMD 6 推送（进入 `Initial_Status=2` /
+  退出 `=1`，均延迟 1s），不受影响。
+
+### 42.4 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `code/dsp_7100_cmd.c` | `dsp_7100_audiometry()` 成功后 `rempro_push_scene_suppress(prog)` |
+| `code/ble_rempro_cmd.c` | 新增 `rempro_push_scene_suppress()`；两处 SetCurrentScene 置标志改走它 |
+| `include/ble_rempro_cmd.h` | 新增 `rempro_push_scene_suppress()` 声明 |
+
+### 42.5 验证状态（**未编译、未上板**）
+
+构建由开发者在 Eclipse 完成。上板验证清单：
+
+1. 进入测听：App **不**收到 CMD 5；日志出现 `[REMPRO] push scene suppressed prog=3`；
+   1s 后仍收到 CMD 6 `Initial_Status=2`。7100 实际已切到程序 3、测听位开。
+2. 退出测听：App **不**收到 CMD 5；日志出现 `[REMPRO] push scene suppressed prog=<原程序>`；
+   1s 后收到 CMD 6 `Initial_Status=1`；设备回到原程序。
+3. 测听结束后 7100 本地按键切程序：CMD 5 推送**正常**（确认抑制标志没有残留）。
+4. 抑制不影响音量推送：测听中/后本地按键调音量，CMD 4 正常上报。
