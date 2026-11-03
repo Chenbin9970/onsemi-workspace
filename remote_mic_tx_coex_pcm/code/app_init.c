@@ -106,8 +106,17 @@ void App_Initialize(void)
                                SYSCLK_CLKSRC_RFCLK);
 
     /* Configure clock dividers */
+#if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_HOST_SEL == PCM_HOST_16K_64BCLK)
+    /* PCM master BCLK is USRCLK: 16 MHz / 16 = 1.000 MHz, so the generated
+     * frame is 1.000 MHz / 64 = 15.625 kHz. The requested 16 kHz would need
+     * 1.024 MHz, i.e. 16 MHz / 15.625 — not an integer, so it cannot be
+     * generated from the 48 MHz crystal. */
+    CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
+                     ((uint32_t)(0xFU << CLK_DIV_CFG0_USRCLK_PRESCALE_Pos)));
+#else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_HOST_SEL == PCM_HOST_16K_64BCLK) */
     CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
                      USRCLK_PRESCALE_1);
+#endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT && PCM_HOST_SEL == PCM_HOST_16K_64BCLK) */
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_12 | DCCLK_PRESCALE_4);
 
     BBIF->CTRL    = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_WAKEUP);
@@ -207,7 +216,14 @@ void App_Initialize(void)
         (uint32_t)&ASRC->OUT,
         (uint32_t)&data_fifo_rec
         );
+#if (PCM_USE_ASRC)
+    /* See PCM_ASRC_PHASE_INC: the 15.625 kHz -> 16 kHz ratio is known, so the
+     * ASRC starts out already converted instead of waiting for the first
+     * reconfiguration. */
+    Sys_ASRC_Config((uint32_t)PCM_ASRC_PHASE_INC, LOW_DELAY | ASRC_DEC_MODE1);
+#else    /* if (PCM_USE_ASRC) */
     Sys_ASRC_Config(0x0, LOW_DELAY | ASRC_DEC_MODE1);
+#endif    /* if (PCM_USE_ASRC) */
 
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
@@ -257,9 +273,18 @@ void App_Initialize(void)
 #else    /* if (PCM_HW_OFF) */
 
     /* Initialize and Configure PCM interface */
-    Sys_PCM_ConfigClk(PCM_SELECT_SLAVE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
+#if (PCM_HOST_SEL == PCM_HOST_16K_64BCLK)
+    /* Master mode: route USRCLK out of the PCM clock pad so the PCM block,
+     * which always takes its clock from that pad, sees the same signal the
+     * slave device receives. */
+    Sys_PCM_ConfigClk(PCM_ROLE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
+                      PCM_FRAME_SYNC,
+                      PCM_SER_DI, PCM_SER_DO, DIO_MODE_USRCLK);
+#else    /* if (PCM_HOST_SEL == PCM_HOST_16K_64BCLK) */
+    Sys_PCM_ConfigClk(PCM_ROLE, DIO_WEAK_PULL_UP, PCM_CLK_DO,
                       PCM_FRAME_SYNC,
                       PCM_SER_DI, PCM_SER_DO, DIO_MODE_INPUT);
+#endif    /* if (PCM_HOST_SEL == PCM_HOST_16K_64BCLK) */
     Sys_PCM_Config(PCM_CFG_RX);
     Sys_PCM_Enable();
 
@@ -352,12 +377,13 @@ void App_Initialize(void)
         0,
         (uint32_t)&ASRC->PHASE_INC,
         (uint32_t)&asrc_state_mem_rx[0][0]);
-#if (INPUT_INTRF != PCM_RX_RAW_INPUT)
+#if (INPUT_INTRF != PCM_RX_RAW_INPUT || PCM_USE_ASRC)
     /* Starting the ASRC from here would also start Asrc_out_dma_isr, which
-     * inserts into queue_tx — the same queue the PCM path feeds. The PCM input
-     * path does not use the ASRC at all, so leave the chain disabled. */
+     * inserts into queue_tx — the same queue the PCM path feeds. The PCM hosts
+     * that run at exactly 16 kHz do not use the ASRC, so the chain stays
+     * disabled for them; the 15.625 kHz host needs it and starts from here. */
     Sys_DMA_ChannelEnable(MEMCPY_SAVE_STATE_MEM);
-#endif    /* if (INPUT_INTRF != PCM_RX_RAW_INPUT) */
+#endif    /* if (INPUT_INTRF != PCM_RX_RAW_INPUT || PCM_USE_ASRC) */
     Sys_DMA_ClearChannelStatus(MEMCPY_SAVE_STATE_MEM);
 
     NVIC_ClearPendingIRQ(DMA_IRQn(MEMCPY_SAVE_STATE_MEM));

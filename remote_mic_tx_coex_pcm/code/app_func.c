@@ -476,9 +476,17 @@ void Asrc_reconfig(void)
                         avg_ck_outputcnt;
 
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
+#if (PCM_USE_ASRC)
+    /* The PCM clock and the RM frame come from the same 48 MHz crystal, so the
+     * input rate is exactly 160 * 15.625 / 16 = 156.25 samples per encoder
+     * frame. Using the known value keeps the ratio right even if the frame pad
+     * cannot be counted by the audio sink. */
+    Cr = (((int64_t)FRAME_LENGTH << SHIFT_BIT) * 1000) / 1024;
+#else    /* if (PCM_USE_ASRC) */
     /* audio_sink_cnt counts PCM frame-sync periods over the measurement window;
      * scale it down to the 16 kHz encoder rate the ASRC output must match. */
     Cr = audio_sink_cnt / PCM_DECIM_RATIO;
+#endif   /* if (PCM_USE_ASRC) */
 #else    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
     Cr = audio_sink_cnt;
 #endif    /* if (INPUT_INTRF == PCM_RX_RAW_INPUT) */
@@ -510,8 +518,9 @@ void Asrc_reconfig(void)
 
     asrc_cnt_prev     = ASRC->PHASE_CNT;
 
-    /* Configure ASRC base on new Cr Ck */
-    asrc_inc_carrier  = ((((Cr - Ck) << 29) / Ck) << 0);    /* - (avg_ck_outputcnt >> SHIFT_BIT); */
+    /* Configure ASRC base on new Cr Ck. Multiplying instead of shifting left
+     * keeps the operation defined when Cr is below Ck (a negative shift). */
+    asrc_inc_carrier  = ((Cr - Ck) * (1LL << 29)) / Ck;
     asrc_inc_carrier &= 0xFFFFFFFF;
     Sys_ASRC_Config(asrc_inc_carrier, LOW_DELAY | ASRC_DEC_MODE1);
 }
@@ -672,9 +681,7 @@ void Port_rx_raw_dma_isr(void)
     /* The DMA buffer is circular, so each half is decoded while the DMA fills
      * the other one: the counter interrupt marks the end of the first half, the
      * complete interrupt the end of the second. Only the second half completes
-     * the subframe, so the encoder is fed there. The ASRC is deliberately not
-     * used — it shares queue_tx with this path and would interleave its own
-     * output into the encoder queue. */
+     * the subframe, so that is where the subframe is handed on. */
     if ((Sys_DMA_Get_ChannelStatus(RX_DMA_NUM) & DMA_COUNTER_INT_STATUS) != 0)
     {
         Pcm_decode_half(0, 0);
@@ -683,11 +690,33 @@ void Port_rx_raw_dma_isr(void)
     {
         Pcm_decode_half(PCM_DMA_HALF_WORDS, PCM_HALF_SAMPLES);
 
+#if (PCM_USE_ASRC)
+        /* The PCM clock is 15.625 kHz, not the 16 kHz the encoder runs at, so
+         * the subframe goes through the ASRC first; Asrc_out_dma_isr feeds the
+         * encoder with its 16 kHz output. This is the same start sequence the
+         * SPI input path uses. */
+        memcpy(&asrc_in_buf[0], &left_data[0],
+               SUBFRAME_LENGTH * sizeof(int16_t));
+        memcpy(&asrc_in_buf[SUBFRAME_LENGTH], &right_data[0],
+               SUBFRAME_LENGTH * sizeof(int16_t));
+
+        flag_packet_side = PKT_LEFT;
+        Sys_DMA_Set_ChannelSourceAddress(ASRC_IN_IDX,
+                                         (uint32_t)&asrc_in_buf[0]);
+
+        /* Re-enable DMA for ASRC output */
+        Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
+
+        /* Re-enable ASRC input DMA and start ASRC */
+        Sys_DMA_ChannelEnable(ASRC_IN_IDX);
+        Sys_ASRC_StatusConfig(ASRC_ENABLE);
+#else    /* if (PCM_USE_ASRC) */
         QueueInsert(&queue_tx[PKT_LEFT], (uint16_t *)&left_data[0]);
         Start_Enc_Lpdsp32_Channel(PKT_LEFT);
 
         QueueInsert(&queue_tx[PKT_RIGHT], (uint16_t *)&right_data[0]);
         Start_Enc_Lpdsp32_Channel(PKT_RIGHT);
+#endif   /* if (PCM_USE_ASRC) */
     }
 
     cntr_wav = (cntr_wav + SUBFRAME_LENGTH) % 160;
