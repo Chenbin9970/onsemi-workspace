@@ -7,7 +7,7 @@
 占用 DIO0/DIO1，**已改为 PCM 从机输出**（`OUTPUT_INTRF = PCM_SLAVE_OUTPUT`）：7100 做时钟主机
 提供 BCLK/FS，RSL10 从机在 SERO 移位输出，见 §3.4 与 §6。
 
-与 1644 的差异（见 §3）：设备名改 `SM1604-L/R`（非 FOTA 加 `test` 后缀）、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
+与 1644 的差异（见 §3）：设备名改 `SM1634-L/R`（非 FOTA 加 `test` 后缀）、**删除按键**、**电池 AD 采样从 DIO3 改到 DIO0
 （与 7100 I2C 分时复用，§3.2）**、**打印口由 DIO5 改到 DIO12**、**音频输出改为 PCM 从机**。
 
 > **7100 移植状态**：**阶段一（通讯层）已完成** —— Ezairo 7100 I2C 协议已移植进来并**整体取代了
@@ -20,7 +20,7 @@
 > App 侧尚在完善；**EQ 的写帧顺序已上板验证（§27）**，**三段→通道映射 + 基准模型（缓存 v6）
 > 已于 2026-10-30 上板确认正常**（§40），WDRC 独立会话仍未上板，详见 §7.4.2 / §7.4.3 / §7.4.4 与 §17。
 > **静音语义已上板确认**：静音下只有切程序解除静音，调音量不解除（§41）。
-> **测听进/出的切程序不再回推 CMD 5**（§42）与**设备名 `SM1604-L/R` + FOTA `test` 后缀**（§15）
+> **测听进/出的切程序不再回推 CMD 5**（§42）与**设备名 `SM1634-L/R` + FOTA `test` 后缀**（§15）
 > 尚未上板确认。
 > 引脚按「音频输出关闭 + I2C 用 DIO0/DIO1」定案（见 §5）。
 
@@ -46,7 +46,7 @@
 
 | 改动 | 涉及文件 | 说明 |
 |------|----------|------|
-| 设备名 `Smart1644` → `SM1604-L/R`（非 FOTA 加 `test`，2026-10-30 定） | include/ble_std.h、include/app.h（`APP_RM_AUDIO_CHANNEL` 提前到 include 之前） | 广播名区分机型 / 左右耳 / FOTA |
+| 设备名 `Smart1644` → `SM1634-L/R`（非 FOTA 加 `test`；2026-10-30 定命名规则，2026-11-06 由 `SM1604` 改名，见 §45） | include/ble_std.h、include/app.h（`APP_RM_AUDIO_CHANNEL` 提前到 include 之前） | 广播名区分机型 / 左右耳 / FOTA |
 | 工程名 / rteconfig / .cproject 改名 | .project、.cproject*、*.rteconfig、RTE/RTE_Components.h | 工程标识 |
 | **删除按键** | app.c、code/app_init.c、include/app.h | 见 §5 |
 | ~~**删除电池 AD 采样**~~ → **改为 DIO0 分时复用** | code/app_init.c、code/app_process.c、code/ble_rempro_cmd.c、include/app.h、include/ble_rempro_cmd.h、code/i2c_7100_hal.c/.h | 见 §3.2、§5 |
@@ -839,6 +839,10 @@ BLE `SetVolume` 都一样，2026-10-30 开发者更正；此前误记为两者�
 > 之后的静音命令反而被吞掉。
 > 覆盖范围：本地按键切的程序/音量（sniff 推来的帧）和 BLE `SetCurrentScene` / `SetVolume`
 > 的回执（`43 03 00 | 00 16 xx` / `00 12 xx`）都经过同一个 `rempro_push_7100_notify()`。
+>
+> **2026-11-06 追加（§44）**：配置族写会话（降噪 / DFBC / EQ / WDRC）的成功收尾也会同步
+> `s_device_on` —— 这些会话的公共帧固定以解除静音 `A7 01 00 00 00 26` 结束，设备同样会
+> 转回出声；不同步的话会复现与上面完全相同的错位。
 > 局限：回执/推送没被读到（会话失败、帧丢）时状态同步不到 —— 与值跟踪 `s_cur_prog` 同源同限。
 
 **实现要点**
@@ -1093,7 +1097,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
 4. 主循环应见 DIO9/10/13 电平变化打印：`[IO] D9=… D10=… D13=…`（照 rx_coex）。
 5. 与已配对发射机建链：串口出现 `RM_LINK_ESTABLISHED/DISCONNECTED`。
    **建链后开始有 PCM 音频输出**；断链应静音，重连应恢复出声（验证 `rm_app.c` 的重武装）。
-6. 手机扫描应看到 **SM1604-L/R**（非 FOTA 固件为 `SM1604-Ltest` / `SM1604-Rtest`）广播；
+6. 手机扫描应看到 **SM1634-L/R**（非 FOTA 固件为 `SM1634-Ltest` / `SM1634-Rtest`）广播；
    Rempro `GetBatteryInfo`：`BAT_ADC_ENABLE=1` 时回**实测值**
    （串口同步打 `[REMPRO] GetBatteryInfo: raw=… pct=…%`，标定用），`=0` 时回 **100%**（§3.2）。
 7. 示波器：
@@ -1134,6 +1138,9 @@ App_Initialize() → 打印 started → bs300_driver_init()
    - **静音后本地按键调音量 / BLE `SetVolume`**（2026-10-30 更正，**已上板确认正常**，§41）：**不会**解除静音 →
      **不应**出现「静音状态复位为 开」，`GetDeviceOnOff`(33) 仍回 0，设备仍静音；
      音量值照常推送/上报。
+   - **静音后 App 下发降噪 / DFBC / EQ / WDRC**（2026-11-06 加，§44）：写会话以解除静音 `26`
+     收尾，日志出现 `[REMPRO] 7100 DFBC → 静音状态复位为 开`（why = 会话名），
+     `GetDeviceOnOff`(33) 回 1；再发 CMD 21 `Mute=1` 能真正下发 `A7 … 25`。
 11. **RM 流中断静音 + PLC**（§6.7，**「TX 硬断电杂音消失」已上板确认**）：
     - TX 持续推流中**硬断电**（不是把音量调小）→ 应 ~20~30ms 内静音，不再有 1~2 秒断续杂音；
       断开瞬间若有**一声轻「咔」**属已知取舍（读不到 ch5 播放位置）。
@@ -1146,8 +1153,8 @@ App_Initialize() → 打印 started → bs300_driver_init()
 
 - **单设备连接**：沿用 peripheral 单连接（`APP_IDX_MAX = 1`）；未移植 sleep 的左右耳 peer /
   BLE Central / 双耳 GATT 同步；Rempro 已单独移植（见 §15）。
-- **设备名**（include/ble_std.h，2026-10-30 定）：按左右耳 + FOTA 共 4 种 ——
-  FOTA 开启：左 `SM1604-L` / 右 `SM1604-R`；FOTA 关闭：左 `SM1604-Ltest` / 右 `SM1604-Rtest`。
+- **设备名**（include/ble_std.h；2026-10-30 定命名规则，2026-11-06 改名为 SM1634，见 §45）：按左右耳 + FOTA 共 4 种 ——
+  FOTA 开启：左 `SM1634-L` / 右 `SM1634-R`；FOTA 关闭：左 `SM1634-Ltest` / 右 `SM1634-Rtest`。
   左右靠 `APP_RM_AUDIO_CHANNEL`（app.h，需定义在 `#include "ble_std.h"` 之前）区分。
 - **地址配置**：`BD_ADDRESS_TYPE = BD_TYPE_PUBLIC`；`PRIVATE_BDADDR`、`APP_PUBLIC_BDADDR`、
   `RADIO_CLOCK_ACCURACY(500)` 照 sleep。
@@ -1156,7 +1163,7 @@ App_Initialize() → 打印 started → bs300_driver_init()
   > 由 160 改为 `5000//160`（原值以注释保留），是为**功耗测试**临时放宽广播间隔。
   > 正式版本应改回 **160**。
   公司厂商段 18B 用 sleep 的 `APP_COMPANY_ID_DATA`，把「耳侧 + 设备 MAC」编入 company data。
-  因名字 `SM1604-x` / `SM1604-xtest` 占 8–12 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放
+  因名字 `SM1634-x` / `SM1634-xtest` 占 8–12 字符、ADV 放不下 18B 厂商段，MAC/耳侧数据改放
   **scan response**。
 - **bdaddr 修正**（code/ble_std.c）：PUBLIC 分支读到公共地址后不再被 `PRIVATE_BDADDR` 覆盖，
   读不到才回退 `co_default_bdaddr`。
@@ -1190,8 +1197,8 @@ Reset_Handler 在 SystemInit 后调用 `SystemFotaInit()`；BLE 侧在 Rempro RO
 `0xFD` 时 `Sys_Fota_StartDfu(1)` 进入升级（`0xFD` 非 HDLC 帧头 `0x7E`，安全保留）。
 
 **开关**：`include/app.h` 顶部 `//#define CFG_FOTA`（注释=关/开）；开启同时需替换 RTE 变体。
-BLE 广播名按 `CFG_FOTA` 与左右耳分支（ble_std.h，2026-10-30 定）：
-FOTA 开 = `SM1604-L` / `SM1604-R`；FOTA 关 = `SM1604-Ltest` / `SM1604-Rtest`。
+BLE 广播名按 `CFG_FOTA` 与左右耳分支（ble_std.h；2026-10-30 定规则，2026-11-06 改名为 SM1634，见 §45）：
+FOTA 开 = `SM1634-L` / `SM1634-R`；FOTA 关 = `SM1634-Ltest` / `SM1634-Rtest`。
 
 **文件**（remote_mic_rx_coex_1664/ 下）：
 
@@ -4225,6 +4232,7 @@ v5→v6 升级首启基准重建。清单保留在 §7.4.2。
 |---|---|
 | 本地按键 / BLE `SetCurrentScene` 切程序（`A2 00 16`，不带 `26`） | **会**，设备自动转回出声 |
 | 本地按键 / BLE `SetVolume` 调音量（`A2 00 12`） | **不会**，设备保持静音 |
+| App 下发降噪 / DFBC / EQ / WDRC（写会话固定以解除静音 `26` 收尾） | **会**，2026-11-06 确认，见 §44 |
 
 此前代码注释与 §7.4.4 记为「切程序 / 调音量都会自动解除静音」（当作开发者已确认），
 与实际上板行为不符，本节更正。
@@ -4420,3 +4428,93 @@ ch4–ch12 与 P1 表完全一致，所以只有部分通道被拉偏。单看�
   设备配置与现在不同，**不能**当作本机的绝对参考值。
 - `docs/7100协议/WDRC/7100_WDRC设置.md` §3.2/§6 仍写"逐通道常量、物理含义未知"，
   应更新为"逐程序、逐通道，属 24bit WB AGCO Gain"（本轮未改该文件）。
+
+---
+
+## 44. 2026-11-06：配置族写会话（降噪 / DFBC / EQ / WDRC）也会解除静音 —— 同步开关状态
+
+### 44.1 现象
+
+设备处于静音时，App 下发 DFBC 开关（`SetFeedbackOnOff`，5/34 号）后设备实际出声，
+但 `s_device_on` 仍是 0：`GetDeviceOnOff`(33) 报「静音」，App 显示与实际不符；
+再发 `SetMuteData`(21) 时 `changed = 0`，静音命令被当重复下发吞掉（与 §41 同一错位机制）。
+
+### 44.2 根因
+
+配置族写会话的公共帧是固定的：
+
+```
+静音 A7 01 00 00 00 25 → 选程序 → 写块 → confirm → 解除静音 A7 01 00 00 00 26
+→ 选回程序 0 → commit
+```
+
+见 `a7_build_session()`（`dsp_7100_cmd.c`）。也就是说**无论会话前是否静音，成功收尾后
+设备一定是出声的**。降噪 / EQ / WDRC 的会话序列与 DFBC 完全相同（开发者 2026-11-06
+确认按四类一起改），此前只有 7100 主动推 `00 16` 的路径会同步状态（§41）。
+
+### 44.3 修改
+
+| 文件 | 改动 |
+|---|---|
+| `code/dsp_7100_cmd.c` | [`a7_session_finish()`](../remote_mic_rx_coex_1664/code/dsp_7100_cmd.c) 成功收尾后，若 `s_sess_kind` ∈ {`A7_KIND_DENOISE`, `A7_KIND_DFBC`, `A7_KIND_EQ`, `A7_KIND_WDRC`}，调用 `rempro_device_on_sync_from_7100(a7_kind_name(...))`（补了 `a7_kind_name` 的前向声明）。**只认成功收尾**：会话中途失败时可能还没走到最后那条 `26` |
+| `code/ble_rempro_cmd.c` | 原 `static device_on_sync_from_7100()` 改为公开 `rempro_device_on_sync_from_7100(const char *why)`，注释补上配置族会话这个来源；`00 16` 通知分支沿用 |
+| `include/ble_rempro_cmd.h` | 新增 `rempro_device_on_sync_from_7100()` 声明 |
+
+函数本身不变：`s_device_on` 已为 1 时直接返回，只在 0→1 时打日志。
+
+### 44.4 日志
+
+```
+[REMPRO] 7100 DFBC → 静音状态复位为 开
+```
+
+`why` 为会话名：`DFBC` / `Denoise` / `EQ` / `WDRC`。设备本来就出声时**不打印**
+（无状态变化）。
+
+### 44.5 验证状态（**未编译、未上板**）
+
+构建由开发者在 Eclipse 完成。上板验证清单：
+
+1. 静音（CMD 21 `Mute=1`）→ App 设 DFBC → 出现上面那行日志，`GetDeviceOnOff`(33) 回 1；
+   再发 CMD 21 `Mute=1` 应真的下发 `A7 … 25`（不被 `changed=0` 吞掉）。
+2. 同样各测一次降噪 / EQ / WDRC（`why` 分别为 `Denoise` / `EQ` / `WDRC`）。
+3. 设备本来出声时下发上述参数：**不出现**该日志，`GetDeviceOnOff` 仍回 1。
+4. 会话失败（I2C 异常 / 收尾失败）：不出现该日志，`s_device_on` 保持原值。
+5. 回归 §41：静音 → 按键切程序仍同步为开；静音 → 按键调音量仍**不**同步。
+
+---
+
+## 45. 2026-11-06：蓝牙名 `SM1604` → `SM1634`
+
+### 45.1 改动
+
+命名规则不变（2026-10-30 定：左右耳 + FOTA 后缀），只把机型号 `SM1604` 改成 `SM1634`。
+[`ble_std.h`](../remote_mic_rx_coex_1664/include/ble_std.h) 的 `APP_DFLT_DEVICE_NAME` 四处：
+
+| `APP_RM_AUDIO_CHANNEL` | `CFG_FOTA` | 改前 | 改后 |
+|---|---|---|---|
+| `RM_RIGHT` | 开 | `SM1604-R` | **`SM1634-R`** |
+| `RM_RIGHT` | 关 | `SM1604-Rtest` | **`SM1634-Rtest`** |
+| `RM_LEFT` | 开 | `SM1604-L` | **`SM1634-L`** |
+| `RM_LEFT` | 关 | `SM1604-Ltest` | **`SM1634-Ltest`** |
+
+左右耳仍由 `APP_RM_AUDIO_CHANNEL`（`app.h`，需定义在 `#include "ble_std.h"` 之前）区分，
+其它代码无需改动。
+
+### 45.2 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `include/ble_std.h` | 四个 `APP_DFLT_DEVICE_NAME` + 命名规则注释 |
+| `docs/remote_mic_rx_coex_1664_开发文档.md` | §1 / §3 / §13 / §14 / §16 中的 `SM1604` 全部改为 `SM1634` |
+
+> `docs/7100协议.md` 里有一条抓包示例的序列号 `"SM1604-L-…"`，属于历史数据，未改。
+
+### 45.3 验证状态（**未编译、未上板**）
+
+构建由开发者在 Eclipse 完成。上板验证：
+
+1. 当前 `CFG_FOTA` 为**开** → 手机扫描应看到 **`SM1634-L`** 或 **`SM1634-R`**（无 `test` 后缀）。
+2. 临时关 FOTA 编译一版 → 应为 `SM1634-Ltest` / `SM1634-Rtest`。
+3. 名字长度与改前相同（`SM1634-x` 8 字符），§14 的 ADV / scan response 布局判断不受影响。
+4. App 按名字区分机型的逻辑（若有）需要同步认识新名字。

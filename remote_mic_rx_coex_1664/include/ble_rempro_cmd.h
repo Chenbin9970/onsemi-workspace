@@ -86,6 +86,12 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume);
  * BLE 未连接时两条 push 自己跳过（不用调用方判）。 */
 void rempro_push_7100_notify(const uint8_t *payload, uint8_t len);
 
+/* 设备实际已出声时把开关状态 s_device_on 同步为「开」（已为开时无动作）。
+ * 两个来源：7100 主动通知 0x0016（切程序 / SetCurrentScene）；以及配置族写会话
+ * （降噪 / DFBC / EQ / WDRC）成功收尾 —— 它们的公共帧固定以解除静音 `26` 结束。
+ * why 只用于日志（如 "切程序" / "DFBC"）。 */
+void rempro_device_on_sync_from_7100(const char *why);
+
 /* 7100 写会话收尾时调（dsp_7100_cmd.c 的 a7_session_finish）：
  * 清掉「BLE 发起的切程序、同值回执不推送」标志，防止切换失败 / 7100 不回 0x0016
  * 时标志残留，误吞之后 7100 本地按键触发的程序号推送。 */

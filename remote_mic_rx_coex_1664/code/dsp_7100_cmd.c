@@ -1333,6 +1333,8 @@ static void a7_rescue_read(void)
     (void)dsp_7100_send_end();
 }
 
+static const char *a7_kind_name(uint8_t kind);   /* 定义在文件后部（日志用） */
+
 /* 会话收尾：成功后同步 RAM 参数并请求落盘（否则下次开机缓存显示旧值） */
 static void a7_session_finish(bool ok)
 {
@@ -1389,6 +1391,15 @@ static void a7_session_finish(bool ok)
 #endif
 
     if (!ok) return;
+
+    /* 配置族会话（降噪 / DFBC / EQ / WDRC）的公共帧固定以「解除静音」收尾
+     * （a7_build_session 末尾的 A7_OPT_UNMUTE）：设备实际已出声，把开关状态同步为
+     * 「开」，否则 GetDeviceOnOff(33) 仍报静音、后续 SetMuteData 被 changed=0 吞掉。
+     * ⚠ 只认成功收尾；会话中途失败时可能还没走到最后那条 `26`。 */
+    if (s_sess_kind == A7_KIND_DENOISE || s_sess_kind == A7_KIND_DFBC ||
+        s_sess_kind == A7_KIND_EQ      || s_sess_kind == A7_KIND_WDRC) {
+        rempro_device_on_sync_from_7100(a7_kind_name(s_sess_kind));
+    }
 
     /* 切程序 / 测听：只更新当前程序号，不碰读回缓存里的任何参数 */
     if (s_sess_kind == A7_KIND_PROG || s_sess_kind == A7_KIND_AUDIO_ENTER ||

@@ -312,15 +312,16 @@ void rempro_push_volume_change(uint8_t prog, uint8_t volume)
     hdlc_push(CMD_PUSH_VOLUME, d, 4);
 }
 
-/* 7100 **只有切程序会自动解除静音**（本地按键，以及 BLE `SetCurrentScene` 那条单帧
- * `A2 00 16`，开发者 2026-10-30 确认；两者都经 `00 16` 通知回到这里）。
- * **调音量不会解静音**（同一确认）—— 所以 `00 12` 分支不调本函数：设备还静音着，
- * 若把 s_device_on 置 1，GetDeviceOnOff(33) 会误报「开机」，且 App 再发 SetMuteData
- * 时 changed=0 → 静音命令被当成重复下发吞掉。
- * 切程序时把 s_device_on 拉回「开」，否则：
+/* 设备**实际已出声**之后把 s_device_on 拉回「开」（已为开时无动作）。两个触发来源：
+ *   ① 7100 主动通知 `00 16`（程序变化）：本地按键切程序、BLE `SetCurrentScene` ——
+ *      7100 会**自己**解除静音（开发者 2026-10-30 确认）；调音量（`00 12`）不会，
+ *      所以那个分支不调本函数，否则设备还静音着却把 s_device_on 置 1。
+ *   ② 配置族写会话成功收尾（降噪 / DFBC / EQ / WDRC）：会话公共帧固定以
+ *      `A7 01 00 00 00 26`（解除静音）结束，见 dsp_7100_cmd.c 的 a7_session_finish。
+ * 不同步的话：
  *   ① GetDeviceOnOff(33) 会一直报「静音」，App 显示与实际不符；
- *   ② App 再发 SetMuteData 时 changed=0 → 静音命令被吞，设备根本不会静音。 */
-static void device_on_sync_from_7100(const char *why)
+ *   ② App 再发 SetMuteData 时 changed=0 → 静音命令被当成重复下发吞掉。 */
+void rempro_device_on_sync_from_7100(const char *why)
 {
     if (s_device_on) return;
     s_device_on = 1;
@@ -339,7 +340,7 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
     what = dsp_7100_notify_apply(payload, len, &val);
 
     if (what == DSP7100_NOTIFY_PROG) {
-        device_on_sync_from_7100("切程序");
+        rempro_device_on_sync_from_7100("切程序");
         if (s_scene_push_suppress_prog == val) {
             /* BLE 自己发起的切换：回执只是回声，App 已知道，不推 */
             s_scene_push_suppress_prog = 0;
@@ -348,7 +349,7 @@ void rempro_push_7100_notify(const uint8_t *payload, uint8_t len)
             rempro_push_scene_change((uint8_t)(val - 1));      /* val = 程序号 1-4 */
         }
     } else if (what == DSP7100_NOTIFY_VOL) {
-        /* 调音量**不解静音**（见 device_on_sync_from_7100 上方注释）—— 只同步值并上报 */
+        /* 调音量**不解静音**（见 rempro_device_on_sync_from_7100 上方注释）—— 只同步值并上报 */
         rempro_push_volume_change((uint8_t)(dsp_7100_get_program() - 1),
                                   val);                        /* val = 档位 0-6 = App 档位 */
     }
