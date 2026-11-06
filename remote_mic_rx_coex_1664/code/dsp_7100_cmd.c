@@ -623,11 +623,13 @@ static const uint8_t  s_eq_ch_n[3] = { 3, 5, 8 };
 
 /* OutputLimit 值字段的 4 字节（docs/7100协议/WDRC/7100_WDRC设置.md §3.2）：
  *   byte0 = OL 本身（int8 补码）          ← 按目标值算，不在表里
- *   byte1 = OL + K_ch                     ← 表里存 OL=-6 时的 byte1，按差值平移
- *   byte2 / byte3 = 逐通道常量，与 OL 无关
+ *   byte1 = OL + K_ch                     ← 读回值存 OL=-6 时的 byte1，按差值平移
+ *   byte2 / byte3 = 该程序该通道的伴生常量，与 OL 无关
  * 表取自 p0setlowlevelgainallchannel0.txt（默认状态，OL=-6），
  * ch16 用 p0channel16set0.txt（OL=0）复核过。
- * ⚠ 只来自一次默认状态抓包 —— 若这些字节被其它工具改过，表即失准。 */
+ * ⚠ 2026-11-05 开机读回证实：这三个字节**随程序不同**（本表只等于程序 1）。
+ *   写 OL 时优先用 dsp_7100_wdrc_ol_tail() 取目标程序自己的读回值；
+ *   本表只在读回未完成/失败时兜底。 */
 static const uint8_t s_wdrc_ol_tail[DSP7100_WDRC_CH][3] = {
     {0xEA, 0x57, 0x4E},   /* ch1  */
     {0xE5, 0xEA, 0xFE},   /* ch2  */
@@ -923,15 +925,21 @@ static void a7_add_wdrc_param(uint8_t prog, uint16_t addr, uint8_t val)
  * 参考抓包 p0channel1set-9 / p0channel2set-8 / p0channel16set0 */
 static void a7_add_wdrc_ol(uint8_t prog, uint16_t addr, uint8_t ch1, int8_t val)
 {
+    uint8_t        rb_tail[3];
     const uint8_t *tail = s_wdrc_ol_tail[ch1 - 1];
     int16_t        b1;
     uint8_t       *p;
+
+    /* 伴生值优先用目标程序自己的读回值（各程序不同，见表头注释） */
+    if (dsp_7100_wdrc_ol_tail(prog, ch1, rb_tail)) {
+        tail = rb_tail;
+    }
 
     a7_add_prep(A7_BLK_WDRC, prog, (uint8_t)(addr >> 8), (uint8_t)(addr & 0xFF));
     p = a7_put(12);
     if (p == NULL) return;
 
-    /* byte1 = OL + K_ch；K_ch 由表里 OL=-6 时的 byte1 反推，故按 (val - BASE) 平移 */
+    /* byte1 = OL + K_ch；K_ch 由读回/表里 OL=-6 时的 byte1 反推，故按 (val - BASE) 平移 */
     b1 = (int16_t)(int8_t)tail[0] + ((int16_t)val - A7_WDRC_OL_BASE);
     if (b1 < -128) b1 = -128;
     if (b1 >  127) b1 =  127;

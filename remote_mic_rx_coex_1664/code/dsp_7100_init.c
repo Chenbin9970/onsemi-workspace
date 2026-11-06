@@ -250,8 +250,24 @@ uint32_t dsp_7100_dio13_fall_cnt(void)
 #define RB_LL_OFF     0          /* 通道单元内 LowLevelGain 位偏移 */
 #define RB_HL_OFF     14         /* HighLevelGain  8bit 有符号 */
 #define RB_OL_OFF     22         /* OutputLimit    8bit 有符号 */
+/* OL 写帧的三个伴生字节来源（诊断用，2026-11-05）：0x177 通道单元 +30/+38/+46。
+ * 写帧 A7 07 ... <b0> <b1> <b2> <b3> 中 b1 = rb(+30)+(目标OL-读回OL)，b2/b3 直取。 */
+#define RB_OL_C1_OFF  30         /* 伴生 1（b1 基准）8bit */
+#define RB_OL_C2_OFF  38         /* 伴生 2（b2）    8bit */
+#define RB_OL_C3_OFF  46         /* 伴生 3（b3）    8bit */
+
+/* 伴生值开机打印开关（诊断用）。打开后每次读回共 4 程序 × 16 通道 = 64 行。
+ * 2026-11-05 靠它确认了三个偏移，并发现伴生值是**每程序各自的**配置。 */
+#define DSP7100_OL_TAIL_DBG  0
 
 static dsp_7100_rb_bufs_t s_rb_bufs;
+
+/* 每程序每通道的 OL 伴生 3 字节（0x177 通道单元 +30/+38/+46）。
+ * 这三个字节是**该程序自己的** WDRC/AGCO 配置，各程序不同（2026-11-05 开机读回证实：
+ * 硬编码表只等于 P1，P2/P3/P4 在多个通道上不同）。写 OL 时必须带目标程序自己的值。
+ * 只存 RAM：读回每次开机都跑，且 BLE 设置被读回门挡在后面，无需落 flash。 */
+static uint8_t s_ol_tail[RB_PROGS][RB_CH][3];
+static uint8_t s_ol_tail_ok[RB_PROGS];   /* 该程序的 WDRC 块已成功解析 */
 
 enum { RB_SEND, RB_READ };
 static uint8_t  s_rb_st  = RB_SEND;
@@ -318,7 +334,20 @@ static void rb_parse_wdrc(uint8_t prog, const uint8_t *wp)
             p->wdrc_hl[ch] = rb_field(wp, base + RB_HL_OFF, 8);
         }
         p->wdrc_ol[ch] = rb_field(wp, base + RB_OL_OFF, 8);
+
+        /* 伴生 3 字节：写 OL 时原样带上（b1 再按 OL 差值平移），见 a7_add_wdrc_ol */
+        s_ol_tail[prog][ch][0] = (uint8_t)rb_field(wp, base + RB_OL_C1_OFF, 8);
+        s_ol_tail[prog][ch][1] = (uint8_t)rb_field(wp, base + RB_OL_C2_OFF, 8);
+        s_ol_tail[prog][ch][2] = (uint8_t)rb_field(wp, base + RB_OL_C3_OFF, 8);
+
+#if DSP7100_OL_TAIL_DBG
+        PRINTF("[RB] P%u ch%u OL=%d comp=%02X/%02X/%02X\r\n",
+               prog + 1, ch + 1, p->wdrc_ol[ch],
+               s_ol_tail[prog][ch][0], s_ol_tail[prog][ch][1],
+               s_ol_tail[prog][ch][2]);
+#endif
     }
+    s_ol_tail_ok[prog] = 1;
 }
 
 /* 解析 DFBC 块（306B）→ 开关（payload[0] bit7，其余字节恒同） */
@@ -616,6 +645,23 @@ const dsp_7100_prog_t *dsp_7100_get_prog(uint8_t prog)
 {
     if (prog >= RB_PROGS || !s_rb_bufs.valid[prog]) return NULL;
     return &s_rb_bufs.prog[prog];
+}
+
+/* 取某程序某通道的 OL 伴生 3 字节（开机读回时存下的设备实际值）。
+ * prog = 1..4（同命令会话的设备程序号），ch = 1..16。
+ * 该程序的 WDRC 块没读成功时返回 false，调用方退回固定表。 */
+bool dsp_7100_wdrc_ol_tail(uint8_t prog, uint8_t ch, uint8_t out[3])
+{
+    if (out == NULL || prog < 1u || prog > (uint8_t)RB_PROGS ||
+        ch < 1u || ch > (uint8_t)RB_CH) {
+        return false;
+    }
+    if (!s_ol_tail_ok[prog - 1u]) return false;
+
+    out[0] = s_ol_tail[prog - 1u][ch - 1u][0];
+    out[1] = s_ol_tail[prog - 1u][ch - 1u][1];
+    out[2] = s_ol_tail[prog - 1u][ch - 1u][2];
+    return true;
 }
 
 /* 2026-10-09 起：flash 缓存**不再短路开机**，读回每次都走。

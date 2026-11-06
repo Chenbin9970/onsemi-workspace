@@ -178,6 +178,12 @@ void dsp_7100_cache_save_request(void);
 /* 取指定程序参数（prog 越界或无效返回 NULL） */
 const dsp_7100_prog_t *dsp_7100_get_prog(uint8_t prog);
 
+/* 取某程序某通道的 OL 伴生 3 字节（0x177 通道单元 +30/+38/+46，开机读回存下的
+ * 设备实际值）。写 OutputLimit 时 b1/b2/b3 必须用**目标程序自己的**值 ——
+ * 这三个字节随程序不同（2026-11-05 实测，硬编码表只是程序 1 的值）。
+ * prog = 1..4（设备程序号），ch = 1..16；该程序 WDRC 块未读成功时返回 false。 */
+bool dsp_7100_wdrc_ol_tail(uint8_t prog, uint8_t ch, uint8_t out[3]);
+
 #ifdef __cplusplus
 }
 #endif
