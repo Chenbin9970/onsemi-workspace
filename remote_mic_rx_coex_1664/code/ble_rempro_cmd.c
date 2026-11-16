@@ -1252,8 +1252,8 @@ static void cmd_setdeviceonoff_7100(const uint8_t *data, uint8_t len)
  * `fitting_rm_disable()` / `fitting_rm_enable()`：1644 的 RM 是 7100 侧配置，验配要独占 DSP
  * 就得把 RM 停掉；1664 的 RM 是片内 PCM 通路（rm_app.c / app_env.audio_streaming），
  * 语义不同，按当前需求只回包、不挂起。
- * ⚠ 已知局限：RM 推流期间 `rempro_cmd_process()` 整体被跳过（开发文档 §7.4.5），
- *   所以这条在推流中同样**收不到**；要让它真能应答得先解掉那个早退。
+ * ⚠ 已知局限：RM 推流期间只放行白名单（02/04/15/16/26，见 rm_stream_cmd_allowed），
+ *   所以这条在推流中同样**收不到**；要让它真能应答得把它加进白名单。
  * ========================================================================== */
 
 static void cmd_setfittingstatus(const uint8_t *data, uint8_t len)
@@ -1575,10 +1575,29 @@ static void cmd_setstreamaddress(const uint8_t *data, uint8_t len)
     s_reset_pending = true;
 }
 
+/* RM 推流期间仍允许的 App 指令（白名单）：
+ *   02 SetVolume / 16 SetCurrentScene / 03 SetDeviceOnOff —— 切音量、切模式、开关助听器；
+ *   04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig —— 只读。
+ * 其余指令流期间消费后丢弃、不回包。 */
+static bool rm_stream_cmd_allowed(uint16_t cmd_id)
+{
+    switch (cmd_id) {
+    case CMD_SETVOLUME:
+    case CMD_SETCURRENTSCENE:
+    case CMD_SETDEVICEONOFF:
+    case CMD_GETBATTERYINFO:
+    case CMD_GETCURRENTSCENE:
+    case CMD_GETDEVICECONFIG:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /* ================================================================
  * Main dispatcher
  * ================================================================ */
-void rempro_cmd_process(void)
+void rempro_cmd_process(bool rm_streaming)
 {
     if (!reasm_pending) return;
     reasm_pending = false;
@@ -1610,6 +1629,17 @@ void rempro_cmd_process(void)
 
         print_hex("RX frame", reasm_buf, consumed);
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
+
+        /* RM 推流期间只放行白名单（02/03/04/15/16/26），其余帧照常消费但
+         * 不处理、不回包（与原「流期间不处理指令」的兜底语义一致）。 */
+        if (rm_streaming && !rm_stream_cmd_allowed(cmd_id)) {
+            PRINTF("[REMPRO] RM stream: drop CMD=%u\r\n", cmd_id);
+            reasm_len -= consumed;
+            if (reasm_len > 0) {
+                memmove(reasm_buf, reasm_buf + consumed, reasm_len);
+            }
+            continue;
+        }
 
         switch (cmd_id) {
         /* ---- 已接 7100 运行时命令（切模式/调音量）---- */

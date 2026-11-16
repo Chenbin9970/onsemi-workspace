@@ -52,7 +52,11 @@ extern "C" {
 /* HDLC SYS_ID for device-initiated push */
 #define HDLC_SYS_ID_DEVICE      1
 
-void rempro_cmd_process(void);
+/* 处理重装缓冲里的完整 HDLC 帧。
+ * rm_streaming=true（RM 推流中）：只放行白名单 02 SetVolume / 03 SetDeviceOnOff /
+ * 16 SetCurrentScene / 04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig，
+ * 其余指令照常消费但丢弃、不回包。 */
+void rempro_cmd_process(bool rm_streaming);
 
 /* 电池 DIO0(IO) AD 原始值（分时复用 7100 I2C 的 SCL 脚，每次读前重配 ADC）。
  * 供 GetBatteryInfo 及后续低电量检测使用。 */

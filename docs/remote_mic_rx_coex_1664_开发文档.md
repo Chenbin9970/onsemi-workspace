@@ -896,6 +896,9 @@ BLE `SetVolume` 都一样，2026-10-30 开发者更正；此前误记为两者�
 静默丢弃、不回响应。比 1644 §20.4 的白名单**更严**（1644 放行 26/4/15 三条只读）。
 理由是推流中任何写 DSP 的命令都会打断音频，而复位类（89）更会直接掐断流。
 
+> **2026-11-16 起改为白名单**：流期间放行 02/03/04/15/16/26（调音量、开关助听器、
+> 切模式、查电量/模式/设备信息），其余仍丢弃。见 §48。
+
 **应答格式统一（2026-09-15）**：所有**设置类**命令的应答统一为 `Flag(1) + status(1)`
 （协议文档规定；`hdlc_response_set()` 生成，成功 = `00 01`，失败/不支持 = `01 00`）。
 此前 SetDenoise / SetFeedbackOnOff / SetEqualizer 及各处兜底分支只回 `Flag`，本轮按文档补齐；
@@ -4684,5 +4687,70 @@ static uint8_t s_autosw_restore_mode;     /* 连接前 / App 最后下发的 mod
 - 恢复值只跟踪「App 下发的 95 号命令」和「本保护自己写的值」；如果 7100 因其他途径
   改了自动切换 mode（工具直写 / 其他主机），RSL10 不知道，断开时可能恢复成旧值。
 - 保护关闭的是 7100 的自动切换，**不影响 RM 音频通路**；RM 流期间 App 命令仍按
-  §6 / `app.c` 的既有逻辑被丢弃。
+  §6 / `app.c` 的既有逻辑被丢弃（2026-11-16 起改为 §48 白名单）。
 - `ble_std.c` 有 CRLF→LF 的 git 提示，属行尾，不影响内容。
+
+## 48. 2026-11-16：RM 推流期间放行白名单 App 指令（02/03/04/15/16/26）
+
+> 代码未编译、未上板；本节验证清单待开发者在 Eclipse 编译后执行。
+
+### 48.1 需求与决策
+
+原 `app.c` 在 `app_env.audio_streaming=1`（RM 已建流）时调用 `rempro_reasm_reset()`，
+丢弃全部 App 指令。需求：RM 助听过程中 App 仍要能调音量、切模式、开关助听器、查状态。
+
+决策：只放行 6 条，其余仍丢弃——
+
+| ID | 指令 | 放行原因 |
+|---|---|---|
+| 02 | SetVolume | 调音量 |
+| 03 | SetDeviceOnOff | 开关助听器（映射 7100 mute/unmute） |
+| 04 | GetBatteryInfo | 查电量（当前 `BAT_ADC_ENABLE=0`，固定回 100%） |
+| 15 | GetCurrentScene | 查当前模式/音量/降噪/EQ（纯读回缓存） |
+| 16 | SetCurrentScene | 切模式 |
+| 26 | GetDeviceConfig | 查设备信息（纯 RAM/MAC） |
+
+其余指令（9/95/37/40/89 等）流期间仍消费后丢弃、不回包，避免写 DSP 打断音频、
+复位类（89）掐断流（原 §7.4.5 的理由）。
+
+### 48.2 行为
+
+- `rempro_cmd_process(bool rm_streaming)` 新增参数；解析出完整帧后，流期间非白名单帧
+  打印 `[REMPRO] RM stream: drop CMD=n`，消费掉、不回包，继续处理下一帧。
+- 白名单帧走原 handler：02/16 异步写 7100（I2C 忙时 `pend_put` 缓存，200ms tick 后下发），
+  立即回 Flag=0；04/15/26 直接应答。
+- 不再每轮清重装缓冲：跨 BLE 通知的半帧可以拼完整；BLE 断开时 `ble_std.c` 仍调
+  `rempro_reasm_reset()` 清残留。
+
+### 48.3 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `app.c` | 流期间不再 `rempro_reasm_reset()` 早退，统一 `rempro_cmd_process(app_env.audio_streaming != 0)` |
+| `code/ble_rempro_cmd.c` | `rm_stream_cmd_allowed()` 白名单；`rempro_cmd_process()` 加 `rm_streaming` 过滤；37 号注释同步 |
+| `include/ble_rempro_cmd.h` | 原型改 `rempro_cmd_process(bool rm_streaming)` 并注明白名单 |
+
+### 48.4 同一批改动里的其它项
+
+- `app.h`：`APP_RM_AUDIO_CHANNEL` 由 `RM_LEFT`（d88b74b）改回 **`RM_RIGHT`**，
+  蓝牙名随之回到右耳。属编译目标切换，与白名单无功能关系。
+- FOTA：本日曾切 OFF 做对照，最终切回 **ON**；`.cproject` / rteconfig / startup /
+  sections / `app.h CFG_FOTA` 与 HEAD 一致，无 diff。
+
+### 48.5 已知限制 / 风险
+
+- 02/03/16 都会写 7100：推流中执行可能出现短暂音频断续或咔哒声；03 关助听器会把
+  RM 声音一起静音（7100 输出被 mute），属功能语义。
+- 04 若将来 `BAT_ADC_ENABLE=1`，会重配 DIO0/ADC；不占 I2C 总线，但 5s 心跳独立运行，
+  存在极短引脚复用窗口，需要时再加互斥。
+- 15 号在流期间回的是真实程序 0–3，没有虚拟模式号。
+
+### 48.6 验证状态（**未编译、未上板**）
+
+1. RM 流中发 02 → Flag=0，音量变化，App 收到 CMD 4 推送。
+2. RM 流中发 16 → Flag=0，程序切换，7100 同值 `0x0016` 回执不推 CMD 5。
+3. RM 流中发 03 开/关 → Flag+status，7100 mute/unmute 生效（RM 声音随之开关）。
+4. RM 流中发 15 → 真实程序/音量/降噪/EQ；04 → 左右 100；26 → 28 字节两包。
+5. RM 流中发 9/95/37/89 → 串口 `drop CMD=n`，App 无应答。
+6. 停流后所有指令恢复正常；流中连续发白名单指令多次不卡死、不丢包。
+7. FOTA ON 版本编译通过、`mkfotaimg.py` 生成 `.fota`。

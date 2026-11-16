@@ -151,16 +151,9 @@ int main()
 
         if (ble_env.state == APPM_CONNECTED)
         {
-            /* RM 连接(流)期间不处理任何 BLE 指令，并清掉残留 RX 帧 */
-            if (app_env.audio_streaming)
-            {
-                rempro_reasm_reset();
-            }
-            else
-            {
-                /* 处理 Rempro 接收到的完整 HDLC 帧 */
-                rempro_cmd_process();
-            }
+            /* 处理 Rempro 接收到的完整 HDLC 帧。
+             * RM 推流期间只放行 02/03/04/15/16/26，其余指令丢弃（见 cmd 层白名单）。 */
+            rempro_cmd_process(app_env.audio_streaming != 0);
         }
 
         RM_StatusHandler();
