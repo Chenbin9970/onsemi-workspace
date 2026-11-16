@@ -49,7 +49,7 @@
 #define RM_LEFT                         0
 #define RM_RIGHT                        1
 
-#define APP_RM_AUDIO_CHANNEL            RM_RIGHT
+#define APP_RM_AUDIO_CHANNEL            RM_LEFT
 
 #include "ble_std.h"
 #include "ble_custom.h"
