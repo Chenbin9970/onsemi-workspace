@@ -1080,9 +1080,12 @@ App_Initialize() → 打印 started → bs300_driver_init()
     提示音命令；位置已留在 `code/app_process.c` 的 `APP_Timer`（有 TODO 注释）。
 18. **测听进/出的切程序不再回推 CMD 5 场景号**（§42，2026-10-30）：复用 §33 的抑制标志，
     进 = 程序 3、退 = 原程序。**未编译、未上板**，验证清单见 §42.5。
-18. **BLE 88/89 流地址未上板实测**（§19）：落地路径（Settings 扇区擦写、复位时机、
+19. **BLE 88/89 流地址未上板实测**（§19）：落地路径（Settings 扇区擦写、复位时机、
     开机回填）都只做了代码走查。唯一能证明正确性的两项 —— 「断电重启后流地址是否保持」
     与「改完地址后 TX 能否对上」—— 见 §19 验证清单。
+20. **开机读回不更新 flash 的 LL/HL**（§46，2026-11-10 记录，**未改**）：槽有效时
+    `rb_parse_wdrc()` 跳过 LL/HL，flash 只在首次开机 / `0xFE` 后建立基准。开发者要求
+    「每次开机读回都更新 flash」，与 v6 决策 D3 冲突；方案待定（§46.5）。
 
 ## 13. 验证步骤
 
@@ -4209,6 +4212,8 @@ v5→v6 升级首启基准重建。清单保留在 §7.4.2。
 
 1. **开机不重发 WDRC（D2）**：7100 掉电不记忆、RSL10 也不重发，所以开机后设备实际处于
    出厂默认，与 flash 里的基准可能不同；Get 报的是 App 上次设的值。
+   > 2026-11-10 追加：开发者要求「开机读回就更新 flash」，与 D3「槽有效不覆盖 LL/HL」
+   > 冲突；现状与待定方案见 §46。
 2. **钳位边界无效果**：`clamp(基准 + eq, -30, 60)` 撞到边界后同方向继续调不生效，且段内
    各通道顶死时机不一致会让频响变形（§12 第 11 条）。
 3. **旧映射写过的通道不会自动归位**：EQ 只写自己那几条通道；旧通道上的偏移要等下次
@@ -4518,3 +4523,166 @@ ch4–ch12 与 P1 表完全一致，所以只有部分通道被拉偏。单看�
 2. 临时关 FOTA 编译一版 → 应为 `SM1634-Ltest` / `SM1634-Rtest`。
 3. 名字长度与改前相同（`SM1634-x` 8 字符），§14 的 ADV / scan response 布局判断不受影响。
 4. App 按名字区分机型的逻辑（若有）需要同步认识新名字。
+
+---
+
+## 46. 2026-11-10：开机读回不更新 flash 的 LL/HL —— 与「每次开机读回更新 flash」目的冲突
+
+### 46.1 现象
+
+用 7100 工具读出的参数与 RSL10 读取的（`[RB]` 日志 / Rempro Get）对不上，主要是 WDRC
+的 LL/HL。开发者明确：**开机每次都读回，目的就是让 flash 里的参数跟着 7100 更新**。
+
+### 46.2 日志证据
+
+开机读回四条程序行都带 `(LL/HL=flash)`：
+
+```
+[RB] P1 降噪 en=1 lvl=1 | DFBC=off | WDRC LL/HL/OL(LL/HL=flash): 30/0/-4 ...
+[RB] P2 ... (LL/HL=flash): 16/8/-6 24/15/-6 ...
+```
+
+标记由 `rb_parse_print()` 打出，表示该程序的 LL/HL 取自 **RSL10 flash 缓存**，
+不是本次从 7100 读到的值。同一轮里 OL、降噪、DFBC 是实读的（日志里 `prog 0 saved`、
+其余程序「与 flash 一致」正是它们参与整槽比较的结果）。
+
+### 46.3 代码路径
+
+- [`dsp_7100_cache_try_load()`](../remote_mic_rx_coex_1664/code/dsp_7100_init.c)：
+  槽有效时把 `s_llhl_from_cache[prog] = valid[prog]`；
+- [`rb_parse_wdrc()`](../remote_mic_rx_coex_1664/code/dsp_7100_init.c)：
+  `keep = 1` 时跳过 `wdrc_ll/hl` 赋值，只更新 `wdrc_ol`（v6 决策 D3，见 §40.2）；
+- [`dsp_7100_cache_save()`](../remote_mic_rx_coex_1664/code/dsp_7100_storage.c)：
+  按整槽比较，LL/HL 没变 → 该槽跳过，flash 永远保留旧基准。
+
+结果：**只有槽无效（首次开机 / `0xFE` 清缓存）时才会用 7100 的值建立 LL/HL**；
+之后无论 7100 被工具改成什么，RSL10 的 flash / Get 都看不到。
+
+### 46.4 为什么不直接覆盖（设计原因）
+
+设备里的 LL/HL 可能是「基准 + App 的 EQ 偏移」。槽有效时若直接用设备值覆盖基准：
+
+- `GetGainData` / `GetHighLevelGainData` 会开始上报含 EQ 的值；
+- 之后写 EQ（`基准 + 绝对值`）会在被抬高的基准上再叠加，重现 §40.1 的漂移。
+
+### 46.5 待定方案（**2026-11-10 开发者指示：先记录，下次修 bug 时再定**）
+
+| 方案 | 做法 | 代价 |
+|---|---|---|
+| A（现状） | 槽有效时不覆盖 | flash 不跟随 7100，本问题保留 |
+| B 仅 eq=0 时覆盖 | `eq_*` 全 0 → 用设备值更新 LL/HL；非 0 保持基准 | 无 EQ 场景满足；有 EQ 时仍不更新 |
+| C 每次都覆盖 | 设备值直接写基准 | flash 完全跟随 7100；含 EQ 时基准被抬高，有漂移风险 |
+| D 覆盖时减 EQ | 存 `base = 设备值 − eq_*` | 需先实测确认「7100 开机后是否保留 App 的 EQ 偏移」 |
+
+### 46.6 诊断 / 验证方法
+
+1. 想确认 RSL10 到底读到了什么：让 App 往 Rempro 特征值写 `0xFE`
+   （`ble_custom.c` 的 `dsp_7100_cache_invalidate()` + 复位），重启后日志不再带
+   `(LL/HL=flash)`，此时打印的就是 7100 实读值。⚠ 若设备当前含 EQ，会把含 EQ 的
+   值存成新基准，用完需重设 LL/HL。
+2. 不动缓存的方案：在 `rb_parse_wdrc()` 里 `keep=1` 时额外打印一行实读 LL/HL
+   （诊断用，不影响基准）。
+3. 对比时注意两个口径：
+   - 日志是 **dB**；Rempro 线格式 LL/HL = dB+30、OL = dB+60；
+   - 日志 P1–P4 = 7100 程序 1–4，App Scene 0–3；工具若 0 起编号会整体错一位。
+
+---
+
+## 47. 2026-11-11：BLE 连接期间强制关闭 7100 自动切换模式，断开恢复
+
+> 代码注释记为 2026-11-11；本文记录于 2026-11-16。当前**未提交、未编译、未上板**。
+> 代码里没有写这个决定的原因，本节只记录行为与实现。
+
+### 47.1 行为
+
+| 时机 | 动作 |
+|---|---|
+| BLE 连接建立（`GAPC_ConnectionReqInd`） | 记住连接前实际生效的自动切换 mode，然后请求写 **块 0x16 = 0**（关自动切换） |
+| BLE 断开（`GAPC_DisconnectInd`） | 若本次连接确实关过、且连接前的 mode 非 0、且与当前 mode 不同 → 请求恢复连接前的 mode |
+| 连接期间 App 下发 95 号 `SetAutoSwitchMode` | 照常执行；以 App 最后一次下发的 mode 为准，断开时**不恢复**（恢复值已同步成 App 的值） |
+| 连接前自动切换本来就是 0 | 断开时不恢复 |
+| 关的会话还没跑就断开 | 取消保护，不写 0x16、也不恢复 |
+
+**只写块 0x16，不碰飞行模式块 0x05**——这是与现有 95 号命令（0x16 + 0x05 两块）的唯一区别。
+
+### 47.2 状态机与执行时机
+
+`ble_rempro_cmd.c` 新增 4 个静态变量：
+
+```c
+static bool    s_autosw_off_pending;      /* 请求写 0x16=0 */
+static bool    s_autosw_restore_pending;  /* 请求恢复连接前 mode */
+static uint8_t s_autosw_mode;             /* 最近一次实际生效的 mode */
+static uint8_t s_autosw_restore_mode;     /* 连接前 / App 最后下发的 mode */
+```
+
+- `rempro_autosw_off_request()`（连接时）：作废上一次的恢复请求，
+  `s_autosw_restore_mode = s_autosw_mode`，置 `off_pending`。**只置标志，不碰 I2C。**
+- `rempro_autosw_restore_on_disconnect()`（断开时）：按 47.1 的三条分支决定是否置
+  `restore_pending`。
+- 实际下发在 [`rempro_pending_start_next()`](../remote_mic_rx_coex_1664/code/ble_rempro_cmd.c)：
+  先等读回完成（`dsp_7100_rb_done()`），**关闭优先于恢复，两者都优先于普通设置命令**；
+  启动失败不丢请求，下个 200ms tick 重试；启动成功才清标志。
+- 95 号命令执行成功时同步 `s_autosw_mode / s_autosw_restore_mode`；命令排队时也同步
+  `s_autosw_restore_mode`（App 最新意图），避免排队期间断开把旧值恢复回去。
+
+### 47.3 7100 侧：新增 `A7_KIND_AUTOSW_ONLY` 会话
+
+[`dsp_7100_cmd.c`](../remote_mic_rx_coex_1664/code/dsp_7100_cmd.c) 新增会话类型 11：
+
+- 入口 `dsp_7100_set_autosw_only(mode)`，`mode > 4` 直接返回 false；
+- 只发一条 12 字节写帧（块 0x16）：
+
+  ```
+  A7 07 00 00 00 08 00 00  B8 00 00 B11
+  mode=0 → B8=00, B11=FF      （即 00 FF FF FF）
+  mode>0 → B8=01, B11=mode    （即 01 00 00 0N）
+  ```
+
+- 会话族按**配置族（ACK）**处理：`A7_FAM_ACK`，与 DFBC 同骨架；
+- `a7_session_finish()` 里与 `AUTOSW` 一起**早退**，不进 `a7_session_sync_cache()` /
+  `dsp_7100_cache_save_request()`——mode 不是缓存参数，且防止 `s_sess_val`（mode 0–4）
+  落到 EQ 分支越界索引 `s_eq_ch_n[3]`；
+- 日志名 `AutoSwitchOnly`。
+
+### 47.4 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `code/ble_std.c` | `GAPC_ConnectionReqInd` 连上后调用 `rempro_autosw_off_request()`；`GAPC_DisconnectInd` 断开时调用 `rempro_autosw_restore_on_disconnect()`（都在原有 reasm 清理 / 广播恢复旁边） |
+| `code/ble_rempro_cmd.c` | 4 个静态变量 + 两个请求函数；`rempro_pending_start_next()` 加关闭 / 恢复优先级；95 号命令两处记录 mode |
+| `include/ble_rempro_cmd.h` | 两个请求函数的声明 |
+| `code/dsp_7100_cmd.c` | `A7_KIND_AUTOSW_ONLY` 定义、建帧分支、会话族判定、收尾早退、日志名、`dsp_7100_set_autosw_only()` |
+| `include/dsp_7100_cmd.h` | `dsp_7100_set_autosw_only()` 声明 |
+
+### 47.5 同一批未提交改动里的另一项：左右耳切到 `RM_LEFT`
+
+[`app.h`](../remote_mic_rx_coex_1664/include/app.h) 的 `APP_RM_AUDIO_CHANNEL`
+由 `RM_RIGHT` 改为 `RM_LEFT`。这只是编译目标切换（蓝牙名随之变成 `SM1634-L`），
+与自动切换保护无功能关系。**提交前需确认是随功能一起提交，还是临时本地改动。**
+
+### 47.6 验证状态（**未编译、未上板**）
+
+构建由开发者在 Eclipse 完成。代码注释已标注：**单块写 0x16 没有抓包对照，
+会话骨架是照 DFBC 的 14 条抄的**。上板验证清单：
+
+1. 自动切换为开（mode 1–4）时 App 连上：
+   - 日志出现 `[7100] --- AutoSwitchOnly mode=0 ---`；
+   - 抓包 / 7100 工具确认块 0x16 变为 `00 FF FF FF`，**块 0x05 不变**；
+   - 断开后出现 `AutoSwitchOnly mode=<连接前>`，块 0x16 恢复原值。
+2. 连接期间 App 发 95 号改成 mode=2 → 断开后**不再**下发恢复，块 0x16 保持 2。
+3. 连接前自动切换为 0 → 断开无恢复动作。
+4. 连上后立刻断开（关的会话还没跑）→ 一条 0x16 都没写，也无恢复。
+5. 断开后 200ms 内又连上 → 旧恢复请求作废，只按新连接关一次。
+6. 95 号正常路径回归：仍写 0x16 + 0x05 两块，行为与改前一致。
+7. 读回 / RM 流期间：保护命令只在 `dsp_7100_rb_done()` 且 I2C 空闲时下发，
+   不抢读回、不阻塞主循环；队列里的设置命令最多延后一个 tick。
+8. 连接失败 / 断开重连循环 10 次：`s_autosw_mode` 与块 0x16 始终一致，无残留请求。
+
+### 47.7 已知限制
+
+- 恢复值只跟踪「App 下发的 95 号命令」和「本保护自己写的值」；如果 7100 因其他途径
+  改了自动切换 mode（工具直写 / 其他主机），RSL10 不知道，断开时可能恢复成旧值。
+- 保护关闭的是 7100 的自动切换，**不影响 RM 音频通路**；RM 流期间 App 命令仍按
+  §6 / `app.c` 的既有逻辑被丢弃。
+- `ble_std.c` 有 CRLF→LF 的 git 提示，属行尾，不影响内容。

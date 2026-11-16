@@ -75,6 +75,14 @@ void rempro_deferred_tick(void);
  * 设置命令在 I2C 忙时按类型合并缓存（见 ble_rempro_cmd.c）；无缓存则空操作。 */
 void rempro_pending_start_next(void);
 
+/* BLE 连接后调用：请求关闭 7100 自动切换模式（只写块 0x16，不碰飞行模式）。
+ * 只置标志，实际下发由 rempro_pending_start_next() 在读回完成、I2C 空闲时执行。 */
+void rempro_autosw_off_request(void);
+
+/* BLE 断开时调用：若连接前自动切换是开的、且本次连接中 App 没改过 95 号命令，
+ * 请求恢复连接前的 mode。只置标志，执行同上。 */
+void rempro_autosw_restore_on_disconnect(void);
+
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);
 void rempro_push_volume_change(uint8_t prog, uint8_t volume);

@@ -137,6 +137,12 @@ bool dsp_7100_set_dfbc(uint8_t prog, uint8_t onoff);
  * 返回 true = 会话已启动（异步）。 */
 bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane);
 
+/* 只写自动切换块 0x16：mode=0 → 00 FF FF FF；1-4 → 01 00 00 0N。
+ * **不写飞行模式块 0x05**。BLE 连接时写 0，断连时恢复连接前的 mode。
+ * 返回 true = 会话已启动（异步）。
+ * ⚠ 单块写无抓包，会话骨架照 DFBC，待上板确认。 */
+bool dsp_7100_set_autosw_only(uint8_t mode);
+
 /* 三段均衡器：prog 1-4，band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB，1dB/LSB）。
  * 写入值 = **基准 + 本次绝对值**，作用于该段通道的 LowLevelGain 与 HighLevelGain；
  * 基准（Get 上报的 LowLevelGain/HighLevelGain）不被 EQ 改动，两者一起落盘。

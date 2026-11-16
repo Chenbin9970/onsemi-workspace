@@ -622,6 +622,13 @@ int GAPC_ConnectionReqInd(ke_msg_id_t const msg_id,
         ke_msg_send(cfm);
 
         BLE_SetServiceState(true, ble_env.conidx);
+
+        /* 保护（2026-11-11）：每次 BLE 连接后强制关闭 7100 自动切换模式。
+         * 只置标志，实际下发由 200ms tick 在读回完成、I2C 空闲时执行
+         * （rempro_autosw_off_request → rempro_pending_start_next → dsp_7100_set_autosw_only(0)）。
+         * 断开时 rempro_autosw_restore_on_disconnect() 按连接前的 mode 恢复。
+         * App 连接后仍可再发 95 号命令重新开启。 */
+        rempro_autosw_off_request();
     }
     else
     {
@@ -686,6 +693,10 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
 
     /* 清空 Rempro HDLC 重装缓冲，避免残留帧串到下一次连接 */
     rempro_reasm_reset();
+
+    /* 保护配套：连接时被强制关掉的自动切换模式，按连接前的 mode 恢复
+     * （App 在本次连接中改过 95 号命令时以其最后下发的为准）。 */
+    rempro_autosw_restore_on_disconnect();
 
     Advertising_Start();
 

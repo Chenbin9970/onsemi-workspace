@@ -582,6 +582,7 @@ static void print_r2(const uint8_t *h, uint16_t hlen, bool okh,
 #define A7_KIND_AUDIO_ENTER  8   /* 进测听：切程序3 + 0x2E=00 + 解除静音（三条，路径 B 串行） */
 #define A7_KIND_AUDIO_EXIT   9   /* 退测听：切回原程序 + 0x2E=58 + 解除静音 */
 #define A7_KIND_AUTOSW      10   /* 自动切换模式 + 飞行模式（程序槽 00，两块两次提交） */
+#define A7_KIND_AUTOSW_ONLY 11   /* 只写自动切换块 0x16（0=关 / 1-4=开），不碰块 0x05 */
 
 /* WDRC 参数号：LowLevelGain(ch N) = 0x15 + 0x11×(N−1)，HighLevelGain = +2，OutputLimit = +3
  * （N 从 1 起；docs/7100协议/WDRC/7100_WDRC设置.md §1、§2）
@@ -1109,7 +1110,7 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
      * **校验 46**（失败补 82 重读）、等不到沿时盲读一次降级，交互族（路径 B）读到的内容只进日志。 */
     s_sess_family = (kind == A7_KIND_DENOISE || kind == A7_KIND_DFBC ||
                      kind == A7_KIND_WDRC    || kind == A7_KIND_EQ ||
-                     kind == A7_KIND_AUTOSW)
+                     kind == A7_KIND_AUTOSW  || kind == A7_KIND_AUTOSW_ONLY)
                     ? A7_FAM_ACK : A7_FAM_EDGE;
 
     if (kind == A7_KIND_MUTE) {             /* 静音 / 解除静音：同样只发这一条 */
@@ -1183,6 +1184,19 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
         if (p != NULL) {
             p[0] = 0xA7; p[1] = 0x04; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
             p[5] = 0x08; p[6] = 0x00; p[7] = 0x00; p[8] = val ? 0x01 : 0x00;
+        }
+    } else if (kind == A7_KIND_AUTOSW_ONLY) { /* 只写自动切换块 16：0=00 FF FF FF，N=01 00 00 0N；
+                                               * 不发块 05（飞行模式）—— 单块写无抓包，骨架同 DFBC */
+        uint8_t *p;
+        a7_add_prep(A7_BLK_AUTOSW, prog, 0x00, 0x00);
+        p = a7_put(12);
+        if (p != NULL) {
+            p[0]  = 0xA7; p[1] = 0x07; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
+            p[5]  = 0x08; p[6] = 0x00; p[7] = 0x00;
+            p[8]  = (val == 0) ? 0x00 : 0x01;
+            p[9]  = 0x00;
+            p[10] = 0x00;
+            p[11] = (val == 0) ? 0xFF : val;
         }
     } else if (kind == A7_KIND_WDRC) {      /* WDRC：n 个通道的同一参数（LL / HL / OL） */
         a7_add_wdrc_items(prog, val);
@@ -1420,7 +1434,7 @@ static void a7_session_finish(bool ok)
      * ⚠ AUTOSW 还**必须**在这里拦住：它的 s_sess_val 是 mode（0-4），
      *   落到 a7_session_sync_cache 的 else（EQ）分支会越界索引 s_eq_ch_n[3]。 */
     if (s_sess_kind == A7_KIND_TONE || s_sess_kind == A7_KIND_MUTE ||
-        s_sess_kind == A7_KIND_AUTOSW) return;
+        s_sess_kind == A7_KIND_AUTOSW || s_sess_kind == A7_KIND_AUTOSW_ONLY) return;
 
     a7_session_sync_cache();
     dsp_7100_cache_save_request();
@@ -1783,6 +1797,7 @@ static const char *a7_kind_name(uint8_t kind)
     if (kind == A7_KIND_AUDIO_ENTER) return "AudiometryOn";
     if (kind == A7_KIND_AUDIO_EXIT)  return "AudiometryOff";
     if (kind == A7_KIND_AUTOSW)      return "AutoSwitchMode";
+    if (kind == A7_KIND_AUTOSW_ONLY) return "AutoSwitchOnly";
     return "EQ";
 }
 
@@ -1885,6 +1900,17 @@ bool dsp_7100_set_auto_switch_mode(uint8_t mode, uint8_t airplane)
     PRINTF("[7100] --- AutoSwitchMode mode=%u airplane=%u ---\r\n", mode, airplane);
     s_sess_db = airplane ? 1 : 0;
     return a7_session_start(A7_KIND_AUTOSW, 0, mode);
+}
+
+/* 只写自动切换块 0x16：mode=0 → 00 FF FF FF；mode=1-4 → 01 00 00 0N。
+ * **不写飞行模式块 0x05**。BLE 连接时写 0，断连时按连接前的 mode 恢复。
+ * ⚠ 单块写没有抓包：会话骨架照单块配置（DFBC）的 14 条，待上板确认。 */
+bool dsp_7100_set_autosw_only(uint8_t mode)
+{
+    if (mode > 4) return false;
+    PRINTF("[7100] --- AutoSwitchOnly mode=%u ---\r\n", mode);
+    s_sess_db = 0;
+    return a7_session_start(A7_KIND_AUTOSW_ONLY, 0, mode);
 }
 
 /* 三段均衡器：band 0=低音 1=中音 2=高音，db = App 下发的**绝对值**（±dB）。

@@ -431,6 +431,42 @@ typedef struct
 
 static rempro_pend_t s_pend[PEND_MAX];
 
+/* ---- 自动切换模式的连接保护 ----
+ * 连接时只写块 0x16 把它关掉；断开时恢复「连接前」的 mode。
+ * mode 的来源是 App 的 95 号命令（执行成功才更新）；若连接期间 App 又改过，
+ * restore_mode 会同步成 App 的最新值，断连时两边相等 → 不需要恢复。
+ * 置位后由 200ms tick 在读回完成且 I2C 空闲时下发，成功才清零。 */
+static bool    s_autosw_off_pending = false;
+static bool    s_autosw_restore_pending = false;
+static uint8_t s_autosw_mode;          /* 最近一次实际生效的 mode（0=关） */
+static uint8_t s_autosw_restore_mode;  /* 连接前 / App 最后下发的 mode（0=不恢复） */
+
+/* 连接时调用：记住连接前的 mode，并请求关闭自动切换。 */
+void rempro_autosw_off_request(void)
+{
+    /* 新连接优先：上一次断连的恢复请求（最多存活一个 200ms tick）作废，
+     * 否则恢复会在本次连接期间才下发。 */
+    s_autosw_restore_pending = false;
+    s_autosw_restore_mode = s_autosw_mode;
+    s_autosw_off_pending = true;
+}
+
+/* 断开时调用：本次连接确实关过、且与连接前不一致 → 请求恢复。 */
+void rempro_autosw_restore_on_disconnect(void)
+{
+    if (s_autosw_off_pending) {
+        /* 关的会话还没跑：7100 仍是连接前状态，取消本次保护即可 */
+        s_autosw_off_pending = false;
+        s_autosw_restore_mode = 0;
+        return;
+    }
+    if (s_autosw_restore_mode != 0 && s_autosw_restore_mode != s_autosw_mode) {
+        s_autosw_restore_pending = true;
+    } else {
+        s_autosw_restore_mode = 0;
+    }
+}
+
 /* 入队：同 cmd_id 覆盖旧值，否则占空槽 */
 static void pend_put(uint16_t cmd_id, uint8_t prog, uint8_t arg, int8_t db)
 {
@@ -462,6 +498,25 @@ void rempro_pending_start_next(void)
      * 读回一完成就下发 —— 否则队列会被"启动失败"白吃掉。 */
     if (!dsp_7100_rb_done()) return;
 
+    /* 连接保护：优先关自动切换；断连恢复其次。失败则下个 tick 重试。 */
+    if (s_autosw_off_pending) {
+        if (dsp_7100_set_autosw_only(0)) {
+            s_autosw_off_pending = false;
+            s_autosw_mode = 0;
+        }
+        return;
+    }
+    if (s_autosw_restore_pending) {
+        uint8_t mode = s_autosw_restore_mode;
+
+        if (dsp_7100_set_autosw_only(mode)) {
+            s_autosw_restore_pending = false;
+            s_autosw_mode = mode;
+            s_autosw_restore_mode = 0;
+        }
+        return;
+    }
+
     for (i = 0; i < PEND_MAX; i++) {
         uint16_t cmd_id;
         uint8_t  prog;
@@ -479,7 +534,13 @@ void rempro_pending_start_next(void)
 
         if (cmd_id == CMD_SETDENOISE)            ok = dsp_7100_set_denoise(prog, arg);
         else if (cmd_id == CMD_SETFEEDBACKONOFF) ok = dsp_7100_set_dfbc(prog, arg);
-        else if (cmd_id == CMD_SETAUTOSWITCHMODE) ok = dsp_7100_set_auto_switch_mode(arg, prog);
+        else if (cmd_id == CMD_SETAUTOSWITCHMODE) {
+            ok = dsp_7100_set_auto_switch_mode(arg, prog);
+            if (ok) {
+                s_autosw_mode = arg;
+                s_autosw_restore_mode = arg;
+            }
+        }
         else if (cmd_id == CMD_SETCURRENTSCENE) {
             ok = dsp_7100_switch_program(prog);
             /* 会话真起来了才设抑制标志（同值 0x0016 回声不推回 App） */
@@ -729,9 +790,14 @@ static void cmd_setautoswitchmode_7100(const uint8_t *data, uint8_t len)
 
     if (dsp_7100_cmd_busy()) {
         pend_put(CMD_SETAUTOSWITCHMODE, airplane ? 1 : 0, mode, 0);
+        s_autosw_restore_mode = mode;   /* App 最新意图，断连恢复以此为准 */
         ok = true;
     } else {
         ok = dsp_7100_set_auto_switch_mode(mode, airplane ? 1 : 0);
+        if (ok) {
+            s_autosw_mode = mode;
+            s_autosw_restore_mode = mode;
+        }
     }
     PRINTF("[REMPRO] SetAutoSwitchMode: dev=%u mode=%u airplane=%u started=%u\r\n",
            dev_type, mode, airplane, ok);
