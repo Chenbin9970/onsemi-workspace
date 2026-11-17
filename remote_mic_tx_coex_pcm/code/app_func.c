@@ -478,10 +478,12 @@ void Asrc_reconfig(void)
 #if (INPUT_INTRF == PCM_RX_RAW_INPUT)
 #if (PCM_USE_ASRC)
     /* The PCM clock and the RM frame come from the same 48 MHz crystal, so the
-     * input rate is exactly 160 * 15.625 / 16 = 156.25 samples per encoder
-     * frame. Using the known value keeps the ratio right even if the frame pad
-     * cannot be counted by the audio sink. */
-    Cr = (((int64_t)FRAME_LENGTH << SHIFT_BIT) * 1000) / 1024;
+     * input rate is exactly PCM_ASRC_CR_NUM / PCM_ASRC_CR_DEN times the encoder
+     * rate (e.g. 160 * 125 / 128 = 156.25 samples per encoder frame). Using the
+     * known value keeps the ratio right even if the frame pad cannot be counted
+     * by the audio sink. */
+    Cr = (((int64_t)FRAME_LENGTH << SHIFT_BIT) * PCM_ASRC_CR_NUM) /
+         PCM_ASRC_CR_DEN;
 #else    /* if (PCM_USE_ASRC) */
     /* audio_sink_cnt counts PCM frame-sync periods over the measurement window;
      * scale it down to the 16 kHz encoder rate the ASRC output must match. */
@@ -691,10 +693,9 @@ void Port_rx_raw_dma_isr(void)
         Pcm_decode_half(PCM_DMA_HALF_WORDS, PCM_HALF_SAMPLES);
 
 #if (PCM_USE_ASRC)
-        /* The PCM clock is 15.625 kHz, not the 16 kHz the encoder runs at, so
-         * the subframe goes through the ASRC first; Asrc_out_dma_isr feeds the
-         * encoder with its 16 kHz output. This is the same start sequence the
-         * SPI input path uses. */
+        /* The master PCM clock is off 16 kHz, so the subframe goes through the
+         * ASRC first; Asrc_out_dma_isr feeds the encoder with its 16 kHz
+         * output. This is the same start sequence the SPI input path uses. */
         memcpy(&asrc_in_buf[0], &left_data[0],
                SUBFRAME_LENGTH * sizeof(int16_t));
         memcpy(&asrc_in_buf[SUBFRAME_LENGTH], &right_data[0],
