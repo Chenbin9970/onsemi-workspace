@@ -95,6 +95,12 @@ extern "C"
 #define RM_STREAM_ADDR_TO_ACCESSWORD(a)  ((((uint32_t)(a)) << 8) | RM_STREAM_ACCESSWORD_FIXED_LOW)
 #define RM_STREAM_ACCESSWORD_TO_ADDR(w)  (((uint32_t)(w) >> 8) & RM_STREAM_ADDR_MASK)
 
+/* RM 推流期间 App 指令放行策略（见开发文档 §48）：
+ *   1 = 全部放行：不做白名单过滤，任何 App 指令照常处理；
+ *   0 = 只放行白名单 02/03/04/15/16/26/33/34，其余消费后丢弃、不回包。
+ * 改动后需重新编译。 */
+#define REMPRO_RM_CMD_OPEN_ALL          0
+
 #define OUTPUT_POWER_6DBM               0
 
 #define NO_TX_OUTPUT                    2

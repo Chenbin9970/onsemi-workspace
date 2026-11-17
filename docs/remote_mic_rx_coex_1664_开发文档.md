@@ -4754,3 +4754,188 @@ static uint8_t s_autosw_restore_mode;     /* 连接前 / App 最后下发的 mod
 5. RM 流中发 9/95/37/89 → 串口 `drop CMD=n`，App 无应答。
 6. 停流后所有指令恢复正常；流中连续发白名单指令多次不卡死、不丢包。
 7. FOTA ON 版本编译通过、`mkfotaimg.py` 生成 `.fota`。
+
+> 后续补充（2026-11-16 同批）：33 GetDeviceOnOff / 34 GetFeedbackOnOff 加入白名单；
+> 另加宏 `REMPRO_RM_CMD_OPEN_ALL`（1=全放行，0=白名单）。测试结束后定为 **0**。
+
+## 49. 2026-11-16：BLE 连接保护会话把 7100 音量冲成最大档 —— 会话后补写回
+
+> 代码未编译、未上板；本节验证清单待开发者在 Eclipse 编译后执行。
+
+### 49.1 现象
+
+App 连上设备后，音量莫名跳到最大档（App 显示 6）。连接前把音量设成 0 或 4
+都复现，与连接前的档位无关。
+
+### 49.2 日志证据（18:52–18:53）
+
+```
+18:53:06  App SetVolume 4  → A2 00 12 43 → 回执 00 12 43     （音量 = 4）
+18:53:16  断开
+18:53:23  重连 → AutoSwitchOnly 会话（14 帧，ok=1）
+18:53:24  commit 后 50ms：[SNIFF] 43 03 00 | 00 12 64
+          [REMPRO] push vol: prog=3 vol=6                     （音量 = 6）
+```
+
+结论：**只写块 0x16 的自动切换会话一提交，7100 就把音量寄存器重载成 0x64**，
+与之前是什么档位无关。此前猜的「音量 0 + 解除静音」被排除（预置 4 照样跳）。
+`§47` 的连接保护本来只关心块 0x16，却连音量一起被 7100 重载。
+
+7100 为什么重载音量尚未定论（程序槽 00 的上下文语义，协议文档 §6 未覆盖）；
+本节按「补偿」处理，不改会话帧序列。
+
+### 49.3 修法
+
+会话成功后把连接前的音量补写回去，复用已验证的 SetVolume 路径（`A2 00 12 <值>`）：
+
+1. `rempro_pending_start_next()` 启动 `dsp_7100_set_autosw_only()` 成功后，
+   立刻 `s_autosw_pre_vol = dsp_7100_get_volume_level()`（此时 7100 还没动）；
+   已有「待补写」的档位时不覆盖 —— 连上又立刻断开时，第二个会话开始时音量
+   已被上一个会话冲成 6，覆盖会丢掉用户原档位；
+2. `a7_session_finish()`（`A7_KIND_AUTOSW_ONLY`、成功收尾）调
+   `rempro_autosw_session_done()` 置「待补写」标志；
+3. 下一次 200ms tick，`rempro_pending_start_next()` 在 App 缓存命令**之前**
+   下发 `dsp_7100_set_volume(s_autosw_pre_vol)`；
+4. 连接前档位就是 6 时跳过（与重载结果相同，省一次会话）；
+5. 补写的 VOL 会话收尾把 `s_cur_vol_level` / `mem_mark` 更新回原档位，
+   覆盖 7100 推送 `00 12 64` 带来的 `mem_mark(6)` —— flash 不会留在 6。
+
+顺序保证：连接期间 App 下发的 SetVolume 仍留在 `s_pend` 队列里，补写完成后才执行，
+**最终以 App 的值为准**。
+
+### 49.4 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `code/ble_rempro_cmd.c` | 新增 `s_autosw_pre_vol` / `s_autosw_vol_track` / `s_autosw_vol_restore_pending`；两个自动切换分支启动成功时记档位；新增 `rempro_autosw_session_done()`；`rempro_pending_start_next()` 增加补写分支 |
+| `code/dsp_7100_cmd.c` | `a7_session_finish()` 在 `A7_KIND_AUTOSW_ONLY` 成功收尾时调 `rempro_autosw_session_done()` 并 return |
+| `include/ble_rempro_cmd.h` | 新增 `rempro_autosw_session_done()` 声明 |
+
+### 49.5 同一批改动里的其它项
+
+- `AUTOSW_ONLY` 关帧第 9/10 字节从 `00 00` 改为文档值 `FF FF`
+  （关 = `A7 07 00 00 00 08 00 00 00 FF FF FF`）。此前写成 `00 00 00 FF`；
+  **该字节错误不是音量跳变的触发原因**（改对后仍复现），属独立的语义修正。
+
+### 49.6 已知限制 / 风险
+
+- 7100 重载的是否只有音量尚未确认。降噪 / DFBC / WDRC / EQ 是否也被重载，
+  日志里的 `den=4` 只是 RSL10 侧缓存，不代表 7100 实际值 —— 需上板听感确认。
+- 会话中途失败（`ok=0`）时不触发补写：失败会话一般没走到 commit，音量大概率未被
+  重载；若出现「失败后音量也跳」的日志，再补失败路径。
+- 补写是第二个会话，连接后音量变化会晚一个 200ms tick + 一条 VOL 会话（≈300ms）。
+
+### 49.7 验证状态（**未编译、未上板**）
+
+1. 音量设 4 → 断开 → 重连：音量保持 4（App 与耳朵都确认），串口出现
+   `自动切换会话冲掉音量 → 待补写回档位 4` 和一条 `SetVolume level=4` 会话。
+2. 音量设 0 → 断开 → 重连：保持 0。
+3. 音量本来就是 6 → 重连：无补写会话（日志无「待补写回」）。
+4. 连接后 App 立刻发 SetVolume 2：最终停在 2（补写不覆盖 App 的值）。
+5. 等 5 分钟让 `mem_mark` 落盘、重启：开机恢复的音量是连接前的档位，不是 6。
+6. 断连恢复自动切换（连接前 mode≠0）时音量同样保持。
+
+## 50. 2026-11-17：开机恢复 flash 记忆的程序 / 音量后，再等 5s 才开广播
+
+> 代码未编译、未上板。
+
+### 50.1 需求
+
+开发者：开机更新完 flash 存储的程序后 5s 再打开 BLE 广播。目的：App 在 7100
+切到记忆程序、音量回填完成之前连上来会触发 §49 的自动切换保护会话窗口，
+补写机制虽然会纠正音量，但不如干脆等状态落定后再对外可见。
+
+### 50.2 行为
+
+- `Advertising_Start()` 增加一道门（`ble_std.c` 的 `s_adv_gate_open`）：门关着时
+  只记 `s_adv_pending` 并返回，**不改 `ble_env.state`**（保持 APPM_READY 以便补开）。
+  开机路径的多次调用（GATTM 加服务完成 / profile added / GAPM cmp）全部被这一道门拦住。
+- 200ms tick（`APP_7100_HB_Handler`）在 `dsp_7100_restore_done()` 为真后起算
+  `BLE_ADV_BOOT_DELAY_TICKS = 25` 拍（5s），到点调 `ble_adv_gate_open()` 补开广播。
+- 新增 `dsp_7100_restore_done()`：`user_state_load` 跑过 **且** `s_mem_restore_pending == 0`。
+  与 `dsp_7100_restore_pending()` 不同，DELAY_WAIT（等 28 条读回）算**未收尾**。
+  `s_mem_restore_loaded` 防止早到的 tick 把「还没开始恢复」误判成「已收尾」。
+- 无 flash 记录时 `user_state_load` 早退、pending 恒 0 → 开机 5s 后开广播。
+- 恢复失败被放弃（tries 到上限）也置 pending=0 → 同样 5s 后开广播，不永久卡住。
+
+### 50.3 时序（测试模式 §39.4.1 下）
+
+```
+上电 → 握手/引导/读回（≈1s）→ 切记忆程序 → 3s → 回填音量（≈4.5s 恢复完成）
+     → +5s → 广播打开（总计 ≈10s）
+```
+
+### 50.4 涉及文件
+
+| 文件 | 改动 |
+|---|---|
+| `code/ble_std.c` | `s_adv_gate_open` / `s_adv_pending` + `ble_adv_gate_open()`；`Advertising_Start()` 开门判断 |
+| `include/ble_std.h` | `ble_adv_gate_open()` 声明 |
+| `code/app_process.c` | `BLE_ADV_BOOT_DELAY_TICKS`；HB tick 里的 5s 倒计时 |
+| `code/dsp_7100_cmd.c` | `s_mem_restore_loaded`；`dsp_7100_restore_done()` |
+| `include/dsp_7100_cmd.h` | `dsp_7100_restore_done()` 声明 |
+
+### 50.5 已知限制 / 风险
+
+- 恢复态是 §39.4.1 的**测试时序**（切程序后 3s 调音量）。正式版改回「读回前恢复」后，
+  `restore_done` 会提前成立，广播总延迟随之缩短，逻辑不用改。
+- 广播开门只在 HB tick 里推进；若 7100 会话长期占着 tick，开门最多顺延，不会丢。
+- 5s 期间设备不可被扫描到；产线/配对流程若依赖开机即广播，需要把窗口算进去。
+
+### 50.6 验证状态（**未编译、未上板**）
+
+1. 开机后前 5s 内 App 搜不到设备；到点后出现在列表中（串口 `7100 恢复完成，5s 后开广播`
+   → `广播延后到点，开广播` → `__ADV gate open` → `__START ADVERTISING`）。
+2. 连接后断开：能正常重新广播（门已开，不受影响）。
+3. flash 无记录时：`user_state_load` 早退，5s 后同样开广播。
+4. 开机后不再出现「未恢复完就被 App 连上 → 音量跳最大」的日志场景。
+
+## 51. 2026-11-17：BLE 29 号指令（SetHighLevelGainData）什么时候返回失败
+
+> 代码审查结论，无代码改动。
+
+### 51.1 调用链
+
+29 走 `cmd_sethighlevelgain_7100()` → `cmd_setwdrc_7100()`（29/6/7 共用）→
+`dsp_7100_set_high_level_gain()` → `a7_wdrc_start()` → `a7_session_start()`。
+payload 结构：`{ Device_Type(1), Current_Number(1), { Index(1), Value(1) } × k }`，
+Index 0-15 → 7100 ch1-16，Value 为线格式（dB = Value − 30）。
+
+### 51.2 完全没有回包（App 侧表现为超时）
+
+| 条件 | 说明 |
+|---|---|
+| **RM 推流中且 `REMPRO_RM_CMD_OPEN_ALL=0`** | 29 不在白名单（02/03/04/15/16/26/33/34），整帧消费后丢弃、不回包，日志 `RM stream: drop CMD=29` |
+| HDLC 帧校验 / 长度错误 | 重装层直接丢弃 |
+
+推流期间发 29 无应答**不是 handler 失败**，是最常被误判成"失败"的情况。
+
+### 51.3 回 Flag=0（明确失败）
+
+`cmd_setwdrc_7100()` 的前置检查：
+
+1. payload **不足 2 字节**（缺 Device_Type / Current_Number）；
+2. `data[1]`（程序号）**≥ 4** —— App 侧 Current_Number 必须是 0-3；
+3. **没有任何可用的 {Index, Value} 对**：payload 不足 4 字节，或所有 Index 都 ≥ 16。
+   Index 16-31 是**逐条忽略**（日志 `index %u 超范围，忽略`），只有一条有效都没有才失败；
+   奇数尾字节忽略，不算失败。
+
+`a7_session_start()` 返回 false：
+
+4. **已有 7100 会话在跑**（`s_sess_active`）——如同时发了调音量 / 切程序 / 降噪，
+   或开机恢复还没走完。⚠ 与 02/16/9 不同，29/6/7 这一族**没有 `pend_put` 排队**，
+   I2C 忙直接失败，不会稍后重发；
+5. **开机 28 条读回未完成**（且恢复不在跑）→ 日志 `读回未完成，忽略本次设置`；
+6. 会话构建失败 —— 实际够不到：16 通道满填 = 44 条命令 / 约 440B，
+   上限 `A7_MAX_CMDS=56` / `A7_CMD_BUF_SZ=640`。
+
+### 51.4 不导致失败的情况
+
+- Value 超出 7100 范围：`a7_wdrc_clamp()` 钳位后照写，照回成功；
+- 部分 Index ≥ 16：忽略那几条，其余照写。
+
+### 51.5 结论
+
+实际触发失败的两条主因：**① 推流期间 29 不在白名单（无回包）；② 会话忙时 29 不排队、
+直接 Flag=0**。若要改善，可把 29/6/7 改成 `pend_put` 排队，或加入推流白名单
+（需开发者确认后实施）。

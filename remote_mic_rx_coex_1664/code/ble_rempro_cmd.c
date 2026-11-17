@@ -441,6 +441,12 @@ static bool    s_autosw_restore_pending = false;
 static uint8_t s_autosw_mode;          /* 最近一次实际生效的 mode（0=关） */
 static uint8_t s_autosw_restore_mode;  /* 连接前 / App 最后下发的 mode（0=不恢复） */
 
+/* 自动切换写会话（只写块 0x16）提交后 7100 会把音量寄存器重载成 0x64（实测
+ * 与连接前档位无关，见开发文档 §49）。会话开始前记下档位，成功后补写回去。 */
+static bool    s_autosw_vol_track = false;           /* 会话在跑、已记下连接前音量 */
+static bool    s_autosw_vol_restore_pending = false; /* 需补写回连接前音量 */
+static uint8_t s_autosw_pre_vol;                     /* 会话开始前的音量档位（0-6） */
+
 /* 连接时调用：记住连接前的 mode，并请求关闭自动切换。 */
 void rempro_autosw_off_request(void)
 {
@@ -465,6 +471,19 @@ void rempro_autosw_restore_on_disconnect(void)
     } else {
         s_autosw_restore_mode = 0;
     }
+}
+
+/* 自动切换写会话成功收尾时调（dsp_7100_cmd.c 的 a7_session_finish）：
+ * 7100 提交后音量被重载成最大档，这里请求按会话开始前记下的档位补写回。
+ * 档位本来就是 6 时跳过 —— 与重载结果相同，省一次会话。 */
+void rempro_autosw_session_done(void)
+{
+    if (s_autosw_vol_track && s_autosw_pre_vol < 6) {
+        s_autosw_vol_restore_pending = true;
+        PRINTF("[REMPRO] 自动切换会话冲掉音量 → 待补写回档位 %u\r\n",
+               s_autosw_pre_vol);
+    }
+    s_autosw_vol_track = false;
 }
 
 /* 入队：同 cmd_id 覆盖旧值，否则占空槽 */
@@ -498,9 +517,16 @@ void rempro_pending_start_next(void)
      * 读回一完成就下发 —— 否则队列会被"启动失败"白吃掉。 */
     if (!dsp_7100_rb_done()) return;
 
-    /* 连接保护：优先关自动切换；断连恢复其次。失败则下个 tick 重试。 */
+    /* 连接保护：优先关自动切换；断连恢复其次。失败则下个 tick 重试。
+     * 会话真起来了才记连接前音量（此时 7100 还没动，取值就是当前档位）。
+     * 已有待补写的档位时不覆盖：连上又立刻断开时，第二个会话开始时音量
+     * 已被上一个会话冲成 6，覆盖会把用户原档位丢掉。 */
     if (s_autosw_off_pending) {
         if (dsp_7100_set_autosw_only(0)) {
+            if (!s_autosw_vol_restore_pending) {
+                s_autosw_pre_vol = dsp_7100_get_volume_level();
+            }
+            s_autosw_vol_track = true;
             s_autosw_off_pending = false;
             s_autosw_mode = 0;
         }
@@ -510,9 +536,22 @@ void rempro_pending_start_next(void)
         uint8_t mode = s_autosw_restore_mode;
 
         if (dsp_7100_set_autosw_only(mode)) {
+            if (!s_autosw_vol_restore_pending) {
+                s_autosw_pre_vol = dsp_7100_get_volume_level();
+            }
+            s_autosw_vol_track = true;
             s_autosw_restore_pending = false;
             s_autosw_mode = mode;
             s_autosw_restore_mode = 0;
+        }
+        return;
+    }
+
+    /* 自动切换会话冲掉的音量补写回。排在 App 缓存命令之前：连接期间 App 下发的
+     * SetVolume 仍留在队列里靠后执行，最终以 App 的值为准。 */
+    if (s_autosw_vol_restore_pending) {
+        if (dsp_7100_set_volume(s_autosw_pre_vol)) {
+            s_autosw_vol_restore_pending = false;
         }
         return;
     }
@@ -1575,12 +1614,18 @@ static void cmd_setstreamaddress(const uint8_t *data, uint8_t len)
     s_reset_pending = true;
 }
 
-/* RM 推流期间仍允许的 App 指令（白名单）：
- *   02 SetVolume / 16 SetCurrentScene / 03 SetDeviceOnOff —— 切音量、切模式、开关助听器；
- *   04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig —— 只读。
- * 其余指令流期间消费后丢弃、不回包。 */
+/* RM 推流期间允许的 App 指令：
+ *   REMPRO_RM_CMD_OPEN_ALL=1 → 全部放行（app.h 宏开关）；
+ *   =0 → 白名单：02 SetVolume / 16 SetCurrentScene / 03 SetDeviceOnOff /
+ *        04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig /
+ *        33 GetDeviceOnOff / 34 GetFeedbackOnOff；
+ *        其余指令流期间消费后丢弃、不回包。 */
 static bool rm_stream_cmd_allowed(uint16_t cmd_id)
 {
+#if REMPRO_RM_CMD_OPEN_ALL
+    (void)cmd_id;
+    return true;   /* 宏开关：RM 流期间全部放行 */
+#else
     switch (cmd_id) {
     case CMD_SETVOLUME:
     case CMD_SETCURRENTSCENE:
@@ -1588,10 +1633,13 @@ static bool rm_stream_cmd_allowed(uint16_t cmd_id)
     case CMD_GETBATTERYINFO:
     case CMD_GETCURRENTSCENE:
     case CMD_GETDEVICECONFIG:
+    case CMD_GETDEVICEONOFF:
+    case CMD_GETFEEDBACKONOFF:
         return true;
     default:
         return false;
     }
+#endif
 }
 
 /* ================================================================
@@ -1630,7 +1678,8 @@ void rempro_cmd_process(bool rm_streaming)
         print_hex("RX frame", reasm_buf, consumed);
         PRINTF("[REMPRO] CMD=%u len=%u\r\n", cmd_id, data_len);
 
-        /* RM 推流期间只放行白名单（02/03/04/15/16/26），其余帧照常消费但
+        /* RM 推流期间放行白名单（02/03/04/15/16/26）；REMPRO_RM_CMD_OPEN_ALL=1
+         * 时 rm_stream_cmd_allowed 恒为 true，此分支不会进入。非白名单帧照常消费但
          * 不处理、不回包（与原「流期间不处理指令」的兜底语义一致）。 */
         if (rm_streaming && !rm_stream_cmd_allowed(cmd_id)) {
             PRINTF("[REMPRO] RM stream: drop CMD=%u\r\n", cmd_id);

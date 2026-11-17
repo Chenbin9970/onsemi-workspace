@@ -215,6 +215,10 @@ extern void Advertising_Start(void);
 
 extern void Advertising_Stop(void);
 
+/* 开机广播延后的门：flash 记忆的程序 / 音量恢复收尾后再等 5s，
+ * 由 200ms tick（app_process.c）调用一次，补开被拦下的广播。 */
+extern void ble_adv_gate_open(void);
+
 /* 7100 推来的零长度事件（0x45 / 0x24）：两帧连续都读到 → 关闭 BLE（断开 + 停广播，
  * 直到复位/重新上电）。每读到一帧应答/通知的头就调一次，参数为头里的 status。 */
 extern void BLE_7100Event(uint8_t status);

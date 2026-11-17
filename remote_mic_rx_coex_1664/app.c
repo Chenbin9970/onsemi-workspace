@@ -152,7 +152,8 @@ int main()
         if (ble_env.state == APPM_CONNECTED)
         {
             /* 处理 Rempro 接收到的完整 HDLC 帧。
-             * RM 推流期间只放行 02/03/04/15/16/26，其余指令丢弃（见 cmd 层白名单）。 */
+             * RM 推流期间：REMPRO_RM_CMD_OPEN_ALL=1 全部放行；=0 只放行白名单
+             * 02/03/04/15/16/26/33/34，其余丢弃（见 cmd 层）。 */
             rempro_cmd_process(app_env.audio_streaming != 0);
         }
 

@@ -53,8 +53,10 @@ extern "C" {
 #define HDLC_SYS_ID_DEVICE      1
 
 /* 处理重装缓冲里的完整 HDLC 帧。
- * rm_streaming=true（RM 推流中）：只放行白名单 02 SetVolume / 03 SetDeviceOnOff /
- * 16 SetCurrentScene / 04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig，
+ * rm_streaming=true（RM 推流中）：REMPRO_RM_CMD_OPEN_ALL=1 时全部放行；
+ * =0 时只放行白名单 02 SetVolume / 03 SetDeviceOnOff / 16 SetCurrentScene /
+ * 04 GetBatteryInfo / 15 GetCurrentScene / 26 GetDeviceConfig /
+ * 33 GetDeviceOnOff / 34 GetFeedbackOnOff，
  * 其余指令照常消费但丢弃、不回包。 */
 void rempro_cmd_process(bool rm_streaming);
 
@@ -86,6 +88,10 @@ void rempro_autosw_off_request(void);
 /* BLE 断开时调用：若连接前自动切换是开的、且本次连接中 App 没改过 95 号命令，
  * 请求恢复连接前的 mode。只置标志，执行同上。 */
 void rempro_autosw_restore_on_disconnect(void);
+
+/* 自动切换写会话（AUTOSW_ONLY）成功收尾时调（dsp_7100_cmd.c 的 a7_session_finish）：
+ * 7100 提交后会把音量重载成最大档（开发文档 §49），这里请求补写回会话开始前的档位。 */
+void rempro_autosw_session_done(void);
 
 /* Active push: notify app of state changes triggered by button */
 void rempro_push_scene_change(uint8_t scene_id);

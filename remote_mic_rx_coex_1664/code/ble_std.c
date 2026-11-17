@@ -61,6 +61,13 @@ static struct gapm_set_dev_config_cmd *gapmConfigCmd;
 static uint8_t s_ev_mask;      /* bit0 = 已读 0x45，bit1 = 已读 0x24 */
 static bool    s_ble_off;      /* 已关：断开后不许重开广播 */
 
+/* ---- 开机广播延后（2026-11-17）----
+ * 7100 切到 flash 记忆的程序 / 音量完成前不开广播：App 此时连上来会触发自动切换
+ * 保护会话，而该会话会把 7100 音量冲成最大档（见开发文档 §49）。
+ * 门由 app_process.c 的 200ms tick 在恢复收尾后再计 5s 调 ble_adv_gate_open()。 */
+static bool s_adv_gate_open;   /* 门开 = 允许广播 */
+static bool s_adv_pending;     /* 门关着时被拦下的开广播请求 */
+
 #define BLE_EV_45   0x45
 #define BLE_EV_24   0x24
 
@@ -255,6 +262,20 @@ bool Service_Add(void)
     return (false);
 }
 
+/* 开机广播延后的门：恢复收尾并再等 5s 后由 app_process.c 调用。
+ * 门关着期间 Advertising_Start() 的请求已被 s_adv_pending 记住，这里补开。 */
+void ble_adv_gate_open(void)
+{
+    if (s_adv_gate_open) return;
+
+    s_adv_gate_open = true;
+    if (s_adv_pending) {
+        s_adv_pending = false;
+        PRINTF("__ADV gate open\n");
+        Advertising_Start();
+    }
+}
+
 /* ----------------------------------------------------------------------------
  * Function      : void Advertising_Start(void)
  * ----------------------------------------------------------------------------
@@ -273,6 +294,14 @@ void Advertising_Start(void)
      * 这里拦住，别把广播又打开（恢复只能靠复位/重新上电）。 */
     if (s_ble_off) {
         PRINTF("__ADV skipped: BLE off by 7100\n");
+        return;
+    }
+
+    /* 开机恢复没跑完：先记下请求，由 ble_adv_gate_open() 到点补开。
+     * 这里不能改 ble_env.state，保持 APPM_READY 才能补开成功。 */
+    if (!s_adv_gate_open) {
+        s_adv_pending = true;
+        PRINTF("__ADV deferred: boot restore not finished\n");
         return;
     }
 

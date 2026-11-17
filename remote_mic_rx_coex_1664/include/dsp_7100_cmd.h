@@ -266,6 +266,8 @@ void dsp_7100_restore_poll(void);       /* 主循环，把 flash 值重发给 71
 void dsp_7100_restore_cancel(void);     /* BLE 命令到达时放弃开机恢复 */
 bool dsp_7100_restore_pending(void);    /* true = 恢复占着 I2C，读回必须等
                                          * （测试期「等读回完成」那步返回 false） */
+bool dsp_7100_restore_done(void);       /* true = 开机恢复已收尾（完成 / 放弃 / 无记录），
+                                         * DELAY_WAIT 也算未收尾 —— BLE 广播延后用它 */
 
 #ifdef __cplusplus
 }

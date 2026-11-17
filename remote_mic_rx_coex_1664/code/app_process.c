@@ -29,6 +29,15 @@
 #include "dsp_7100_cmd.h"
 #include "i2c_7100_hal.h"
 #include "ble_rempro_cmd.h"   /* rempro_deferred_tick() */
+#include <printf.h>
+
+#ifndef PRINTF
+#define PRINTF(...) ((void)0)
+#endif
+
+/* 开机广播延后：flash 记忆的程序 / 音量恢复收尾后再等 5s 才允许广播
+ * （25 × 200ms tick）。理由见 ble_std.c 的 s_adv_gate_open 注释与开发文档 §49。 */
+#define BLE_ADV_BOOT_DELAY_TICKS   25u
 
 /* ----------------------------------------------------------------------------
  * Function      : int APP_7100_HB_Handler(ke_msg_id_t const msg_id,
@@ -45,6 +54,8 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
                         ke_task_id_t const dest_id, ke_task_id_t const src_id)
 {
     static uint16_t s_7100_cnt = 0;
+    static bool     s_adv_delay_started = false;
+    static uint8_t  s_adv_delay_ticks   = 0;
 
     (void)msg_id;
     (void)param;
@@ -61,6 +72,23 @@ int APP_7100_HB_Handler(ke_msg_id_t const msg_id, void const *param,
 
     /* 用户状态记忆的 10 分钟落定计时：不占 I2C，会话期间照走（落盘在主循环） */
     dsp_7100_user_state_tick();
+
+    /* 开机广播延后（2026-11-17）：恢复收尾（dsp_7100_restore_done）后再等 5s 才开广播。
+     * 恢复没完 App 就连接会触发自动切换保护会话，把音量冲成最大档（开发文档 §49）。
+     * 纯计数、不占 I2C，放在 cmd_busy 早退之前。 */
+    if (!s_adv_delay_started) {
+        if (dsp_7100_restore_done()) {
+            s_adv_delay_started = true;
+            s_adv_delay_ticks   = BLE_ADV_BOOT_DELAY_TICKS;
+            PRINTF("[BLE] 7100 恢复完成，5s 后开广播\r\n");
+        }
+    } else if (s_adv_delay_ticks > 0) {
+        s_adv_delay_ticks--;
+        if (s_adv_delay_ticks == 0) {
+            PRINTF("[BLE] 广播延后到点，开广播\r\n");
+            ble_adv_gate_open();
+        }
+    }
 
     /* 命令会话进行中：只置兜底标志（推进在主循环的 dsp_7100_cmd_poll），
      * 会话期间不读回不发心跳 */

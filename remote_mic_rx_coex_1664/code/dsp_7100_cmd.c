@@ -75,6 +75,7 @@ static uint8_t  s_mem_dirty_vol;
 static uint16_t s_mem_idle_ticks;      /* 距上次变更的 tick 数 */
 static uint8_t  s_mem_save_req;        /* 主循环落盘请求 */
 static uint8_t  s_mem_restore_pending; /* 开机恢复待下发 */
+static uint8_t  s_mem_restore_loaded;  /* user_state_load 已跑过（dsp_7100_restore_done 的判据） */
 static uint8_t  s_mem_restore_step;
 static uint8_t  s_mem_restore_tries;
 static uint8_t  s_mem_restore_prog;
@@ -106,6 +107,8 @@ void dsp_7100_user_state_load(void)
 {
     uint8_t prog = 0;
     uint8_t vol  = 0;
+
+    s_mem_restore_loaded = 1;
 
     if (!dsp_7100_settings_load_user_state(&prog, &vol)) {
         PRINTF("[7100-mem] flash 无记忆记录，保持默认 prog=%u vol=%u\r\n",
@@ -190,6 +193,16 @@ bool dsp_7100_restore_pending(void)
 {
     return s_mem_restore_pending != 0 &&
            s_mem_restore_step != DSP7100_RESTORE_DELAY_WAIT;
+}
+
+/* 开机恢复是否**已收尾**（完成 / 放弃 / 无记录）：BLE 广播延后用它。
+ * 与 dsp_7100_restore_pending() 的区别：DELAY_WAIT（等读回）算「未收尾」，
+ * 这里返回 false —— 恢复还没走完，广播不能开。
+ * 必须以 user_state_load 跑过为前提：它之前 pending 恒为 0（无记录 / 尚未载入），
+ * 早到的 200ms tick 会把「还没开始恢复」误判成「已收尾」。 */
+bool dsp_7100_restore_done(void)
+{
+    return s_mem_restore_loaded && s_mem_restore_pending == 0;
 }
 
 /* 开机恢复：**在首次读回之前**按序重发程序号 / 音量档位，每步都是异步会话。
@@ -1194,8 +1207,8 @@ static bool a7_build_session(uint8_t kind, uint8_t prog, uint8_t val)
             p[0]  = 0xA7; p[1] = 0x07; p[2] = 0x00; p[3] = 0x00; p[4] = 0x00;
             p[5]  = 0x08; p[6] = 0x00; p[7] = 0x00;
             p[8]  = (val == 0) ? 0x00 : 0x01;
-            p[9]  = 0x00;
-            p[10] = 0x00;
+            p[9]  = (val == 0) ? 0xFF : 0x00;
+            p[10] = (val == 0) ? 0xFF : 0x00;
             p[11] = (val == 0) ? 0xFF : val;
         }
     } else if (kind == A7_KIND_WDRC) {      /* WDRC：n 个通道的同一参数（LL / HL / OL） */
@@ -1425,6 +1438,14 @@ static void a7_session_finish(bool ok)
     if (s_sess_kind == A7_KIND_VOL) {
         s_cur_vol_level = s_sess_val;
         mem_mark(s_cur_prog, s_cur_vol_level);
+        return;
+    }
+
+    /* 只写自动切换块 0x16 的会话：7100 在 commit 后会把音量寄存器重载成 0x64
+     * （实测与连接前档位无关，见开发文档 §49）→ 通知 cmd 层补写回原音量。
+     * 必须在这里拦下：补写由 rempro_pending_start_next 起一个 VOL 会话完成。 */
+    if (s_sess_kind == A7_KIND_AUTOSW_ONLY) {
+        rempro_autosw_session_done();
         return;
     }
 
