@@ -23,8 +23,8 @@ LPDSP32Context lpdsp32;
 extern struct queue_t audio_queue;
 
 #if (OUTPUT_INTRF == PCM_TX_OUTPUT)
-/* PCM 输出双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 流 pcm_tx_buf[pcm_ready]。 */
-uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+/* PCM 输出环形缓冲：ch4 填 pcm_wr 块，ch5 依次流 pcm_rd 块（见 include/app_audio.h） */
+uint32_t pcm_tx_buf[PCM_TX_BUFS][PCM_FRAME_WORDS];
 #endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
 /* ----------------------------------------------------------------------------
@@ -143,7 +143,27 @@ void Audio_Initialize_System(void)
        PCM 外设依赖 AUDIOCLK 才移位输出。只配音频时钟，不带 OD 输出寄存器。 */
     Sys_Clocks_SystemClkPrescale1(AUDIOCLK_PRESCALE_5);
     Sys_Audio_Set_Config(AUDIO_CONFIG_PCM);
+
+    /* 与 1664/7160test 的 PCM 分支保持一致：这三条在 OD 关闭时按 1664 的状态一并写入
+       （DCRM 截止 240Hz + dither），使两边 PCM 初始化完全同构，便于 A/B 比对。 */
+    AUDIO->OD_CFG = (DCRM_CUTOFF_240HZ | DITHER_ENABLE);
+    AUDIO->SDM_CFG = 0x00002;
+    AUDIO->OD_GAIN = 0x800;
 #endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
+
+    /* Configuration of Audio Sink Clock Counters（**必须放在 PCM 引脚配置之前**）：
+       1664（PCM 干净参考）就是这个顺序 —— audiosink 先、PCM 引脚后，使 DIO3(FS) 最终生效
+       的是 PCM 那一套设置。反过来（原实现）会让 audiosink 的 InputClock 覆盖 PCM 的 DIO3
+       配置；而 DIO3 同时是 ASRC 的 sink 时钟源与 PCM 的帧同步输入，其输入缓冲/上拉设置
+       直接影响 FS 边沿质量与帧对齐稳定性。pull 参数传 0，与 1664 一致。 */
+    Sys_Audiosink_ResetCounters();
+    Sys_Audiosink_InputClock(0,
+                             ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
+    Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
+
+    /* 显式启动相位/周期计数器：不启动则 CNT 不更新，asrc_reconfig 拿不到有效 Ck */
+    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
+    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
 
 #if (OUTPUT_INTRF == SPI_TX_OUTPUT)
 
@@ -167,9 +187,6 @@ void Audio_Initialize_System(void)
     /* PCM slave output init（参照 7160test）：7100 做时钟主机，RSL10 移位输出 */
     Initialize_Raw_PCM_Output_Type();
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
-
-    /* Start period count */
-    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = 1;
 
     /* Enable ASRC error IRQ */
     Sys_ASRC_IntEnableConfig(INT_EBL_ASRC_IN_ERR | INT_EBL_ASRC_UPDATE_ERR);
@@ -218,18 +235,6 @@ void Audio_Initialize_System(void)
         (uint32_t)&SPI0->TX_DATA
         );
 #endif    /* if (OUTPUT_INTRF == SPI_TX_OUTPUT) */
-
-    /* Configuration of Audio Sink Clock Counters */
-    Sys_Audiosink_ResetCounters();
-    /* DIO_WEAK_PULL_UP：与 7160test 一致，避免覆盖 PCM 的 DIO3(FS) 弱上拉配置 */
-    Sys_Audiosink_InputClock(DIO_WEAK_PULL_UP,
-                             ((uint32_t)(SAMPL_CLK << DIO_AUDIOSINK_SRC_CLK_Pos)));
-    Sys_Audiosink_Config(AUDIO_SINK_PERIODS_16, 0, 0);
-
-    /* 启动 audiosink 相位/周期计数器（参照 7160test）：不启动则 CNT 不更新，
-     * asrc_reconfig 拿不到有效 Ck → ASRC inc=0 → 输出静音。 */
-    AUDIOSINK_CTRL->PHASE_CNT_START_ALIAS  = PHASE_CNT_START_BITBAND;
-    AUDIOSINK_CTRL->PERIOD_CNT_START_ALIAS = PERIOD_CNT_START_BITBAND;
 
 #if SIMUL
     Sys_Timer_Set_Control(TIMER_SIMUL, TIMER_FREE_RUN | (SIMUL_TIME_US - 1) | TIMER_SLOWCLK_DIV2);

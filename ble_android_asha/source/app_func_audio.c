@@ -46,11 +46,13 @@ volatile uint32_t cap_out_idx;
 volatile uint8_t  cap_done;
 
 #if (OUTPUT_INTRF == PCM_TX_OUTPUT)
-/* PCM 双缓冲状态：pcm_fill 是 ch4 正在填的 buf，pcm_ready 是 ch5 正在流的 buf
-   （0xFF 表示无），pcm_waiting 表示 ch5 在等 ch4 换手。 */
-volatile uint8_t pcm_fill;
-volatile uint8_t pcm_ready;
-volatile uint8_t pcm_waiting;
+/* PCM 环形缓冲状态（见 include/app_audio.h）：ch4 填 pcm_wr 块、ch5 依次流 pcm_rd 块。
+   两个 DMA 完成中断同优先级、互不抢占，故这些共享变量无需临界区。 */
+volatile uint8_t pcm_wr;
+volatile uint8_t pcm_rd;
+volatile uint8_t pcm_cnt;
+volatile uint8_t pcm_playing;
+volatile uint8_t pcm_started;
 #endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
 /* Enable / disable PLC feature */
@@ -217,14 +219,29 @@ void APP_Audio_Start(void)
     cap_done = 0;
 
 #if (OUTPUT_INTRF == PCM_TX_OUTPUT)
-    /* 武装 PCM 双缓冲：ch4 填 pcm_tx_buf[pcm_fill]，ch5 由 ch4 完成中断按需启动 */
-    pcm_fill = 0;
-    pcm_ready = 0xFF;
-    pcm_waiting = 1;
+    /* 武装 PCM 环形缓冲：ch4 填 pcm_wr 块，ch5 预充 PCM_PREFILL 块后由 ch4 中断启动。
+       每次开流都重新初始化 PCM 块 + 重配 ch4（1664 建链时同款）：
+       只 Sys_PCM_Enable 会让上次会话残留的 PCM 状态（如清不掉的 OVERRUN 标志/
+       FIFO 状态）跨会话带过来，表现为丢采样咔哒声。 */
+    Sys_DMA_ChannelDisable(PCM_DMA_NUM);
+    Sys_PCM_Config(PCM_CFG_TX);
 
+    Sys_DMA_ChannelDisable(ASRC_OUT_IDX);
+    Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[0][0]);
+
+    pcm_wr      = 0;
+    pcm_rd      = 0;
+    pcm_cnt     = 0;
+    pcm_playing = 0;
+    pcm_started = 0;      /* ch5 等预充 PCM_PREFILL 块后由 ch4 完成中断启动 */
+
+    NVIC_ClearPendingIRQ(DMA_IRQn(ASRC_OUT_IDX));
+    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
-    NVIC_EnableIRQ(DMA_IRQn(ASRC_OUT_IDX));
+
+    NVIC_ClearPendingIRQ(DMA_IRQn(PCM_DMA_NUM));
     NVIC_EnableIRQ(DMA_IRQn(PCM_DMA_NUM));
     Sys_PCM_Enable();
 #endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
@@ -400,15 +417,14 @@ void DMA_IRQ_FUNC(ASRC_IN_IDX)(void)
 /* ----------------------------------------------------------------------------
  * Function      : void Pcm_asrc_out_dma_isr(void)
  * ----------------------------------------------------------------------------
- * Description   : ASRC 输出 DMA 完成。ch4 把 ASRC->OUT 采进 pcm_tx_buf[pcm_fill]；
- *                 标记 ready、切换 buf 并重新武装；若 ch5 在等则启动 ch5。
+ * Description   : ASRC 输出 DMA 完成。ch4 刚填满的块入环、换下一块继续填；
+ *                 ch5 空闲时按预充阈值（首播）或立即（续播）启动。
  * ------------------------------------------------------------------------- */
 void Pcm_asrc_out_dma_isr(void)
 {
-    pcm_ready = pcm_fill;
-    pcm_fill = 1 - pcm_fill;
+    /* ch4 刚填满 pcm_wr 指向的那一块 */
 
-    /* 抓 12k PCM 输出（出 ASRC 后，7100 实际收到的音频，32-bit 字低 16 位） */
+    /* 抓 24k PCM 输出（出 ASRC 后，7100 实际收到的音频，32-bit 字低 16 位） */
     if (cap_out_idx < CAP_N)
     {
         uint32_t n = CAP_N - cap_out_idx;
@@ -420,49 +436,58 @@ void Pcm_asrc_out_dma_isr(void)
         for (i = 0; i < n; i++)
         {
             cap_out[cap_out_idx + i] =
-                (int16_t)(pcm_tx_buf[pcm_ready][i] & 0xFFFFu);
+                (int16_t)(pcm_tx_buf[pcm_wr][i] & 0xFFFFu);
         }
         cap_out_idx += n;
     }
 
+    /* 该块就绪入环，ch4 换到下一块继续填 */
+    pcm_cnt++;
+    pcm_wr = (uint8_t)((pcm_wr + 1) % PCM_TX_BUFS);
+
     Sys_DMA_ChannelConfig(ASRC_OUT_IDX, RX_DMA_ASRC_OUT, PCM_FRAME_WORDS, 0,
-                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_fill][0]);
+                          (uint32_t)&ASRC->OUT, (uint32_t)&pcm_tx_buf[pcm_wr][0]);
     Sys_DMA_ClearChannelStatus(ASRC_OUT_IDX);
     Sys_DMA_ChannelEnable(ASRC_OUT_IDX);
 
-    if (pcm_waiting)
+    /* ch5 空闲时启动：首播按预充阈值启动（拉开与 ch4 的相位、留出余量），
+       之后只要环里有块就立刻续播（避免恢复时多塞静音）。 */
+    if (!pcm_playing &&
+        (pcm_started ? (pcm_cnt > 0) : (pcm_cnt >= PCM_PREFILL)))
     {
-        pcm_waiting = 0;
+        pcm_started = 1;
+        pcm_playing = 1;
+        pcm_cnt--;
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
-                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&pcm_tx_buf[pcm_rd][0],
                               (uint32_t)&PCM->TX_DATA);
         Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
         Sys_DMA_ChannelEnable(PCM_DMA_NUM);
-        pcm_ready = 0xFF;
+        pcm_rd = (uint8_t)((pcm_rd + 1) % PCM_TX_BUFS);
     }
 }
 
 /* ----------------------------------------------------------------------------
  * Function      : void Pcm_tx_dma_isr(void)
  * ----------------------------------------------------------------------------
- * Description   : PCM TX DMA 完成。ch5 流完当前 buf；若 ch4 有新 buf 则继续流，
- *                 否则等 ch4 的完成中断启动。
+ * Description   : PCM TX DMA 完成。环里还有块就立刻续播，否则空着等 ch4 完成中断。
  * ------------------------------------------------------------------------- */
 void Pcm_tx_dma_isr(void)
 {
-    if (pcm_ready != 0xFF)
+    pcm_playing = 0;
+
+    if (pcm_cnt > 0)
     {
+        pcm_playing = 1;
+        pcm_cnt--;
         Sys_DMA_ChannelConfig(PCM_DMA_NUM, RX_DMA_PCM_STEREO, PCM_FRAME_WORDS, 0,
-                              (uint32_t)&pcm_tx_buf[pcm_ready][0],
+                              (uint32_t)&pcm_tx_buf[pcm_rd][0],
                               (uint32_t)&PCM->TX_DATA);
         Sys_DMA_ClearChannelStatus(PCM_DMA_NUM);
         Sys_DMA_ChannelEnable(PCM_DMA_NUM);
-        pcm_ready = 0xFF;
+        pcm_rd = (uint8_t)((pcm_rd + 1) % PCM_TX_BUFS);
     }
-    else
-    {
-        pcm_waiting = 1;
-    }
+    /* else: 环已空（余量被抖动吃光，属罕见）→ 不武装，等 ch4 完成中断重启 */
 }
 
 /* PCM DMA ISR 别名：向量表 DMA4/DMA5 -> 上述处理函数 */
@@ -827,12 +852,37 @@ void asrc_reconfig(sync_param_t *sync_param)
      */
     sync_param->Ck_prev = sync_param->Ck;
 
+    /* ASRC 卡死看门狗（1664 同款）：相位计数连续 20 次不动说明 ASRC 停了/卡住，
+       复位一次让它自恢复。正常运行时 PHASE_CNT 每包都在变，不会触发。 */
+    if (sync_param->asrc_cnt_prev == ASRC->PHASE_CNT)
+    {
+        sync_param->asrc_cnt_cnst++;
+        if (sync_param->asrc_cnt_cnst >= 20)
+        {
+            Sys_ASRC_Reset();
+            sync_param->asrc_cnt_cnst = 0;
+        }
+    }
+    else
+    {
+        sync_param->asrc_cnt_cnst = 0;
+    }
+    sync_param->asrc_cnt_prev = ASRC->PHASE_CNT;
+
 #if (OUTPUT_INTRF == PCM_TX_OUTPUT)
-    /* 16k→12k 固定 3:4 比例：输入(G722)=16k、7100 FS=12k 都是硬件固定时钟，
-       不依赖 audiosink 测量（Ck=238 vs 240 的 0.8% 偏差导致 PCM 周期性欠载爆音）。
-       inc = (1/0.75 - 1) << 28 = 0x5555555，DEC_MODE2 相位粒度 <<28。 */
-    asrc_inc_carrier = 0x05555555;
-    Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_DEC_MODE2);
+    /* 16k→24k（INT_MODE 上采样，PCM WORD_SIZE_16 + MULTIWORD_2 每 FS 周期 2 采样）
+       用**名义固定比例**，不跟踪 audiosink 测量。
+
+       原因（2026-09-23 实测，勿再改成闭环）：闭环公式 inc=(Cr-2Ck)/2Ck 隐含假设
+       「每个重配置间隔送来的输入样本数 = Cr = samples_per_packet(=320=20ms)」。
+       ASHA 的包间隔实测 ≈19.7～19.83ms（不等于包时长 20ms），该前提不成立 →
+       闭环会把「20ms 音频在 19.7ms 内播完」配成 +1% 速率：实测 1kHz 纯音经 ASRC 后
+       变 1009Hz（变调），且每秒多喂 7100 约 1% 采样 → 周期性溢出丢采样咔哒。
+       （1664 能用闭环是因为 RM 包间隔精确 10ms，前提成立；ASHA 不成立。）
+       名义比例：f_src/f_sink = 16000/24000 → inc = (f_src-f_sink)/f_sink << 29
+       = -(1/3)<<29 = 0xF5555556。包间隔抖动交给 ASHA 的队列吸收。 */
+    asrc_inc_carrier = 0xF5555556;
+    Sys_ASRC_Config(asrc_inc_carrier, WIDE_BAND | ASRC_INT_MODE);
 #else    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
     if (sync_param->Ck != 0)
     {
@@ -891,6 +941,7 @@ void Reset_Audio_Sync_Param(sync_param_t *sync_param, audio_frame_param_t *audio
     sync_param->audio_sink_phase_cnt = 0;
     sync_param->audio_sink_phase_cnt_prev = 0;
     sync_param->asrc_cnt_cnst = 0;
+    sync_param->asrc_cnt_prev = 0;
     sync_param->phase_cnt_missed = false;
     sync_param->flag_ascc_phase = false;
     sync_param->cntr_connection = 0;

@@ -195,11 +195,16 @@ void Device_Initialize(void)
                                SYSCLK_CLKSRC_RFCLK);
 
     /* Configure clock dividers */
-    CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_1 |
+    CLK->DIV_CFG0 = (SLOWCLK_PRESCALE_8 | BBCLK_PRESCALE_2 |
                      USRCLK_PRESCALE_1);
     CLK->DIV_CFG2 = (CPCLK_PRESCALE_12 | DCCLK_PRESCALE_4);
 
-    BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_16 | BB_WAKEUP);
+    /* 稳态不强制唤醒基带（对齐 1664 的 PCM 参考配置；BB_WAKEUP 只作开机早期临时强制）。
+       原为 BB_CLK_ENABLE|BBCLK_DIVIDER_16|BB_WAKEUP：基带常被强制唤醒 → 额外的总线/
+       系统活动，在 SPI 主模式下无所谓（时钟自己说了算、晚一步只是拖慢），但在 **PCM 从
+       模式**（时钟由 7100 提供、硬实时）下会让 DMA 补数晚一步 → PCM TX FIFO 欠载（听感
+       "哒"）。 */
+    BBIF->CTRL = (BB_CLK_ENABLE | BBCLK_DIVIDER_8 | BB_DEEP_SLEEP);
 
     /* Seed the random number generator */
     srand(1);

@@ -120,11 +120,12 @@ extern "C"
 #undef SAMPL_CLK
 #define SAMPL_CLK                       PCM_FRAME_SYNC
 
-/* PCM slave 输出配置（同 7160test）：32-bit 帧，word0=左、word1=右，
-   7100 读 word1（右声道）。数据放 32-bit 字低 16 位。 */
+/* PCM slave 输出配置（同 1664 已验证配置）：WORD_SIZE_16 + MULTIWORD_2 → 每个 FS 周期
+   2×16-bit = 32 BCLK，**有效采样率 24k**（7100 按 24k 读，word1/低 16 位为采样）。
+   原 WORD_SIZE_32 配置下每帧只装 1 个 32-bit 字 → 有效 12k。 */
 #define PCM_CFG_TX                      (PCM_BIT_ORDER_MSB_FIRST | \
                                          PCM_TX_ALIGN_LSB |        \
-                                         PCM_WORD_SIZE_32 |        \
+                                         PCM_WORD_SIZE_16 |        \
                                          PCM_FRAME_ALIGN_FIRST |   \
                                          PCM_FRAME_WIDTH_LONG |    \
                                          PCM_MULTIWORD_2 |         \
@@ -133,7 +134,7 @@ extern "C"
                                          PCM_DISABLE |             \
                                          PCM_SELECT_SLAVE)
 
-/* 一个 10ms 帧 = 120 个 12k 单声道采样 = 120 个 32-bit 写（每字 2 声道） */
+/* 24k 下每缓冲 120 字 = 120 采样 = 5ms，ch4 填 / ch5 流（双缓冲） */
 #define PCM_FRAME_WORDS                 (3 * FRAME_LENGTH / 4)
 
 #define PCM_DMA_NUM                     5
@@ -208,6 +209,7 @@ typedef struct
     bool flag_ascc_phase;
     int64_t avg_ck_outputcnt;
     uint32_t asrc_cnt_cnst;
+    uint32_t asrc_cnt_prev;      /* 上一次 ASRC->PHASE_CNT，卡死看门狗用（1664 同款） */
     bool phase_cnt_missed;
     uint8_t cntr_connection;
     uint8_t cntr_transient;
@@ -233,13 +235,27 @@ extern audio_frame_param_t env_audio;
 extern LPDSP32Context lpdsp32;
 
 #if (OUTPUT_INTRF == PCM_TX_OUTPUT)
-/* PCM 输出双缓冲（定义在 app_init_audio.c） */
-extern uint32_t pcm_tx_buf[2][PCM_FRAME_WORDS];
+/* PCM 输出环形缓冲（定义在 app_init_audio.c）：PCM_TX_BUFS 块 × 5ms，余量 ≈ (PCM_PREFILL-1)×5ms。
+   原来 2 块时产出与消耗严格 1:1、**零余量**：只要 ch5 比 ch4 早一步，代码就让 PCM 处于
+   未武装状态，FIFO 立刻见底 → 移位器吐坏采样 → 十几 Hz 的「哒哒」（J-Link 清 PCM
+   UNDERRUN 位后每 20ms 读一次，20 次里 7 次重新置位）。
+   ⚠ 关键在**预充**：只加块数不预充，ch5 仍会立刻抢上、余量还是 0。
+   实测（同一探针，每 20ms 采样 × 20）：
+     2 块       → 7/20 次欠载
+     4 块预充 2 → 2/20 次（余量 15ms，说明 ASHA 侧有偶发 >10ms 延迟）
+     8 块预充 6 → 余量 25ms（当前） */
+#define PCM_TX_BUFS                     8
+#define PCM_PREFILL                     6
+extern uint32_t pcm_tx_buf[PCM_TX_BUFS][PCM_FRAME_WORDS];
 
-/* PCM 双缓冲状态（定义在 app_func_audio.c） */
-extern volatile uint8_t pcm_fill;
-extern volatile uint8_t pcm_ready;
-extern volatile uint8_t pcm_waiting;
+/* 环形状态（定义在 app_func_audio.c）：
+   pcm_wr = ch4 正在填的块；pcm_rd = 下一块待播；pcm_cnt = 已填好待播的块数；
+   pcm_playing = ch5 是否在途；pcm_started = 首播是否已按预充阈值启动过。 */
+extern volatile uint8_t pcm_wr;
+extern volatile uint8_t pcm_rd;
+extern volatile uint8_t pcm_cnt;
+extern volatile uint8_t pcm_playing;
+extern volatile uint8_t pcm_started;
 #endif    /* if (OUTPUT_INTRF == PCM_TX_OUTPUT) */
 
 /* LPDSP32 CODEC related defines */
