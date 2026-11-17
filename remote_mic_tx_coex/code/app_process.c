@@ -235,6 +235,59 @@ int APP_Timer(ke_msg_id_t const msg_id,
         break;
     }
 
+#if (BLE_SCAN_CONNECT_TEST)
+    /* Boot scan test: keep scanning until both target peers are connected.
+     * Only runs while idle so it does not fight the audio-gated CONNECT_IND
+     * and RM flow above. */
+    {
+        static uint8_t scan_cool;
+        static uint8_t conn_wd;
+        bool all_connected = true;
+        uint8_t p;
+
+        for (p = 0; p < PEER_COUNT; p++)
+        {
+            if (!peer_ble_connected[p])
+                all_connected = false;
+        }
+
+        if (scan_cool > 0)
+            scan_cool--;
+
+        /* A failed direct connection may never complete if the peer stopped
+         * listening (GAPM does not time out). Cancel after 3 s so scanning
+         * resumes instead of stalling in APPM_CONNECTING. */
+        if ((tx_state == TX_BLE_IDLE) && (ble_env.state == APPM_CONNECTING))
+        {
+            if (++conn_wd >= 15)
+            {
+                struct gapm_cancel_cmd *c;
+
+                conn_wd = 0;
+                PRINTF("__CONN TIMEOUT, cancelling\n");
+                c = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM, TASK_APP,
+                                 gapm_cancel_cmd);
+                c->operation = GAPM_CANCEL;
+                ke_msg_send(c);
+            }
+        }
+        else
+        {
+            conn_wd = 0;
+        }
+
+        if (!all_connected && (tx_state == TX_BLE_IDLE) &&
+            (ble_env.state == APPM_READY || ble_env.state == APPM_CONNECTED))
+        {
+            if (scan_cool == 0)
+            {
+                Scan_SendStartCmd();
+                scan_cool = 10;    /* retry no faster than 2 s */
+            }
+        }
+    }
+#endif    /* if (BLE_SCAN_CONNECT_TEST) */
+
     /* Battery: only when idle */
     if (tx_state == TX_BLE_IDLE)
         app_env.send_batt_req++;

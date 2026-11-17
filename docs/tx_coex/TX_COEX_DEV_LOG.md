@@ -571,3 +571,72 @@ TX_BLE_IDLE ──[ad_detected]──▶ TX_CONNECTING ──[CANCEL 序列完�
 
 - [app.h](../remote_mic_tx_coex/include/app.h) — 新增 `AUDIO_LOST_CONSEC_CNT 15`
 - [app_process.c](../remote_mic_tx_coex/code/app_process.c) — TX 状态机 + 音频门控 + 拆除 reconnect 段
+
+---
+
+## 第十三阶段：BLE 扫描 + 主动连接（开机自检，2026-11-16）
+
+> 开关：`app.h:BLE_SCAN_CONNECT_TEST`（当前 = 1）。这是**验证用流程**，不是量产流程；
+> 置 0 即回到 Phase 12 的「音频门控 CONNECT_IND 敲门」行为，其余改动全部编译掉。
+
+### 目的
+
+Phase 12 的 CONNECT_IND 是单向敲门：TX 收不到 Sleep 的回复，连接注定不建立。
+本阶段要验证**双向链路**——TX 主动扫描、按 MAC 找到两台 Sleep 并各自建立真实连接，
+两条链路同时保持。验证通过后再决定量产是否改成扫描连接。
+
+### 流程
+
+```
+开机 → APPM_READY → Scan_SendStartCmd()（主动扫描）
+      → AdvReportInd 比对 SLEEP_BD_ADDRESS_0/1
+      → 命中 → 取消扫描（GAPM_CANCEL）
+      → GAPM_CMP(GAPM_SCAN_ACTIVE, status=0x45) → Connection_SendStartCmd(&scanned_peer)
+      → APPM_CONNECTING → 连接完成 → 已连 peer 记入 peer_ble_connected[p]
+      → 还有没连上的 peer → 2s 后重新扫描（scan_cool = 10 tick）
+      → 两个都连上 → 停止扫描
+```
+
+### 关键实现
+
+- **MAC 匹配**：`GAPM_AdvReportInd` 用 `memcmp(peer_macs[p], adv_addr, 6)` 直接比对；
+  命中后存 `scanned_peer` + `scanned_peer_idx`，发 `GAPM_CANCEL`，同一扫描周期内
+  后续 AdvReport 一律忽略（`scanned_peer_idx < PEER_COUNT` 即已命中）。
+- **扫描取消的回调不是 GAPM_CANCEL**：实测扫描被取消时 GAPM 上报
+  `operation = GAPM_SCAN_ACTIVE`、`status = 0x45 (GAP_ERR_TIMEOUT)`。
+  原 `case (GAPM_CANCEL)` 只处理「扫描已进入 APPM_SCANNING 后 CANCEL」的路径，
+  扫描阶段根本不会走到 → 新增 `case (GAPM_SCAN_ACTIVE)`，非零 status 时
+  取 `scanned_peer_idx` 发起连接；没匹配到目标则回 `APPM_READY` 让定时器重扫。
+- **扫描参数**：`filt_policy = SCAN_ALLOW_ADV_ALL`、`filter_duplic = SCAN_FILT_DUPLIC_DIS`
+  （关掉重复过滤，否则同一设备只上报一次，重扫时拿不到）。
+- **连接超时**：直连一个已不在监听的 peer 时 GAPM 不会自己超时，状态会卡在
+  `APPM_CONNECTING`。`APP_Timer` 里计数 15 tick（3s）后发 `GAPM_CANCEL`，回到可重扫状态。
+- **重扫节流**：`scan_cool = 10`（2s），避免对端未就绪时刷爆扫描。
+- **只在与音频流程不冲突时扫描**：`tx_state == TX_BLE_IDLE`（RM 推流期间不扫）；
+  `ble_env.state` 为 `APPM_READY`/`APPM_CONNECTED` 时才发起（连接中/扫描中不叠加）。
+- **断连保护**：`GAPC_DisconnectInd` 的「全部断开 → READY」增加 `ble_env.state == APPM_CONNECTED`
+  守卫，否则一台断开时会把另一台正在进行的扫描/连接状态打回 READY。
+- **调试日志**：`GAPM_CmpEvt` 顶部打印 `__GAPM_CMP op/status/state`，
+  便于在 UART 上看清 cancel → connect 的交接；AdvReport 命中打印 `__TARGET MAC FOUND peer=N`。
+
+### MAC 地址（2026-11-16 更换）
+
+| 宏 | 小端数组 | 显示地址 |
+|---|---|---|
+| `SLEEP_BD_ADDRESS_0` | `97 A4 B1 46 00 F4` | F4:00:46:B1:A4:97 |
+| `SLEEP_BD_ADDRESS_1` | `D4 A8 B1 46 00 F4` | F4:00:46:B1:A8:D4 |
+
+旧地址（60:C0:BF:00:76:91 / 60:C0:BF:00:76:76）与更早的 00:12:09:00:80:09 保留为注释。
+
+### 涉及文件
+
+- [app.h](../remote_mic_tx_coex/include/app.h) — `BLE_SCAN_CONNECT_TEST` 开关
+- [ble_std.h](../remote_mic_tx_coex/include/ble_std.h) — 新 MAC、`Scan_SendStartCmd()` 声明
+- [ble_std.c](../remote_mic_tx_coex/code/ble_std.c) — MAC 匹配、GAPM_SCAN_ACTIVE 分支、
+  扫描参数、断连守卫、日志
+- [app_process.c](../remote_mic_tx_coex/code/app_process.c) — 扫描/重扫/连接超时循环
+
+### 状态
+
+代码已加，**未编译、未上板**。上板看点：扫描命中两台的 `__TARGET MAC FOUND`、
+每台的 `__GAPM_CMP` 交接序列、`peer_ble_connected` 两位都置位后不再出现 `__START SCANNING`。

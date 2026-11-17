@@ -70,6 +70,11 @@ uint8_t bdaddr_type;
 /* Peer address discovered during scanning — saved for connection */
 static struct gap_bdaddr scanned_peer;
 
+#if (BLE_SCAN_CONNECT_TEST)
+/* Peer index matched by the current scan */
+static uint8_t scanned_peer_idx;
+#endif
+
 static struct gapm_set_dev_config_cmd *gapmConfigCmd;
 
 /* ----------------------------------------------------------------------------
@@ -262,6 +267,13 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
 {
     struct gapm_set_dev_config_cmd *cmd;
 
+#if (BLE_SCAN_CONNECT_TEST)
+    /* Scan/connect test: log every GAPM completion so the cancel -> connect
+     * hand-off is visible on the UART. */
+    PRINTF("__GAPM_CMP op=%u st=%u state=%u\n",
+           param->operation, param->status, ble_env.state);
+#endif
+
     switch (param->operation)
     {
         /* A reset has occurred, configure the device and
@@ -308,7 +320,13 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
         case (GAPM_CANCEL):
         {
             if (ble_env.state == APPM_SCANNING)
+            {
+#if (BLE_SCAN_CONNECT_TEST)
+                if (scanned_peer_idx < PEER_COUNT)
+                    current_peer = scanned_peer_idx;
+#endif
                 Connection_SendStartCmd(&scanned_peer);
+            }
             else
                 ble_env.state = APPM_READY;
         }
@@ -324,6 +342,31 @@ int GAPM_CmpEvt(ke_msg_id_t const msg_id, struct gapm_cmp_evt
             }
         }
         break;
+
+#if (BLE_SCAN_CONNECT_TEST)
+        /* Scan ended. The stack reports the end of a cancelled scan as
+         * operation = GAPM_SCAN_ACTIVE with a non-zero status (measured:
+         * 0x45 GAP_ERR_TIMEOUT), not GAPM_CANCEL, so the GAPM_CANCEL case
+         * above never fires for a scan. */
+        case (GAPM_SCAN_ACTIVE):
+        {
+            if ((param->status != GAP_ERR_NO_ERROR) &&
+                (ble_env.state == APPM_SCANNING))
+            {
+                if (scanned_peer_idx < PEER_COUNT)
+                {
+                    current_peer = scanned_peer_idx;
+                    Connection_SendStartCmd(&scanned_peer);
+                }
+                else
+                {
+                    /* Scan ended without a target — let the timer rescan */
+                    ble_env.state = APPM_READY;
+                }
+            }
+        }
+        break;
+#endif
 
         default:
         {
@@ -494,14 +537,16 @@ int GAPC_DisconnectInd(ke_msg_id_t const msg_id,
         BLE_SetServiceState(false, disc_conidx);
     }
 
-    /* Only go to READY if all peers disconnected */
+    /* Only go to READY if all peers disconnected.
+     * Guarded on APPM_CONNECTED so a scan/connection in progress (started
+     * because the other peer is still missing) is not clobbered. */
     {
         uint8_t p;
         bool any_connected = false;
         for (p = 0; p < PEER_COUNT; p++)
             if (peer_ble_connected[p])
                 any_connected = true;
-        if (!any_connected)
+        if (!any_connected && (ble_env.state == APPM_CONNECTED))
             ble_env.state = APPM_READY;
     }
 
@@ -621,15 +666,20 @@ void Scan_SendStartCmd(void)
     struct gapm_start_scan_cmd *cmd;
 
     PRINTF("__START SCANNING\n");
+#if (BLE_SCAN_CONNECT_TEST)
+    scanned_peer_idx = PEER_COUNT;    /* no target matched yet */
+#endif
     cmd = KE_MSG_ALLOC(GAPM_START_SCAN_CMD, TASK_GAPM, TASK_APP,
                        gapm_start_scan_cmd);
 
     cmd->op.code     = GAPM_SCAN_ACTIVE;
     cmd->op.addr_src = GAPM_STATIC_ADDR;
     cmd->op.state    = 0;
-    cmd->interval    = SCAN_INERVAL;
-    cmd->window      = SCAN_WINDOW;
-    cmd->mode        = GAP_GEN_DISCOVERY;
+    cmd->interval      = SCAN_INERVAL;
+    cmd->window        = SCAN_WINDOW;
+    cmd->mode          = GAP_GEN_DISCOVERY;
+    cmd->filt_policy   = SCAN_ALLOW_ADV_ALL;
+    cmd->filter_duplic = SCAN_FILT_DUPLIC_DIS;
 
     ke_msg_send(cmd);
 
@@ -685,15 +735,54 @@ int GAPM_AdvReportInd(ke_msg_id_t const msgid,
                       ke_task_id_t const src_id)
 {
     struct gapm_cancel_cmd *cancel_cmd;
+#if !(BLE_SCAN_CONNECT_TEST)
     uint8_t *ad_data = (uint8_t *)param->report.data;
     uint8_t ad_len = param->report.data_len;
     uint8_t pos = 0;
+#endif
 
     if (ble_env.state != APPM_SCANNING)
     {
         return (KE_MSG_CONSUMED);
     }
 
+#if (BLE_SCAN_CONNECT_TEST)
+    /* Test mode: match the advertiser address against the target MACs and
+     * connect to the first peer that is not connected yet. */
+    {
+        uint8_t p;
+
+        /* A target is already matched and the scan cancel is pending */
+        if (scanned_peer_idx < PEER_COUNT)
+            return (KE_MSG_CONSUMED);
+
+        for (p = 0; p < PEER_COUNT; p++)
+        {
+            if (memcmp(peer_macs[p], param->report.adv_addr.addr,
+                       BDADDR_LENGTH) == 0)
+                break;
+        }
+
+        if (p >= PEER_COUNT || peer_ble_connected[p])
+            return (KE_MSG_CONSUMED);
+
+        PRINTF("__TARGET MAC FOUND peer=%d type=%d\n",
+               p, param->report.adv_addr_type);
+
+        /* Save peer address for connection */
+        memcpy(&scanned_peer.addr, &param->report.adv_addr, BDADDR_LENGTH);
+        scanned_peer.addr_type = param->report.adv_addr_type;
+        scanned_peer_idx = p;
+
+        /* Stop scanning */
+        cancel_cmd = KE_MSG_ALLOC(GAPM_CANCEL_CMD, TASK_GAPM,
+                                  TASK_APP, gapm_cancel_cmd);
+        cancel_cmd->operation = GAPM_CANCEL;
+        ke_msg_send(cancel_cmd);
+
+        return (KE_MSG_CONSUMED);
+    }
+#else    /* if (BLE_SCAN_CONNECT_TEST) */
     /* Parse advertising data looking for device name "cbtest"
      * (peripheral_server_sleep device) */
     while (pos + 1 < ad_len)
@@ -736,6 +825,7 @@ int GAPM_AdvReportInd(ke_msg_id_t const msgid,
 
         pos += field_len + 1;
     }
+#endif    /* if (BLE_SCAN_CONNECT_TEST) */
 
     return (KE_MSG_CONSUMED);
 }

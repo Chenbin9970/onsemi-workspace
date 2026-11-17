@@ -64,6 +64,12 @@ extern "C"
 
 #define OUTPUT_POWER_6DBM               1
 
+/* 1 = boot-time scan test: scan for the target MACs in SLEEP_BD_ADDRESS_0/1
+ * and connect to each one as it is found, keeping both links up.
+ * 0 = normal flow, where the connection is only the audio-gated CONNECT_IND
+ * knock in APP_Timer. */
+#define BLE_SCAN_CONNECT_TEST           1
+
 #define NO_RX_INPUT                     0
 #define SPI_RX_CODED_INPUT              1    /*with bi_directional_master in E7100 */
 #define SPI_RX_RAW_INPUT                2    /*with RSL10_RemoteDongle in E7100 */
